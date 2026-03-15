@@ -110,8 +110,15 @@ def process_species_task(sp, df_sp, output_dir, args, aoi, master_sampled_df, ye
             if not df_bg.empty:
                 df_sp = pd.concat([df_sp, df_bg], ignore_index=True)
 
-        params = {}
-        if method in ("rf", "gbt"):  params = {"numberOfTrees": args.n_trees}
+        params = {
+            "n_trees": args.n_trees,
+            "min_leaf_population": args.min_leaf_population,
+            "bag_fraction": args.bag_fraction,
+            "shrinkage": args.shrinkage,
+            "max_nodes": args.max_nodes,
+            "variables_per_split": args.variables_per_split,
+            "lambda_": args.lambda_
+        }
 
         res  = analyze_method(df_sp, method=method, params=params, scale=args.scale, year=year)
         meta = {"method": method, "params": params, "metrics": res['metrics'],
@@ -220,6 +227,11 @@ def main():
         default="centroid",
         help="Modeling method (GEE classifier or regression reducer).")
     parser.add_argument("--n-trees", type=int, default=100, help="Number of trees for rf/gbt (default: 100)")
+    parser.add_argument("--min-leaf-population", type=int, default=1, help="Min leaf population for trees (default: 1)")
+    parser.add_argument("--bag-fraction", type=float, default=0.5, help="Bag fraction for trees (default: 0.5)")
+    parser.add_argument("--shrinkage", type=float, default=0.1, help="Shrinkage for gbt (default: 0.1)")
+    parser.add_argument("--max-nodes", type=int, default=None, help="Max nodes for trees (default: unlimited)")
+    parser.add_argument("--variables-per-split", type=int, default=None, help="Variables per split for rf (default: None)")
     parser.add_argument("--lambda", type=float, default=0.1, dest="lambda_", help="Regularisation strength for ridge/linear reducers (default: 0.1)")
     parser.add_argument("--prefix", help="Prefix for output raster filenames (default: 'prediction_map')")
     parser.add_argument("--only-similarity", action="store_true", help="Only generate/download similarity map (skip masks)")
@@ -291,13 +303,15 @@ def main():
         method = args.method
 
         # Build method-specific hyperparameter dict
-        params = {}
-        if method in ("rf",):
-            params = {"numberOfTrees": args.n_trees}
-        elif method == "gbt":
-            params = {"numberOfTrees": args.n_trees}
-        elif method in ("ridge", "linear", "robust_linear"):
-            params = {"lambda_": args.lambda_}
+        params = {
+            "n_trees": args.n_trees,
+            "min_leaf_population": args.min_leaf_population,
+            "bag_fraction": args.bag_fraction,
+            "shrinkage": args.shrinkage,
+            "max_nodes": args.max_nodes,
+            "variables_per_split": args.variables_per_split,
+            "lambda_": args.lambda_
+        }
 
         if method == "ensemble":
             run_multi_species_pipeline(args, df, args.output)

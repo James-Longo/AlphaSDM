@@ -141,9 +141,22 @@ def calculate_classifier_metrics(scores_pos, scores_neg):
 
 # Methods that use ee.Classifier.*  (output mode: PROBABILITY)
 GEE_CLASSIFIER_METHODS = {
-    "rf":               lambda p: _build_classifier("smileRandomForest",     {"numberOfTrees": p.get("numberOfTrees", 100), **p}),
-    "gbt":              lambda p: _build_classifier("smileGradientTreeBoost",{"numberOfTrees": p.get("numberOfTrees", 100), **p}),
-    "cart":             lambda p: _build_classifier("smileCart",             p),
+    "rf":               lambda p: _build_classifier("smileRandomForest", {
+                                "numberOfTrees": p.get("n_trees", 100),
+                                "variablesPerSplit": p.get("variables_per_split", None),
+                                "minLeafPopulation": p.get("min_leaf_population", 1),
+                                "bagFraction": p.get("bag_fraction", 0.5),
+                                "seed": 42
+                            }),
+    "gbt":              lambda p: _build_classifier("smileGradientTreeBoost", {
+                                "numberOfTrees": p.get("n_trees", 100),
+                                "shrinkage": p.get("shrinkage", 0.1),
+                                "maxNodes": p.get("max_nodes", None)
+                            }),
+    "cart":             lambda p: _build_classifier("smileCart", {
+                                "maxNodes": p.get("max_nodes", None),
+                                "minLeafPopulation": p.get("min_leaf_population", 1)
+                            }),
     "maxent":           lambda p: _build_classifier("amnhMaxent",            p),
 }
 
@@ -168,7 +181,19 @@ def _build_classifier(gee_name, params):
     import ee
     factory = getattr(ee.Classifier, gee_name)
     # Always splat params — even an empty dict is fine; defaults are already merged in
-    clf = factory(**params) if params else factory()
+    try:
+        # Filter out None values so GEE uses its internal defaults
+        clean_params = {k: v for k, v in params.items() if v is not None}
+        import sys
+        sys.stderr.write(f"DEBUG: creating {gee_name} with params {clean_params}\n")
+        clf = factory(**clean_params) if clean_params else factory()
+    except Exception as e:
+        import sys
+        sys.stderr.write(f"Warning: _build_classifier failed for {gee_name} with params {params}: {e}. Falling back to default.\n")
+        try:
+            clf = factory(100) if gee_name in ["smileRandomForest", "smileGradientTreeBoost"] else factory()
+        except:
+            clf = factory()
     return clf.setOutputMode("PROBABILITY")
 
 
