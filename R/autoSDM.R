@@ -19,13 +19,19 @@
 #'   Defaults to `c("centroid", "ridge")`.
 #' @param ensemble Optional. Combine all methods into an ensemble map. Defaults to TRUE.
 #' @param n_trees Optional. Number of trees for rf/gbt methods. Defaults to 100.
+#' @param min_leaf_population Optional. Min leaf population for trees. Defaults to 1.
+#' @param bag_fraction Optional. Bag fraction for trees. Defaults to 0.5.
+#' @param shrinkage Optional. Shrinkage for GBT. Defaults to 0.1.
+#' @param max_nodes Optional. Max nodes for trees. Defaults to NULL (unlimited).
+#' @param variables_per_split Optional. Variables per split for RF. Defaults to NULL.
 #' @param lambda_ Optional. Regularisation strength for ridge/linear reducers. Defaults to 0.1.
 #' @return A list containing training data, models, and prediction results.
 #' @export
 autoSDM <- function(data, aoi = NULL, output_dir = getwd(), scale = NULL, python_path = NULL,
                     gee_project = NULL, cv = FALSE, predict_coords = NULL,
                     methods = NULL, ensemble = TRUE, year = NULL, count = NULL,
-                    n_trees = 100L, lambda_ = 0.1) {
+                    n_trees = 100L, min_leaf_population = 1L, bag_fraction = 0.5,
+                    shrinkage = 0.1, max_nodes = NULL, variables_per_split = NULL, lambda_ = 0.1) {
   # 1. Input Validation
   if (missing(data)) stop("Argument 'data' is required.")
 
@@ -231,7 +237,18 @@ autoSDM <- function(data, aoi = NULL, output_dir = getwd(), scale = NULL, python
 
       # Tuning args for this method
       tuning_args <- c(
-        if (m %in% c("rf", "gbt")) c("--n-trees", as.character(as.integer(n_trees))),
+        if (m %in% c("rf", "gbt")) {
+          args <- c(
+            "--n-trees", as.character(as.integer(n_trees)),
+            "--min-leaf-population", as.character(as.integer(min_leaf_population)),
+            "--bag-fraction", as.character(bag_fraction),
+            "--shrinkage", as.character(shrinkage),
+            "--lambda", as.character(lambda_)
+          )
+          if (!is.null(max_nodes)) args <- c(args, "--max-nodes", as.character(max_nodes))
+          if (!is.null(variables_per_split)) args <- c(args, "--variables-per-split", as.character(variables_per_split))
+          args
+        },
         if (m %in% c("ridge", "linear", "robust_linear")) c("--lambda", as.character(lambda_))
       )
 
