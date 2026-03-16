@@ -29,6 +29,20 @@ analyze_embeddings <- function(df, method = "centroid", python_path = NULL, gee_
 
   if (!is.null(gee_project) && gee_project != "") {
     args <- c(args, "--project", shQuote(gee_project))
+  } else {
+    # Option B: Try to load from local config if not provided explicitly
+    config_file <- file.path(Sys.getenv("HOME"), ".config", "autoSDM", "config.json")
+    if (file.exists(config_file)) {
+      try(
+        {
+          conf <- jsonlite::fromJSON(config_file)
+          if (!is.null(conf$gee_project) && conf$gee_project != "") {
+            args <- c(args, "--project", shQuote(conf$gee_project))
+          }
+        },
+        silent = TRUE
+      )
+    }
   }
 
   if (cv) {

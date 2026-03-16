@@ -4,7 +4,7 @@ import numpy as np
 import sys
 import os
 import json
-from autoSDM.analyzer import calculate_classifier_metrics
+from autoSDM.analyzer import calculate_classifier_metrics, get_embedding_image, get_embeddings_at_fc, EMB_COLS
 
 def assign_spatial_folds(df, n_folds=10, grid_size=None):
     """
@@ -128,27 +128,8 @@ def _prepare_training_data(df, ecological_vars, class_property='present', scale=
             base_fcs.append(ee.Feature(geom, props).set('year', int(yr)))
 
     # 5. Sample Regions per Year
-    upload_fc = ee.FeatureCollection(base_fcs)
-    years = sorted(df_clean['year'].unique())
-    sampled_fcs = []
-    
-    for yr in years:
-        yr_fc = upload_fc.filter(ee.Filter.eq('year', int(yr)))
-        try:
-            year_img = ee.ImageCollection(asset_path).filter(ee.Filter.calendarRange(int(yr), int(yr), 'year')).mosaic()
-            sampled = year_img.sampleRegions(
-                collection=yr_fc,
-                scale=scale,
-                geometries=True
-            ).filter(ee.Filter.notNull(['A00']))
-            sampled_fcs.append(sampled)
-        except Exception as e:
-            sys.stderr.write(f"Warning: Failed to sample GEE for year {yr}: {e}\n")    
-
-    if not sampled_fcs:
-        raise ValueError("Failed to create any valid training FeatureCollections on GEE.")
-
-    fc = ee.FeatureCollection(sampled_fcs).flatten()
+    sys.stderr.write(f"Sampling Alpha Earth embeddings for {total_points} points...\n")
+    fc = get_embeddings_at_fc(upload_fc, scale, geometries=True)
     sys.stderr.write(f"Successfully created training FC for {total_points} points.\n")
 
     return {
@@ -514,26 +495,7 @@ def run_parallel_cv(df, ecological_vars, class_property='present', scale=None, y
     #    The FC is filtered per-fold without any re-uploading.
     # ------------------------------------------------------------------
     sys.stderr.write("CV: sampling Alpha Earth embeddings (once for all folds) ...\n")
-
-    all_years   = sorted(df_f['year'].unique())
-    sampled_fcs = []
-    for yr in all_years:
-        yr_fc  = upload_fc.filter(ee.Filter.eq('year', int(yr)))
-        yr_img = (
-            ee.ImageCollection(ASSET_PATH)
-            .filter(ee.Filter.calendarRange(int(yr), int(yr), 'year'))
-            .mosaic()
-            .select(EMB_COLS)
-        )
-        sampled = yr_img.sampleRegions(
-            collection=yr_fc,
-            properties=[LABEL_RIDGE_COL, LABEL_CENT_COL, FOLD_COL],
-            scale=scale,
-            geometries=False   # no geometry needed; embeddings stored as props
-        ).filter(ee.Filter.notNull(['A00']))
-        sampled_fcs.append(sampled)
-
-    all_sampled_fc = ee.FeatureCollection(sampled_fcs).flatten()
+    all_sampled_fc = get_embeddings_at_fc(upload_fc, scale, properties=[LABEL_RIDGE_COL, LABEL_CENT_COL, FOLD_COL])
     sys.stderr.write("CV: embeddings sampled. Running fold evaluations ...\n")
 
     # ------------------------------------------------------------------
@@ -586,8 +548,7 @@ def get_background_embeddings(aoi, n_points=1000, scale=None, year=None):
     
     # Pre-define embedding image ONCE
     # We must use the mosaic to get data, but sampling at points is faster than scanning the image.
-    asset_path = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
-    year_img = ee.ImageCollection(asset_path).filter(ee.Filter.calendarRange(int(year), int(year), 'year')).mosaic()
+    year_img = get_embedding_image(year, scale=scale)
     
     for attempt in range(max_attempts):
         needed = n_points - len(collected_rows)
