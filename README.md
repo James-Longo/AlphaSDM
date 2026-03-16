@@ -51,7 +51,7 @@ The pipeline is driven by three primary stages, which can be invoked together vi
 
 ### 1. Extract
 Extracts Alpha Earth embeddings from Google Earth Engine for a set of occurrences.
-- **Scale-Aware**: Native support for 10m, 100m, and 1000m scales.
+- **Scale-Aware**: Native support for any scale.
 - **Temporal Alignment**: Automatically matches observation years (2017-2025) to the correct embedding mosaic.
 
 ### 2. Analyze

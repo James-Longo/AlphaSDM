@@ -8,21 +8,32 @@ autoSDM(
   data,
   aoi = NULL,
   output_dir = getwd(),
-  scale = 10,
+  scale = NULL,
   python_path = NULL,
   gee_project = NULL,
   cv = FALSE,
   predict_coords = NULL,
   methods = NULL,
-  year = 2025,
-  count = NULL
+  ensemble = TRUE,
+  aoi_year = NULL,
+  count = NULL,
+  n_trees = 100L,
+  min_leaf_population = 5L,
+  bag_fraction = 0.5,
+  shrinkage = 0.005,
+  max_nodes = NULL,
+  variables_per_split = NULL,
+  lambda_ = 0.1,
+  n_cores = NULL,
+  verbose_timer = FALSE,
+  options = list()
 )
 }
 \arguments{
 \item{data}{A data frame formatted via `format_data()`. Must have standardized lowercase columns
-(longitude, latitude, year, present). Any additional columns are ignored.}
+(longitude, latitude, year, present).}
 
-\item{aoi}{Optional. Either a list with `lat`, `lon`, and `radius` (in meters), or a character string path to a polygon file (GeoJSON or Shapefile). Required for map generation. If NULL and `predict_coords` is provided, only point predictions are returned (no map).}
+\item{aoi}{Optional. Either a list with `lat`, `lon`, and `radius` (in meters), or a character string path to a polygon file.}
 
 \item{output_dir}{Optional. Directory to save results. Defaults to the current working directory.}
 
@@ -30,20 +41,23 @@ autoSDM(
 
 \item{python_path}{Optional. Path to Python executable. Auto-detected if not provided.}
 
-\item{gee_project}{Optional. Google Cloud Project ID for Earth Engine. Required for newer API versions.}
+\item{gee_project}{Optional. Google Cloud Project ID for Earth Engine.}
 
-\item{cv}{Optional. Boolean whether to run 5-fold Spatial Block Cross-Validation. Defaults to FALSE.}
+\item{cv}{Optional. Boolean whether to run spatial cross-validation. Defaults to FALSE.}
 
 \item{predict_coords}{Optional. Data frame of coordinates to predict at.}
 
-\item{year}{Optional. Alpha Earth Mosaic year for mapping. Defaults to 2025.}
+\item{n_cores}{Optional. Number of cores for parallel processing.}
 
-\item{count}{Optional. Number of background points to generate. Defaults to 10x presence points (analyze) or 1000 (background).}
+\item{verbose_timer}{Optional. Boolean to display a real-time updating timer for each processing step. Defaults to FALSE.}
+
+\item{options}{Optional. A named list of advanced hyperparameters (e.g., `list(sampling_rate = 0.8, beta_multiplier = 2.0)`).
+Supported keys: `sampling_rate`, `loss_function`, `beta_multiplier`, `output_format`, `auto_feature`, `linear`, `quadratic`,
+`product`, `threshold`, `hinge`, `extrapolate`, `do_clamp`, `beta`, `seed`.}
 }
 \value{
 A list containing training data, models, and prediction results.
 }
 \description{
-This is the main entry point for the autoSDM pipeline. It performs embedding extraction,
-multi-model analysis (Centroid + Ridge), and generates high-resolution distribution maps.
+This is the main entry point for the autoSDM pipeline.
 }

@@ -3,11 +3,19 @@ import warnings
 warnings.filterwarnings("ignore", message=".*Python version.*will stop supporting.*", category=FutureWarning)
 
 import argparse
+import sys
 import pandas as pd
 import numpy as np
-import os
-import sys
 import json
+import os
+
+def str2bool(v):
+    if v is None: return None
+    if isinstance(v, bool): return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'): return True
+    if v.lower() in ('no', 'false', 'f', 'n', '0'): return False
+    return None
+
 import concurrent.futures
 from autoSDM.extrapolate import generate_prediction_map, download_mask, export_to_gcs, merge_rasters
 from shapely.geometry import mapping
@@ -111,13 +119,27 @@ def process_species_task(sp, df_sp, output_dir, args, aoi, master_sampled_df, ye
                 df_sp = pd.concat([df_sp, df_bg], ignore_index=True)
 
         params = {
-            "n_trees": args.n_trees,
+            "n_trees":             args.n_trees,
             "min_leaf_population": args.min_leaf_population,
-            "bag_fraction": args.bag_fraction,
-            "shrinkage": args.shrinkage,
-            "max_nodes": args.max_nodes,
+            "bag_fraction":       args.bag_fraction,
+            "shrinkage":          args.shrinkage,
+            "max_nodes":          args.max_nodes,
             "variables_per_split": args.variables_per_split,
-            "lambda_": args.lambda_
+            "sampling_rate":      args.sampling_rate,
+            "loss_function":      args.loss_function,
+            "beta_multiplier":    args.beta_multiplier,
+            "output_format":      args.output_format,
+            "auto_feature":       str2bool(args.auto_feature),
+            "linear":             str2bool(args.linear),
+            "quadratic":          str2bool(args.quadratic),
+            "product":            str2bool(args.product),
+            "threshold":          str2bool(args.threshold),
+            "hinge":              str2bool(args.hinge),
+            "extrapolate":        str2bool(args.extrapolate),
+            "do_clamp":           str2bool(args.do_clamp),
+            "beta":               args.beta,
+            "seed":               args.seed,
+            "lambda_":            args.lambda_
         }
 
         res  = analyze_method(df_sp, method=method, params=params, scale=args.scale, year=year)
@@ -229,9 +251,24 @@ def main():
     parser.add_argument("--n-trees", type=int, default=100, help="Number of trees for rf/gbt (default: 100)")
     parser.add_argument("--min-leaf-population", type=int, default=1, help="Min leaf population for trees (default: 1)")
     parser.add_argument("--bag-fraction", type=float, default=0.5, help="Bag fraction for trees (default: 0.5)")
-    parser.add_argument("--shrinkage", type=float, default=0.1, help="Shrinkage for gbt (default: 0.1)")
+    parser.add_argument("--shrinkage", type=float, default=None, help="Shrinkage (learning rate) for gbt")
     parser.add_argument("--max-nodes", type=int, default=None, help="Max nodes for trees (default: unlimited)")
     parser.add_argument("--variables-per-split", type=int, default=None, help="Variables per split for rf (default: None)")
+    parser.add_argument("--sampling-rate", type=float, default=None, help="Sampling rate for gbt")
+    parser.add_argument("--loss-function", default=None, help="Loss function for gbt (LeastSquares, LeastAbsoluteDeviation, Huber)")
+    parser.add_argument("--beta-multiplier", type=float, default=None, help="Beta multiplier for Maxent")
+    parser.add_argument("--output-format", default=None, help="Output format for Maxent (cloglog, logistic, raw, cumulative)")
+    parser.add_argument("--auto-feature", type=str, default=None, help="Whether to use auto-features for Maxent (true/false)")
+    parser.add_argument("--linear", type=str, default=None, help="Allow linear features in Maxent (true/false)")
+    parser.add_argument("--quadratic", type=str, default=None, help="Allow quadratic features in Maxent (true/false)")
+    parser.add_argument("--product", type=str, default=None, help="Allow product features in Maxent (true/false)")
+    parser.add_argument("--threshold", type=str, default=None, help="Allow threshold features in Maxent (true/false)")
+    parser.add_argument("--hinge", type=str, default=None, help="Allow hinge features in Maxent (true/false)")
+    parser.add_argument("--extrapolate", type=str, default=None, help="Allow extrapolation in Maxent (true/false)")
+    parser.add_argument("--do-clamp", type=str, default=None, help="Allow clamping in Maxent (true/false)")
+    parser.add_argument("--beta", type=float, default=None, help="Outlier margin (beta) for robust linear regression")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for classifiers")
+
     parser.add_argument("--lambda", type=float, default=0.1, dest="lambda_", help="Regularisation strength for ridge/linear reducers (default: 0.1)")
     parser.add_argument("--prefix", help="Prefix for output raster filenames (default: 'prediction_map')")
     parser.add_argument("--only-similarity", action="store_true", help="Only generate/download similarity map (skip masks)")
@@ -244,7 +281,7 @@ def main():
     parser.add_argument("--train-methods", help="Comma-separated list of methods to train during CV (e.g., 'centroid,ridge')")
     parser.add_argument("--eval-methods", help="Comma-separated list of methods to evaluate during CV (e.g., 'ensemble')")
     parser.add_argument("--cv-cache-dir", help="Directory for the inter-process CV cache file (default: system tempdir). Set to R's tempdir() to keep output folders clean.")
-    parser.add_argument("--year", type=int, help="Alpha Earth Mosaic year for mapping (2017-2025). Required.")
+    parser.add_argument("--year", type=int, help="Alpha Earth Mosaic year for mapping (2017-2025). Optional if present in input data.")
     
     args = parser.parse_args()
     sys.stderr.write(f"DEBUG: autoSDM CLI starting. Mode={args.mode}, Input={args.input}\n")
@@ -281,56 +318,34 @@ def main():
         sys.stderr.write(f"Background sampling complete. Results saved to {args.output}\n")
         sys.exit(0)
 
+        sys.stderr.write(f"Background sampling complete. Results saved to {args.output}\n")
+        sys.exit(0)
+
     elif args.mode == "analyze":
         df = pd.read_csv(args.input)
+        methods = [m.strip() for m in args.method.split(",")]
         
-        # Multi-Species Orchestration (Shifted from R to GEE)
-        if args.species_col and args.method == "ensemble":
-            import ee
-            try: ee.Initialize(project=args.project) if args.project else ee.Initialize()
-            except: pass
-            run_multi_species_pipeline(args, df, args.output)
-            sys.exit(0)
-
         import ee
         try:
             ee.Initialize(project=args.project) if args.project else ee.Initialize()
         except Exception:
             pass
 
-        from autoSDM.analyzer import analyze_method, GEE_CLASSIFIER_METHODS, GEE_REDUCER_METHODS
-
-        method = args.method
-
-        # Build method-specific hyperparameter dict
-        params = {
-            "n_trees": args.n_trees,
-            "min_leaf_population": args.min_leaf_population,
-            "bag_fraction": args.bag_fraction,
-            "shrinkage": args.shrinkage,
-            "max_nodes": args.max_nodes,
-            "variables_per_split": args.variables_per_split,
-            "lambda_": args.lambda_
-        }
-
-        if method == "ensemble":
-            run_multi_species_pipeline(args, df, args.output)
-            return
-
-        # ── Unified path for all classifiers, reducers, and local mean ────
-        needs_bg = method in GEE_CLASSIFIER_METHODS or method in GEE_REDUCER_METHODS
+        from autoSDM.analyzer import analyze_method, GEE_CLASSIFIER_METHODS, GEE_REDUCER_METHODS, get_embeddings_at_fc, EMB_COLS
+        
+        # 1. Background Generation (Once)
         has_absences = (df['present'] == 0).any() if 'present' in df.columns else False
+        needs_bg = any(m in GEE_CLASSIFIER_METHODS or m in GEE_REDUCER_METHODS for m in methods)
 
         if needs_bg and not has_absences:
-            sys.stderr.write(f"{method}: presence-only data — generating background points on GEE...\n")
+            sys.stderr.write("Generating background points on GEE for shared use...\n")
             aoi_geom = None
             if args.lat is not None and args.lon is not None and args.radius is not None:
                 aoi_geom = ee.Geometry.Point([args.lon, args.lat]).buffer(args.radius)
             elif args.aoi_path:
                 import geopandas as gpd
                 gdf = gpd.read_file(args.aoi_path)
-                if gdf.crs and gdf.crs.to_epsg() != 4326:
-                    gdf = gdf.to_crs(epsg=4326)
+                if gdf.crs and gdf.crs.to_epsg() != 4326: gdf = gdf.to_crs(epsg=4326)
                 aoi_geom = ee.Geometry(mapping(gdf.geometry.unary_union))
             else:
                 min_lat, max_lat = df['latitude'].min(), df['latitude'].max()
@@ -339,49 +354,96 @@ def main():
 
             from autoSDM.trainer import get_background_embeddings
             n_bg = args.count if args.count else len(df) * 10
-            sys.stderr.write(f"{method}: generating {n_bg} background points (Override: {bool(args.count)})...\n")
-            if 'type' not in df.columns:
-                df['type'] = df['present'].map({1: 'presence', 0: 'absence'})
             df_bg = get_background_embeddings(aoi_geom, n_points=n_bg, scale=args.scale, year=args.year)
             if not df_bg.empty:
                 df = pd.concat([df, df_bg], ignore_index=True)
 
-        res = analyze_method(df, method=method, params=params, scale=args.scale, year=args.year)
+        # 2. Master Sampling (Always on GEE)
+        sys.stderr.write(f"Master sampling embeddings on GEE for {len(df)} points...\n")
+        
+        # Optimization: Pre-calculate unique years to avoid GEE aggregate_array(...).getInfo()
+        distinct_years = [int(y) for y in df['year'].unique()]
+        
+        # Helper for chunked upload to avoid payload limits
+        def df_to_local_fc(sub_df):
+            feats = []
+            for _, r in sub_df.iterrows():
+                geom = ee.Geometry.Point([float(r['longitude']), float(r['latitude'])])
+                props = {'longitude': float(r['longitude']), 'latitude': float(r['latitude']), 
+                         'year': int(r['year']), 'present': float(r['present'])}
+                feats.append(ee.Feature(geom, props))
+            return ee.FeatureCollection(feats)
 
-        os.makedirs(os.path.dirname(args.output) if os.path.dirname(args.output) else ".", exist_ok=True)
-        res['clean_data'].to_csv(args.output, index=False)
+        # Chunk into 1000 pts to be safe
+        chunks = []
+        for i in range(0, len(df), 1000):
+            chunks.append(df_to_local_fc(df.iloc[i:i+1000]))
+        
+        base_fc = ee.FeatureCollection(chunks).flatten()
+        master_fc = get_embeddings_at_fc(base_fc, args.scale, 
+                                        properties=['longitude', 'latitude', 'year', 'present'],
+                                        years=distinct_years)
 
-        meta = {
-            "method":           method,
-            "params":           params,
-            "metrics":          res['metrics'],
-            "cv_results":       None,
-            "similarity_range": res.get('similarity_range'),
-            "similarities":     res.get('similarities'),
-        }
-        # Standardised model weights/intercept
-        if 'weights' in res:
-            meta['weights']   = res['weights']
-            meta['intercept'] = res['intercept']
+        # Drop local embeddings if they exist (never upload them)
+        df = df.drop(columns=EMB_COLS, errors='ignore')
 
-        # Classifier methods: store CSV path so get_prediction_image() can reload
-        # the full training data (with lat/lon + both classes) at map time
-        meta['training_csv'] = os.path.abspath(args.output)
-
-        if args.cv:
-            cv_results = get_cached_cv(args, df)
-            cv_res = cv_results.get('average', {})
-            meta["cv_results"] = cv_res.get(method)
-
-
-        if args.output.endswith('.csv'):
-            meta_path = args.output.replace('.csv', '.json')
-        else:
-            meta_path = args.output + ".json"
+        # 3. Method Loop
+        for method in methods:
+            params = {
+                "n_trees":             args.n_trees,
+                "min_leaf_population": args.min_leaf_population,
+                "bag_fraction":       args.bag_fraction,
+                "shrinkage":          args.shrinkage,
+                "max_nodes":          args.max_nodes,
+                "variables_per_split": args.variables_per_split,
+                "sampling_rate":      args.sampling_rate,
+                "loss_function":      args.loss_function,
+                "beta_multiplier":    args.beta_multiplier,
+                "output_format":      args.output_format,
+                "auto_feature":       str2bool(args.auto_feature),
+                "linear":             str2bool(args.linear),
+                "quadratic":          str2bool(args.quadratic),
+                "product":            str2bool(args.product),
+                "threshold":          str2bool(args.threshold),
+                "hinge":              str2bool(args.hinge),
+                "extrapolate":        str2bool(args.extrapolate),
+                "do_clamp":           str2bool(args.do_clamp),
+                "beta":               args.beta,
+                "seed":               args.seed,
+                "lambda_":            args.lambda_
+            }
             
-        with open(meta_path, 'w') as f:
-            json.dump(meta, f)
-        sys.stderr.write(f"Analysis complete. Results saved to {args.output} and {meta_path}\n")
+            sys.stderr.write(f"--- Running Analysis: {method} ---\n")
+            res = analyze_method(df, method=method, params=params, scale=args.scale, year=args.year, sampled_fc=master_fc)
+
+            # Save per-method files
+            m_clean = "".join(c for c in method if c.isalnum())
+            m_output = args.output
+            if len(methods) > 1:
+                m_base, m_ext = os.path.splitext(args.output)
+                m_output = f"{m_base}_{m_clean}{m_ext}"
+            
+            os.makedirs(os.path.dirname(m_output) if os.path.dirname(m_output) else ".", exist_ok=True)
+            res['clean_data'].to_csv(m_output, index=False)
+            
+            meta = {
+                "method":           method,
+                "params":           params,
+                "metrics":          res['metrics'],
+                "cv_results":       None,
+                "similarity_range": res.get('similarity_range'),
+                "similarities":     res.get('similarities'),
+                "training_csv":     os.path.abspath(m_output)
+            }
+            if 'weights' in res:
+                meta['weights'] = res['weights']
+                meta['intercept'] = res['intercept']
+            
+            meta_path = m_output.replace('.csv', '.json')
+            with open(meta_path, 'w') as f:
+                json.dump(meta, f)
+            
+            sys.stderr.write(f"Method {method} complete: results in {m_output}\n")
 
     elif args.mode == "predict":
         # Point Prediction Mode
@@ -391,23 +453,49 @@ def main():
         try: ee.Initialize(project=args.project) if args.project else ee.Initialize()
         except: pass
             
-        # 2. Load Metadata
-        with open(args.meta[0]) as f:
-            meta = json.load(f)
-        
-        method = meta.get('method', 'centroid')
-        
-        # 4. Point Prediction (Always on GEE)
-        training_csv = meta.get('training_csv')
-        if training_csv and os.path.exists(training_csv):
-            sys.stderr.write(f"Predicting {method} similarities on GEE...\n")
-            df_train = pd.read_csv(training_csv)
-            from autoSDM.analyzer import predict_method
-            sims = predict_method(df_train, df, method, params=meta.get('params'), scale=args.scale, year=args.year)
-            df['similarity'] = sims
-        else:
-            sys.stderr.write(f"Warning: No training_csv found for {method}. Similarity scores will be NaN.\n")
-            df['similarity'] = np.nan
+        from autoSDM.analyzer import predict_method
+        test_shared_fc = None
+        all_metrics = {}
+
+        for mp in args.meta:
+            with open(mp) as f:
+                meta = json.load(f)
+            
+            method = meta.get('method', 'centroid')
+            training_csv = meta.get('training_csv')
+            
+            if training_csv and os.path.exists(training_csv):
+                sys.stderr.write(f"Predicting {method} similarities on GEE (reusing test sample)...\n")
+                df_train = pd.read_csv(training_csv)
+                
+                # Predict (will create test_shared_fc on first run, then reuse)
+                res_pred = predict_method(
+                    df_train, df, method, 
+                    params=meta.get('params'), 
+                    scale=args.scale, 
+                    year=args.year,
+                    test_sampled=test_shared_fc
+                )
+                
+                # Update shared sample for next method
+                if test_shared_fc is None:
+                    test_shared_fc = res_pred.get('test_sampled')
+
+                col_name = f'similarity_{method}' if len(args.meta) > 1 else 'similarity'
+                df[col_name] = res_pred['similarities']
+                
+                if res_pred.get('metrics'):
+                    all_metrics[method] = res_pred['metrics']
+            else:
+                sys.stderr.write(f"Warning: No training_csv found for {method}.\n")
+                col_name = f'similarity_{method}' if len(args.meta) > 1 else 'similarity'
+                df[col_name] = np.nan
+
+        # Save testing metrics
+        if all_metrics:
+            metrics_path = args.output.replace('.csv', '.metrics.json')
+            with open(metrics_path, 'w') as f:
+                json.dump(all_metrics, f, indent=4)
             
 
 
@@ -938,7 +1026,7 @@ def main():
                     results['zip_file'] = os.path.abspath(zip_path)
             
             if calculated_metrics:
-                results['metrics'] = calculated_metrics
+                results['metrics'] = {"training": calculated_metrics}
             
             if cv_res_data:
                 results['cv_results'] = cv_res_data

@@ -1,5 +1,67 @@
 import numpy as np
 import pandas as pd
+import ee
+import sys
+import math
+
+ASSET_PATH = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
+EMB_COLS   = [f"A{i:02d}" for i in range(64)]
+
+def get_embedding_image(year, scale):
+    """
+    Standardized retrieval of the Alpha Earth embedding mosaic for a given year.
+    """
+    img = (
+        ee.ImageCollection(ASSET_PATH)
+        .filter(ee.Filter.calendarRange(int(year), int(year), "year"))
+        .mosaic()
+        .select(EMB_COLS)
+    )
+
+    if scale > 10:
+        
+        # Calculate the exact maxPixels needed with a 20% safety buffer
+        pixel_ratio = (scale / 10) ** 2
+        safe_max_pixels = math.ceil(pixel_ratio * 1.2)
+        
+        # Apply the mean reducer and force the new grid
+        img = img.setDefaultProjection('EPSG:3857', None, 10).reduceResolution(
+            reducer=ee.Reducer.mean(),
+            maxPixels=safe_max_pixels
+        ).reproject(
+            crs='EPSG:3857', 
+            scale=scale
+        )
+    
+    return img
+
+def get_embeddings_at_fc(fc, scale, properties=None, geometries=False, years=None):
+    """
+    Standardized sampling of embeddings for a FeatureCollection that has a 'year' property.
+    Loops over years in the FC and returns a flattened, sampled FeatureCollection.
+    If 'years' list is provided, it skips the expensive server-side aggregation.
+    """
+    if years is None:
+        # Warning: This getInfo() will fail for large local FeatureCollections (>10MB payload)
+        years = fc.aggregate_array('year').distinct().getInfo()
+    
+    sampled_fcs = []
+    for yr in years:
+        yr_fc  = fc.filter(ee.Filter.eq("year", int(yr)))
+        yr_img = get_embedding_image(yr, scale=scale)
+        
+        sampled = yr_img.sampleRegions(
+            collection=yr_fc,
+            properties=properties or None,
+            scale=scale,
+            geometries=geometries,
+            tileScale=16
+        ).filter(ee.Filter.notNull(["A00"]))
+        sampled_fcs.append(sampled)
+        
+    return ee.FeatureCollection(sampled_fcs).flatten()
+
+
 
 
 
@@ -142,22 +204,45 @@ def calculate_classifier_metrics(scores_pos, scores_neg):
 # Methods that use ee.Classifier.*  (output mode: PROBABILITY)
 GEE_CLASSIFIER_METHODS = {
     "rf":               lambda p: _build_classifier("smileRandomForest", {
-                                "numberOfTrees": p.get("n_trees", 100),
+                                "numberOfTrees":     p.get("n_trees", 100),
                                 "variablesPerSplit": p.get("variables_per_split", None),
                                 "minLeafPopulation": p.get("min_leaf_population", 1),
-                                "bagFraction": p.get("bag_fraction", 0.5),
-                                "seed": 42
+                                "bagFraction":       p.get("bag_fraction", 0.5),
+                                "maxNodes":          p.get("max_nodes", None),
+                                "seed":              p.get("seed", 42)
                             }),
     "gbt":              lambda p: _build_classifier("smileGradientTreeBoost", {
-                                "numberOfTrees": p.get("n_trees", 100),
-                                "shrinkage": p.get("shrinkage", 0.1),
-                                "maxNodes": p.get("max_nodes", None)
+                                "numberOfTrees":     p.get("n_trees", 100),
+                                "shrinkage":         p.get("shrinkage", 0.005), # GEE default is 0.005
+                                "samplingRate":      p.get("sampling_rate", 1.0),
+                                "maxNodes":          p.get("max_nodes", None),
+                                "lossFunction":      p.get("loss_function", "LeastSquares"),
+                                "seed":              p.get("seed", 42)
                             }),
     "cart":             lambda p: _build_classifier("smileCart", {
-                                "maxNodes": p.get("max_nodes", None),
+                                "maxNodes":          p.get("max_nodes", None),
                                 "minLeafPopulation": p.get("min_leaf_population", 1)
                             }),
-    "maxent":           lambda p: _build_classifier("amnhMaxent",            p),
+    "maxent":           lambda p: _build_classifier("amnhMaxent", {
+                                "betaMultiplier":    p.get("beta_multiplier", 1.0),
+                                "outputFormat":      p.get("output_format", "cloglog"),
+                                "autoFeature":       p.get("auto_feature", True),
+                                "linear":            p.get("linear", True),
+                                "quadratic":         p.get("quadratic", True),
+                                "product":           p.get("product", True),
+                                "threshold":         p.get("threshold", False),
+                                "hinge":             p.get("hinge", True),
+                                "extrapolate":       p.get("extrapolate", False),
+                                "doClamp":           p.get("do_clamp", True),
+                                "seed":              p.get("seed", 0)
+                            }),
+    "svm":              lambda p: _build_classifier("libsvm", {
+                                "decisionProcedure": p.get("decision_procedure", "Voting"),
+                                "svmType":           p.get("svm_type", "C_SVC"),
+                                "kernelType":        p.get("kernel_type", "RBF"),
+                                "cost":              p.get("cost", 1.0),
+                                "gamma":             p.get("gamma", None)
+                            }),
 }
 
 # Methods that use ee.Reducer.* via reduceColumns on an FC
@@ -168,6 +253,7 @@ GEE_REDUCER_METHODS = {
     "centroid":       ("mean",                   "presence"),
     "ridge":          ("ridgeRegression",        "binary"),
     "linear":         ("linearRegression",       "binary"),
+    "robust_linear":  ("robustLinearRegression", "binary"),
 }
 
 ALL_METHODS = list(GEE_CLASSIFIER_METHODS) + list(GEE_REDUCER_METHODS)
@@ -198,7 +284,7 @@ def _build_classifier(gee_name, params):
 
 
 def analyze_method(df, method, params=None, class_property="present",
-                   scale=None, year=None):
+                   scale=None, year=None, sampled_fc=None):
     """
     Unified GEE train+score function for any supported method.
 
@@ -220,14 +306,8 @@ def analyze_method(df, method, params=None, class_property="present",
     """
     if scale is None:
         raise ValueError("analyze_method: 'scale' (resolution in meters) must be explicitly provided.")
-    if year is None:
-        raise ValueError("analyze_method: 'year' must be explicitly provided.")
-    import ee, sys
+    # year is optional if present in df
     params = params or {}
-    EMB_COLS   = [f"A{i:02d}" for i in range(64)]
-
-
-    ASSET_PATH = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
     MP_CHUNK   = 5000
 
     # ── 1. Validate / clean input ─────────────────────────────────────────
@@ -268,78 +348,63 @@ def analyze_method(df, method, params=None, class_property="present",
         LABEL_COL = "label"
         df_clean[LABEL_COL] = np.where(df_clean[class_property] == 1, 1, 0).astype(int)
 
-    # ── 3. Upload coordinates + labels as flat lists to avoid AST limits ─────
-    sys.stderr.write(
-        f"{method}: uploading {len(df_clean):,} coordinate pairs to GEE "
-        f"(coordinates + labels only) ...\n"
-    )
-    
-    cols_to_upload = ["longitude", "latitude", "year", LABEL_COL, "case_weight"]
-    
-    data_flat = df_clean[cols_to_upload].copy()
-    if class_property != LABEL_COL:
-        data_flat[class_property] = df_clean[class_property]
-        cols_to_upload.append(class_property)
-        
-    data_list = data_flat.values.tolist()
-    
-    chunk_size = 5000
-    fc_chunks = []
-    
-    for i in range(0, len(data_list), chunk_size):
-        chunk = data_list[i:i+chunk_size]
-        ee_chunk = ee.List(chunk)
-        
-        def make_feature(row):
-            r = ee.List(row)
-            lon = ee.Number(r.get(0))
-            lat = ee.Number(r.get(1))
-            yr  = ee.Number(r.get(2))
-            lbl = ee.Number(r.get(3))
-            w   = ee.Number(r.get(4))
-            
-            geom = ee.Geometry.Point([lon, lat])
-            
-            props = ee.Dictionary({
-                'longitude': lon,
-                'latitude': lat,
-                'year': yr,
-                LABEL_COL: lbl.int() if is_classifier else lbl.float(),
-                'case_weight': w.float()
-            })
-            
-            if class_property != LABEL_COL:
-                props = props.set(class_property, r.get(5))
-                
-            return ee.Feature(geom, props)
-        
-        fc_chunks.append(ee.FeatureCollection(ee_chunk.map(make_feature)))
-
-    upload_fc = ee.FeatureCollection(fc_chunks).flatten()
-
-
-    # ── 4. Sample Alpha Earth embeddings server-side (once) ───────────────
-    sys.stderr.write(f"{method}: sampling Alpha Earth embeddings on GEE ...\n")
-    years = sorted(df_clean["year"].unique())
-    sampled_fcs = []
-    for yr in years:
-        yr_fc  = upload_fc.filter(ee.Filter.eq("year", int(yr)))
-        yr_img = (
-            ee.ImageCollection(ASSET_PATH)
-            .filter(ee.Filter.calendarRange(int(yr), int(yr), "year"))
-            .mosaic()
-            .select(EMB_COLS)
+    # --- 3. Determine if we need to sample Alpha Earth embeddings ---
+    if sampled_fc is not None:
+        sys.stderr.write(f"{method}: using providing sampled FeatureCollection (server-side)...\n")
+    else:
+        # ── 3. Upload coordinates + labels to GEE for sampling ────────────────
+        sys.stderr.write(
+            f"{method}: uploading {len(df_clean):,} coordinate pairs to GEE "
+            f"(coordinates + labels only) ...\n"
         )
-        sampled = yr_img.sampleRegions(
-            collection=yr_fc,
-            properties=[LABEL_COL, "longitude", "latitude", "year", class_property, "case_weight"],
-            scale=scale,
-            geometries=False,
-            tileScale=16,
-        ).filter(ee.Filter.notNull(["A00"]))
-        sampled_fcs.append(sampled)
+            
+        cols_to_upload = ["longitude", "latitude", "year", LABEL_COL, "case_weight"]
+        
+        data_flat = df_clean[cols_to_upload].copy()
+        if class_property != LABEL_COL:
+            data_flat[class_property] = df_clean[class_property]
+            cols_to_upload.append(class_property)
+            
+        data_list = data_flat.values.tolist()
+        
+        chunk_size = 5000
+        fc_chunks = []
+        
+        for i in range(0, len(data_list), chunk_size):
+            chunk = data_list[i:i+chunk_size]
+            ee_chunk = ee.List(chunk)
+            
+            def make_feature(row):
+                r = ee.List(row)
+                lon = ee.Number(r.get(0))
+                lat = ee.Number(r.get(1))
+                yr  = ee.Number(r.get(2))
+                lbl = ee.Number(r.get(3))
+                w   = ee.Number(r.get(4))
+                
+                # Store lat/lon in props for retrieval
+                props = ee.Dictionary({
+                    'longitude': lon,
+                    'latitude': lat,
+                    'year': yr,
+                    LABEL_COL: lbl.int() if is_classifier else lbl.float(),
+                    'case_weight': w.float()
+                })
+                
+                if class_property != LABEL_COL:
+                    props = props.set(class_property, r.get(5))
+                    
+                return ee.Feature(ee.Geometry.Point([lon, lat]), props)
+            
+            fc_chunks.append(ee.FeatureCollection(ee_chunk.map(make_feature)))
 
-    sampled_fc = ee.FeatureCollection(sampled_fcs).flatten()
+        upload_fc = ee.FeatureCollection(fc_chunks).flatten()
+
+        # ── 4. Sample Alpha Earth embeddings server-side (once) ───────────────
+        sys.stderr.write(f"{method}: sampling Alpha Earth embeddings on GEE ...\n")
+        
+        sample_props = [LABEL_COL, "longitude", "latitude", "year", class_property, "case_weight"]
+        sampled_fc = get_embeddings_at_fc(upload_fc, scale, properties=sample_props)
 
 
 
@@ -367,22 +432,22 @@ def analyze_method(df, method, params=None, class_property="present",
         # Maxent uses 'probability' property, others use 'classification'
         score_col = "probability" if method == "maxent" else "classification"
         
-        # Retrieve probability scores and metadata
+        # Retrieve probability scores and metadata (including embeddings for sidecar CSV)
         result = trained.reduceColumns(
-            ee.Reducer.toList().repeat(5),
-            selectors=[score_col, LABEL_COL, "longitude", "latitude", "year"]
+            ee.Reducer.toList().repeat(5 + 64),
+            selectors=[score_col, LABEL_COL, "longitude", "latitude", "year"] + EMB_COLS
         ).getInfo()
 
         if not result["list"] or not result["list"][0]:
             raise ValueError(f"analyze_method: GEE classifier '{method}' returned no results. "
                              "This can happen if training fails or if all test points are in masked pixels.")
 
-        sims   = np.array(result["list"][0], dtype=float)
-        
-        labels = np.array(result["list"][1], dtype=float)
-        lons   = np.array(result["list"][2], dtype=float)
-        lats   = np.array(result["list"][3], dtype=float)
-        yrs    = np.array(result["list"][4], dtype=int)
+        sims    = np.array(result["list"][0], dtype=float)
+        labels  = np.array(result["list"][1], dtype=float)
+        lons    = np.array(result["list"][2], dtype=float)
+        lats    = np.array(result["list"][3], dtype=float)
+        yrs     = np.array(result["list"][4], dtype=int)
+        embs_res = np.array(result["list"][5:], dtype=float).T
 
         weights   = None
         intercept = 0.0
@@ -470,7 +535,10 @@ def analyze_method(df, method, params=None, class_property="present",
 
                 weighted_fc = sampled_fc.map(weight_inputs)
                 
-                reducer = getattr(ee.Reducer, reducer_name)(numX=65, numY=1)
+                if reducer_name == "robustLinearRegression":
+                    reducer = getattr(ee.Reducer, reducer_name)(numX=65, numY=1, beta=params.get("beta", None))
+                else:
+                    reducer = getattr(ee.Reducer, reducer_name)(numX=65, numY=1)
                 selectors = ["w_constant"] + [f"w_{c}" for c in EMB_COLS] + ["w_label"]
 
                 sys.stderr.write(f"{method}: running ee.Reducer.{reducer_name} (weighted 1:1)...\n")
@@ -541,17 +609,18 @@ def analyze_method(df, method, params=None, class_property="present",
 
         scored_fc = sampled_fc.map(score_feat)
         
-        # Retrieve scores and labels
+        # Retrieve scores and labels (including embeddings for sidecar CSV)
         res = scored_fc.reduceColumns(
-            ee.Reducer.toList().repeat(5),
-            selectors=['similarity', LABEL_COL, "longitude", "latitude", "year"]
+            ee.Reducer.toList().repeat(5 + 64),
+            selectors=['similarity', LABEL_COL, "longitude", "latitude", "year"] + EMB_COLS
         ).getInfo()
         
-        sims   = np.array(res["list"][0], dtype=float)
-        labels = np.array(res["list"][1], dtype=float)
-        lons   = np.array(res["list"][2], dtype=float)
-        lats   = np.array(res["list"][3], dtype=float)
-        yrs    = np.array(res["list"][4], dtype=int)
+        sims    = np.array(res["list"][0], dtype=float)
+        labels  = np.array(res["list"][1], dtype=float)
+        lons    = np.array(res["list"][2], dtype=float)
+        lats    = np.array(res["list"][3], dtype=float)
+        yrs     = np.array(res["list"][4], dtype=int)
+        embs_res = np.array(res["list"][5:], dtype=float).T
 
     # ── 6. Compute metrics ────────────────────────────────────────────────
     if is_reducer and GEE_REDUCER_METHODS[method][1] == "binary":
@@ -566,19 +635,23 @@ def analyze_method(df, method, params=None, class_property="present",
         f"AUC-ROC={metrics.get('auc_roc', 0.5):.4f}\n"
     )
 
-    clean_data = pd.DataFrame({
+    clean_dict = {
         class_property: (labels == 1).astype(int),
         "longitude":    lons,
         "latitude":     lats,
         "year":         yrs,
         "similarity":   sims,
-    })
+    }
+    for i, col in enumerate(EMB_COLS):
+        clean_dict[col] = embs_res[:, i]
+        
+    clean_data = pd.DataFrame(clean_dict)
 
 
     result_dict = {
         "method":           method,
         "params":           params,
-        "metrics":          metrics,
+        "metrics":          {"training": metrics},
         "similarity_range": [float(sims.min()), float(sims.max())],
         "similarities":     sims.tolist(),
         "clean_data":       clean_data,
@@ -590,18 +663,16 @@ def analyze_method(df, method, params=None, class_property="present",
     return result_dict
 
 
-def predict_method(train_df, test_df, method, params=None, class_property="present", scale=None, year=None):
+def predict_method(train_df, test_df, method, params=None, class_property="present", scale=None, year=None, test_sampled=None):
     """
-    Train a model on train_df (coordinates only) and predict on test_df (coordinates + optional embeddings).
-    This is used for accurate point predictions of GEE classifiers.
+    Train a model on train_df (coordinates only) and predict on test_df (coordinates only).
+    The coordinates are always sampled/trained on the GEE server.
+    'test_sampled' can be provided to reuse a FeatureCollection already on the server.
     """
     if scale is None:
         raise ValueError("predict_method: 'scale' (resolution in meters) must be explicitly provided.")
-    if year is None:
-        raise ValueError("predict_method: 'year' must be explicitly provided.")
-    import ee, sys
+    # Year is optional if present in dfs
     params = params or {}
-    EMB_COLS   = [f"A{i:02d}" for i in range(64)]
 
     is_classifier = method in GEE_CLASSIFIER_METHODS
     is_reducer    = method in GEE_REDUCER_METHODS
@@ -650,6 +721,7 @@ def predict_method(train_df, test_df, method, params=None, class_property="prese
             if 'case_weight' in df.columns:
                 props['case_weight'] = float(r['case_weight'])
             if label_col: props[label_col] = float(r[label_col]) if is_reducer else int(r[label_col])
+            
             features.append(ee.Feature(geom, props))
         return ee.FeatureCollection(features)
 
@@ -661,39 +733,21 @@ def predict_method(train_df, test_df, method, params=None, class_property="prese
             chunks.append(df_to_fc(chunk, label_col))
         return ee.FeatureCollection(chunks).flatten()
 
-    train_fc = upload_large_fc(train_clean, LABEL_COL)
-    test_fc  = upload_large_fc(test_df)
-
-    # 3. Sample Training Data on GEE
+    # 3. Sample Training Data (Always on GEE)
     sys.stderr.write(f"predict_method({method}): sampling training embeddings on GEE...\n")
-    years = sorted(train_clean["year"].unique()) if 'year' in train_clean.columns else [int(year)] if year is not None else None
-    if not years:
-        # Fallback if no year provided, use a default (though caller should have validated)
-        raise ValueError(f"predict_method({method}): 'year' must be provided for sampling.")
-    
-    sampled_fcs = []
-    for yr in years:
-        yr_fc  = train_fc.filter(ee.Filter.eq("year", int(yr)))
-        yr_img = ee.ImageCollection("GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL")\
-            .filter(ee.Filter.calendarRange(int(yr), int(yr), 'year'))\
-            .mosaic().select(EMB_COLS)
-        sampled_fcs.append(yr_img.sampleRegions(collection=yr_fc, properties=[LABEL_COL, "case_weight"], scale=scale, geometries=False, tileScale=16))
-    train_sampled = ee.FeatureCollection(sampled_fcs).flatten()
+    train_fc = upload_large_fc(train_clean.drop(columns=EMB_COLS, errors='ignore'), LABEL_COL)
+    train_years = [int(y) for y in train_clean['year'].unique()]
+    train_sampled = get_embeddings_at_fc(train_fc, scale, properties=[LABEL_COL, "case_weight"], years=train_years)
 
-    # 4. Sample Test Data on GEE
-    sys.stderr.write(f"predict_method({method}): sampling test embeddings on GEE...\n")
-    years = sorted(test_df["year"].unique()) if 'year' in test_df.columns else [int(year)] if year is not None else None
-    if not years:
-         raise ValueError(f"predict_method({method}): 'year' must be provided for sampling.")
-         
-    sampled_fcs = []
-    for yr in years:
-        yr_fc  = test_fc.filter(ee.Filter.eq("year", int(yr)))
-        yr_img = ee.ImageCollection("GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL")\
-            .filter(ee.Filter.calendarRange(int(yr), int(yr), 'year'))\
-            .mosaic().select(EMB_COLS)
-        sampled_fcs.append(yr_img.sampleRegions(collection=yr_fc, properties=['_point_id'], scale=scale, geometries=False, tileScale=16))
-    test_sampled = ee.FeatureCollection(sampled_fcs).flatten()
+    # 4. Sample Test Data (Always on GEE, skip if provided)
+    if test_sampled is None:
+        sys.stderr.write(f"predict_method({method}): sampling test embeddings on GEE...\n")
+        test_df_for_upload = test_df.drop(columns=EMB_COLS, errors='ignore')
+        test_fc  = upload_large_fc(test_df_for_upload)
+        test_years = [int(y) for y in test_df_for_upload['year'].unique()]
+        test_sampled = get_embeddings_at_fc(test_fc, scale, properties=['_point_id'], years=test_years)
+    else:
+        sys.stderr.write(f"predict_method({method}): reusing sampled test data from server...\n")
 
     # 5. Train & Predict
     if is_classifier:
@@ -794,14 +848,24 @@ def predict_method(train_df, test_df, method, params=None, class_property="prese
 
     # 6. Reconstruct predictions in same order
     out_dict = dict(results['list'])
-    
-    sims = []
+    sims_list = []
     for pid in test_df['_point_id']:
         val = out_dict.get(pid, np.nan)
-        if val is not None and not np.isnan(val):
-            val = float(val)
-        else:
-            val = np.nan
-        sims.append(val)
+        sims_list.append(float(val) if (val is not None and not np.isnan(float(val))) else np.nan)
+    sims = np.array(sims_list)
+    
+    # 7. Calculate testing metrics if labels are present
+    metrics = None
+    if class_property in test_df.columns:
+        valid_test = test_df.dropna(subset=[class_property])
+        if not valid_test.empty:
+            test_pos = sims[valid_test[class_property] == 1]
+            test_neg = sims[valid_test[class_property] == 0]
+            if len(test_pos) > 0:
+                metrics = calculate_classifier_metrics(test_pos, test_neg)
 
-    return np.array(sims)
+    return {
+        "similarities": sims,
+        "metrics": {"testing": metrics} if metrics else {},
+        "test_sampled": test_sampled
+    }

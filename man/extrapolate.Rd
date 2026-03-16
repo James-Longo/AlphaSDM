@@ -8,14 +8,15 @@ extrapolate(
   df,
   analysis_meta_path,
   output_dir = getwd(),
-  scale = 10,
-  coarse_meta_path = NULL,
+  scale = NULL,
+  aoi_year = NULL,
   view = FALSE,
   gcs_bucket = NULL,
   wait = FALSE,
   zip = FALSE,
   python_path = NULL,
-  gee_project = NULL
+  gee_project = NULL,
+  verbose_timer = FALSE
 )
 }
 \arguments{
@@ -27,13 +28,13 @@ extrapolate(
 
 \item{scale}{Resolution in meters for the output map. Defaults to 10.}
 
-\item{coarse_meta_path}{Optional. Path to metadata for 1km filtering. If provided, analysis is restricted to 1km pixels > 5th percentile.}
-
 \item{gcs_bucket}{Optional. GCS bucket name for server-side export. If provided, bypasses local download.}
 
 \item{wait}{Logical. If TRUE, waits for the GCS export task(s) to complete and shows progress updates.}
 
 \item{zip}{Logical. If TRUE, zips the output rasters into a single archive (local mode only).}
+
+\item{coarse_meta_path}{Optional. Path to metadata for 1km filtering. If provided, analysis is restricted to 1km pixels > 5th percentile.}
 }
 \value{
 A list containing the paths to the generated map files, HTML, or GCS export details.

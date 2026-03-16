@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import requests
+from autoSDM.analyzer import get_embedding_image, get_embeddings_at_fc, EMB_COLS
 
 def merge_rasters(file_list, output_filename):
     """
@@ -73,7 +74,7 @@ def merge_rasters(file_list, output_filename):
         for src in src_files:
             src.close()
 
-def generate_prediction_map(weights, df=None, aoi=None, year=None):
+def generate_prediction_map(weights, scale, df=None, aoi=None, year=None):
     """
     Returns:
         image: ee.Image with similarity band.
@@ -81,15 +82,9 @@ def generate_prediction_map(weights, df=None, aoi=None, year=None):
     """
     if year is None:
         raise ValueError("generate_prediction_map: 'year' must be explicitly provided.")
-    asset_path = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
-    emb_cols = [f"A{i:02d}" for i in range(64)]
-    
-    # Use specified year (defaults to 2025)
+    # Use specified year
     sys.stderr.write(f"Using {year} Alpha Earth Mosaic for mapping...\n")
-    img = ee.ImageCollection(asset_path)\
-        .filter(ee.Filter.calendarRange(year, year, 'year'))\
-        .mosaic()\
-        .select(emb_cols)
+    img = get_embedding_image(year, scale=scale)
         
     if aoi is None:
         if df is None:
@@ -100,7 +95,7 @@ def generate_prediction_map(weights, df=None, aoi=None, year=None):
         aoi = ee.Geometry.Rectangle([min_lon - 0.01, min_lat - 0.01, max_lon + 0.01, max_lat + 0.01])
     
     # Create weights constant image with matching band names for clean multiplication
-    weights_img = ee.Image.constant(list(weights)).rename(emb_cols)
+    weights_img = ee.Image.constant(list(weights)).rename(EMB_COLS)
     
     # Calculate Dot Product (Cosine Similarity)
     dot_product = img.multiply(weights_img).reduce(ee.Reducer.sum()).rename('similarity')
@@ -130,8 +125,6 @@ def get_prediction_image(meta, df=None, aoi=None, year=None, scale=None):
     from autoSDM.analyzer import GEE_CLASSIFIER_METHODS, GEE_REDUCER_METHODS
 
     method     = meta.get('method', 'centroid')
-    emb_cols   = [f"A{i:02d}" for i in range(64)]
-    asset_path = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
 
     # ── Reducer methods: dot-product image from stored weights ────────────
     if method in GEE_REDUCER_METHODS or method == "mean":
@@ -140,13 +133,11 @@ def get_prediction_image(meta, df=None, aoi=None, year=None, scale=None):
         if weights is None:
             raise ValueError(f"get_prediction_image: no 'weights' in meta for method '{method}'.")
 
-        img = (
-            ee.ImageCollection(asset_path)
-            .filter(ee.Filter.calendarRange(year, year, 'year'))
-            .mosaic()
-            .select(emb_cols)
-        )
-        weights_img = ee.Image.constant(list(weights)).rename(emb_cols)
+        img = get_embedding_image(year, scale=scale)
+        
+        
+            
+        weights_img = ee.Image.constant(list(weights)).rename(EMB_COLS)
         prediction  = img.multiply(weights_img).reduce(ee.Reducer.sum()).add(intercept).rename('similarity')
 
         if aoi is None:
@@ -194,15 +185,9 @@ def get_prediction_image(meta, df=None, aoi=None, year=None, scale=None):
     upload_fc = ee.FeatureCollection(gee_features)
 
     sys.stderr.write(f"{method}: sampling embeddings for map generation ...\n")
-    yr_img = (
-        ee.ImageCollection(asset_path)
-        .filter(ee.Filter.calendarRange(year, year, 'year'))
-        .mosaic()
-        .select(emb_cols)
-    )
-    sampled_fc = yr_img.sampleRegions(
-        collection=upload_fc, properties=[LABEL_COL], scale=scale, geometries=False
-    ).filter(ee.Filter.notNull(["A00"]))
+    yr_img = get_embedding_image(year, scale=scale)
+
+    sampled_fc = get_embeddings_at_fc(upload_fc, scale, properties=[LABEL_COL])
 
     # ── Verify both classes are present after sampling ────────────────────
     class_counts = sampled_fc.aggregate_histogram(LABEL_COL).getInfo()
@@ -212,7 +197,7 @@ def get_prediction_image(meta, df=None, aoi=None, year=None, scale=None):
 
     params = meta.get('params', {})
     clf    = GEE_CLASSIFIER_METHODS[method](params)
-    trained_clf = clf.train(features=sampled_fc, classProperty=LABEL_COL, inputProperties=emb_cols)
+    trained_clf = clf.train(features=sampled_fc, classProperty=LABEL_COL, inputProperties=EMB_COLS)
 
 
     sys.stderr.write(f"{method}: classifying image ...\n")

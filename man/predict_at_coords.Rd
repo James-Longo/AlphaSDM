@@ -7,10 +7,11 @@
 predict_at_coords(
   df,
   analysis_meta_path,
-  scale = 10,
+  scale = NULL,
+  aoi_year = NULL,
   python_path = NULL,
   gee_project = NULL,
-  coarse_meta_path = NULL
+  verbose_timer = FALSE
 )
 }
 \arguments{
@@ -24,7 +25,7 @@ predict_at_coords(
 
 \item{gee_project}{Optional. Google Cloud Project ID.}
 
-\item{coarse_meta_path}{Optional. Path to 1km coarse metadata for filtering.}
+\item{verbose_timer}{Optional. Boolean whether to show real-time progress.}
 }
 \value{
 A data frame with original data plus a `similarity` column.

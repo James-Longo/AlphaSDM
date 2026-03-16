@@ -13,7 +13,7 @@
 #' @param zip Logical. If TRUE, zips the output rasters into a single archive (local mode only).
 #' @return A list containing the paths to the generated map files, HTML, or GCS export details.
 #' @keywords internal
-extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NULL, year = NULL, view = FALSE, gcs_bucket = NULL, wait = FALSE, zip = FALSE, python_path = NULL, gee_project = NULL) {
+extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NULL, aoi_year = NULL, view = FALSE, gcs_bucket = NULL, wait = FALSE, zip = FALSE, python_path = NULL, gee_project = NULL, verbose_timer = FALSE) {
   # Resolve python path using the centralized helper
   py_exe <- resolve_python_path(python_path)
 
@@ -35,15 +35,30 @@ extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NU
     "--output", shQuote(output_json),
     "--meta", shQuote(analysis_meta_path),
     "--scale", scale,
-    "--year", year
+    "--year", aoi_year
   )
 
   if (!is.null(gee_project) && gee_project != "") {
     args <- c(args, "--project", shQuote(gee_project))
+  } else {
+    # Option B: Try to load from local config if not provided explicitly
+    config_file <- file.path(Sys.getenv("HOME"), ".config", "autoSDM", "config.json")
+    if (file.exists(config_file)) {
+      try(
+        {
+          conf <- jsonlite::fromJSON(config_file)
+          if (!is.null(conf$gee_project) && conf$gee_project != "") {
+            args <- c(args, "--project", shQuote(conf$gee_project))
+          }
+        },
+        silent = TRUE
+      )
+    }
   }
 
 
-  if (exists("sa_json_key") && !is.null(sa_json_key) && sa_json_key != "") {
+  sa_json_key <- getOption("autoSDM.sa_json_key")
+  if (!is.null(sa_json_key) && sa_json_key != "") {
     args <- c(args, "--key", shQuote(sa_json_key))
   }
 
@@ -61,7 +76,7 @@ extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NU
     args <- c(args, "--zip")
   }
 
-  status <- system2(py_exe, args = args, stdout = "", stderr = "")
+  status <- .run_command_with_timer(py_exe, args = args, label = "Mapping predictions", active = verbose_timer)
 
   if (status != 0) {
     unlink(tmp_in)
@@ -130,33 +145,60 @@ extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NU
 #' @param scale Resolution in meters for the Alpha Earth embeddings. Defaults to 10.
 #' @param python_path Optional. Path to Python executable.
 #' @param gee_project Optional. Google Cloud Project ID.
-#' @param coarse_meta_path Optional. Path to 1km coarse metadata for filtering.
+#' @param verbose_timer Optional. Boolean whether to show real-time progress.
 #' @return A data frame with original data plus a `similarity` column.
 #' @export
-predict_at_coords <- function(df, analysis_meta_path, scale = NULL, year = NULL, python_path = NULL, gee_project = NULL) {
+predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = NULL, python_path = NULL, gee_project = NULL, verbose_timer = FALSE) {
   py_exe <- resolve_python_path(python_path)
 
   if (is.null(py_exe) || !file.exists(py_exe)) {
     stop("Could not find a valid Python environment.")
   }
 
+  # Ensure analysis_meta_paths is a vector
+  analysis_meta_paths <- as.character(analysis_meta_paths)
+
   tmp_in <- tempfile(fileext = ".csv")
   tmp_out <- tempfile(fileext = ".csv")
   write.csv(df, tmp_in, row.names = FALSE)
+
+  meta_args <- unlist(lapply(analysis_meta_paths, function(p) c("--meta", shQuote(p))))
 
   args <- c(
     "-m", "autoSDM.cli", "predict",
     "--input", shQuote(tmp_in),
     "--output", shQuote(tmp_out),
-    "--meta", shQuote(analysis_meta_path),
-    "--scale", scale,
-    "--year", year
+    meta_args,
+    "--scale", scale
   )
 
-  if (!is.null(gee_project)) args <- c(args, "--project", shQuote(gee_project))
-  if (exists("sa_json_key") && !is.null(sa_json_key)) args <- c(args, "--key", shQuote(sa_json_key))
+  if (!is.null(aoi_year)) {
+      args <- c(args, "--year", aoi_year)
+  }
 
-  status <- system2(py_exe, args = args, stdout = "", stderr = "")
+  if (!is.null(gee_project) && gee_project != "") {
+    args <- c(args, "--project", shQuote(gee_project))
+  } else {
+    # Try to load from local config if not provided explicitly
+    config_file <- file.path(Sys.getenv("HOME"), ".config", "autoSDM", "config.json")
+    if (file.exists(config_file)) {
+      try(
+        {
+          conf <- jsonlite::fromJSON(config_file)
+          if (!is.null(conf$gee_project) && conf$gee_project != "") {
+            args <- c(args, "--project", shQuote(conf$gee_project))
+          }
+        },
+        silent = TRUE
+      )
+    }
+  }
+
+  # Use getOption for sa_json_key to avoid lint warnings
+  sa_json_key <- getOption("autoSDM.sa_json_key")
+  if (!is.null(sa_json_key)) args <- c(args, "--key", shQuote(sa_json_key))
+
+  status <- .run_command_with_timer(py_exe, args = args, label = "Predicting at coordinates", active = verbose_timer)
 
   if (status != 0) {
     unlink(tmp_in)
@@ -165,8 +207,16 @@ predict_at_coords <- function(df, analysis_meta_path, scale = NULL, year = NULL,
   }
 
   res <- read.csv(tmp_out)
+  
+  metrics <- NULL
+  metrics_path <- gsub(".csv$", ".metrics.json", tmp_out)
+  if (file.exists(metrics_path)) {
+    metrics <- jsonlite::fromJSON(metrics_path)
+    unlink(metrics_path)
+  }
+  
   unlink(tmp_in)
   unlink(tmp_out)
 
-  return(res)
+  return(list(data = res, metrics = metrics))
 }
