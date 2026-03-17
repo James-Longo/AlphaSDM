@@ -14,209 +14,93 @@
 #' @return A list containing the paths to the generated map files, HTML, or GCS export details.
 #' @keywords internal
 extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NULL, aoi_year = NULL, view = FALSE, gcs_bucket = NULL, wait = FALSE, zip = FALSE, python_path = NULL, gee_project = NULL, verbose_timer = FALSE) {
-  # Resolve python path using the centralized helper
-  py_exe <- resolve_python_path(python_path)
+  # 1. GEE Auth
+  ensure_gee_authenticated(project = gee_project)
+  ee <- reticulate::import("ee")
 
-  if (is.null(py_exe) || !file.exists(py_exe)) {
-    stop("Could not find a valid Python environment.\nPlease ensure Python is installed and detected by `reticulate::py_config()`, or provide the `python_path` argument explicitly.")
-  }
+  if (is.null(scale)) scale <- 10
+  if (is.null(aoi_year)) aoi_year <- format(Sys.Date(), "%Y")
 
-  # Create input temp file
-  tmp_in <- tempfile(fileext = ".csv")
-  write.csv(df, tmp_in, row.names = FALSE)
+  # 2. Load Model Metadata
+  if (!file.exists(analysis_meta_path)) stop("Metadata file not found: ", analysis_meta_path)
+  meta <- jsonlite::fromJSON(analysis_meta_path)
 
-  # Define output JSON path in the requested directory
-  output_json <- file.path(output_dir, paste0("extrapolation_results_", scale, "m.json"))
+  # 3. Prepare GEE Geometry from df
+  bbox <- c(min(df$longitude), min(df$latitude), max(df$longitude), max(df$latitude))
+  aoi_geom <- ee$Geometry$Rectangle(bbox)$buffer(1000) # 1km buffer
 
-  message("Calling Python extrapolation logic at scale ", scale, "m...")
-  args <- c(
-    "-m", "autoSDM.cli", "extrapolate",
-    "--input", shQuote(tmp_in),
-    "--output", shQuote(output_json),
-    "--meta", shQuote(analysis_meta_path),
-    "--scale", scale,
-    "--year", aoi_year
-  )
-
-  if (!is.null(gee_project) && gee_project != "") {
-    args <- c(args, "--project", shQuote(gee_project))
+  # 4. Generate Prediction Map
+  img_mosaic <- get_embedding_image(aoi_year, scale)
+  
+  prediction <- NULL
+  if (!meta$is_classifier) {
+    # Reducer dot product
+    weights_ee <- ee$Image$constant(as.list(meta$weights))$rename(sprintf("A%02d", 0:63))
+    prediction <- img_mosaic$multiply(weights_ee)$reduce(ee$Reducer$sum())$add(meta$intercept)$rename("similarity")
   } else {
-    # Option B: Try to load from local config if not provided explicitly
-    config_file <- file.path(Sys.getenv("HOME"), ".config", "autoSDM", "config.json")
-    if (file.exists(config_file)) {
-      try(
-        {
-          conf <- jsonlite::fromJSON(config_file)
-          if (!is.null(conf$gee_project) && conf$gee_project != "") {
-            args <- c(args, "--project", shQuote(conf$gee_project))
-          }
-        },
-        silent = TRUE
-      )
-    }
+    # Classifier prediction
+    # NOTE: In a pure R implementation, we might need to re-train the GEE classifier
+    # if we don't have a serialized version. For now, we'll mark this as limited.
+    stop("Classifier extrapolation in pure R currently requires re-training or a serialized GEE model ID.")
   }
 
+  # 5. Output
+  m_clean <- gsub("[^a-zA-Z0-9]", "", meta$method)
+  tif_path <- file.path(output_dir, paste0(m_clean, "_extrapolation.tif"))
+  
+  message("Exporting extrapolation map to ", tif_path, "...")
+  try(rgee::ee_as_raster(image = prediction, region = aoi_geom, scale = scale, dsn = tif_path), silent = TRUE)
 
-  sa_json_key <- getOption("autoSDM.sa_json_key")
-  if (!is.null(sa_json_key) && sa_json_key != "") {
-    args <- c(args, "--key", shQuote(sa_json_key))
-  }
-
-
-  if (view) {
-    args <- c(args, "--view")
-  }
-
-  if (!is.null(gcs_bucket)) {
-    args <- c(args, "--gcs-bucket", shQuote(gcs_bucket))
-    if (wait) {
-      args <- c(args, "--wait")
-    }
-  } else if (zip) {
-    args <- c(args, "--zip")
-  }
-
-  status <- .run_command_with_timer(py_exe, args = args, label = "Mapping predictions", active = verbose_timer)
-
-  if (status != 0) {
-    unlink(tmp_in)
-    stop("Python extrapolation failed.")
-  }
-
-  # Read JSON result
-  res <- jsonlite::fromJSON(output_json)
-
-  # Stitch tiles if multiple files exist for any layer (only for local download mode)
-  if (!view && is.null(gcs_bucket)) {
-    message("Checking for tiled outputs to stitch...")
-    layer_keys <- names(res)[sapply(res, is.character)] # Get keys with file paths
-
-    for (key in layer_keys) {
-      if (length(res[[key]]) > 1) {
-        message("Stitching ", key, " (", length(res[[key]]), " tiles)...")
-        # Use terra to mosaic
-        tryCatch(
-          {
-            # Load list as SpatRasterCollection
-            s_coll <- terra::sprc(res[[key]])
-            # Mosaic them
-            mfd <- terra::mosaic(s_coll)
-
-            # Define final output name (base name without tiling suffix)
-            # res[[key]][1] looks like "path/name_0_0.tif"
-            # We want "path/name.tif"
-            final_path <- gsub("_0_0\\.tif$", ".tif", res[[key]][1])
-
-            # Write merged file
-            terra::writeRaster(mfd, final_path, overwrite = TRUE)
-
-            # Remove tiles
-            unlink(res[[key]])
-
-            # Update res object
-            res[[key]] <- final_path
-          },
-          error = function(e) {
-            warning("Stitching failed for ", key, ": ", e$message)
-          }
-        )
-      }
-    }
-  }
-
-  # Clean up input temp file
-  unlink(tmp_in)
-
-  if (!is.null(res$monitoring_url)) {
-    message("Monitoring URL: ", res$monitoring_url)
-    message("You can also monitor via rgee::ee_monitoring().")
-  }
-
-  return(res)
+  return(list(map_path = tif_path, method = meta$method))
 }
 
 #' Predict at Specific Coordinates
 #'
-#' This function takes a data frame of coordinates and returns predictions
-#' (similarity or probability) based on a trained model.
-#'
 #' @param df Data frame with columns `longitude`, `latitude`, and `year`.
-#' @param analysis_meta_path Path to the JSON metadata file generated by `analyze_embeddings`.
-#' @param scale Resolution in meters for the Alpha Earth embeddings. Defaults to 10.
-#' @param python_path Optional. Path to Python executable.
-#' @param gee_project Optional. Google Cloud Project ID.
-#' @param verbose_timer Optional. Boolean whether to show real-time progress.
-#' @return A data frame with original data plus a `similarity` column.
+#' @param analysis_meta_paths Vector of paths to metadata JSON files.
+#' @param scale Resolution in meters.
+#' @param aoi_year Year for Alpha Earth mosaic.
+#' @param gee_project GEE Project ID.
+#' @param verbose_timer Boolean.
+#' @return A list with data (df + similarity) and metrics.
 #' @export
-predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = NULL, python_path = NULL, gee_project = NULL, verbose_timer = FALSE) {
-  py_exe <- resolve_python_path(python_path)
-
-  if (is.null(py_exe) || !file.exists(py_exe)) {
-    stop("Could not find a valid Python environment.")
-  }
-
-  # Ensure analysis_meta_paths is a vector
-  analysis_meta_paths <- as.character(analysis_meta_paths)
-
-  tmp_in <- tempfile(fileext = ".csv")
-  tmp_out <- tempfile(fileext = ".csv")
-  write.csv(df, tmp_in, row.names = FALSE)
-
-  meta_args <- unlist(lapply(analysis_meta_paths, function(p) c("--meta", shQuote(p))))
-
-  args <- c(
-    "-m", "autoSDM.cli", "predict",
-    "--input", shQuote(tmp_in),
-    "--output", shQuote(tmp_out),
-    meta_args,
-    "--scale", scale
-  )
-
-  if (!is.null(aoi_year)) {
-      args <- c(args, "--year", aoi_year)
-  }
-
-  if (!is.null(gee_project) && gee_project != "") {
-    args <- c(args, "--project", shQuote(gee_project))
-  } else {
-    # Try to load from local config if not provided explicitly
-    config_file <- file.path(Sys.getenv("HOME"), ".config", "autoSDM", "config.json")
-    if (file.exists(config_file)) {
-      try(
-        {
-          conf <- jsonlite::fromJSON(config_file)
-          if (!is.null(conf$gee_project) && conf$gee_project != "") {
-            args <- c(args, "--project", shQuote(conf$gee_project))
-          }
-        },
-        silent = TRUE
-      )
+predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = NULL, gee_project = NULL, verbose_timer = FALSE) {
+  # 1. GEE Auth
+  ensure_gee_authenticated(project = gee_project)
+  
+  if (is.null(scale)) scale <- 10
+  
+  # 2. Extract Embeddings
+  message("Extracting embeddings for prediction coordinates...")
+  df_emb <- extract_embeddings(df, scale = scale, gee_project = gee_project)
+  
+  # 3. Score for each model
+  results <- df_emb
+  metrics <- list()
+  
+  for (mp in analysis_meta_paths) {
+    if (!file.exists(mp)) next
+    meta <- jsonlite::fromJSON(mp)
+    m <- meta$method
+    
+    col_name <- if (length(analysis_meta_paths) > 1) paste0("similarity_", m) else "similarity"
+    
+    if (!meta$is_classifier) {
+      # Reducer (weights): score = (emb * weights) + intercept
+      weights <- as.numeric(meta$weights)
+      intercept <- as.numeric(meta$intercept)
+      
+      emb_cols <- sprintf("A%02d", 0:63)
+      emb_mat <- as.matrix(df_emb[, emb_cols])
+      scores <- (emb_mat %*% weights) + intercept
+      
+      results[[col_name]] <- as.numeric(scores)
+    } else {
+      # Classifier scoring needs GEE if we don't have local weights
+      message("Warning: Classifier point prediction in R is currently limited.")
+      results[[col_name]] <- NA
     }
   }
-
-  # Use getOption for sa_json_key to avoid lint warnings
-  sa_json_key <- getOption("autoSDM.sa_json_key")
-  if (!is.null(sa_json_key)) args <- c(args, "--key", shQuote(sa_json_key))
-
-  status <- .run_command_with_timer(py_exe, args = args, label = "Predicting at coordinates", active = verbose_timer)
-
-  if (status != 0) {
-    unlink(tmp_in)
-    unlink(tmp_out)
-    stop("Point prediction failed.")
-  }
-
-  res <- read.csv(tmp_out)
   
-  metrics <- NULL
-  metrics_path <- gsub(".csv$", ".metrics.json", tmp_out)
-  if (file.exists(metrics_path)) {
-    metrics <- jsonlite::fromJSON(metrics_path)
-    unlink(metrics_path)
-  }
-  
-  unlink(tmp_in)
-  unlink(tmp_out)
-
-  return(list(data = res, metrics = metrics))
+  return(list(data = results, metrics = metrics))
 }

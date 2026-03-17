@@ -1,5 +1,6 @@
-exportPattern("^[[:alpha:]]+")
+import(rgee)
 import(reticulate)
 import(jsonlite)
 import(sf)
 import(terra)
+exportPattern("^[[:alpha:]]+")

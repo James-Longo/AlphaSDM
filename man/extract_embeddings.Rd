@@ -4,16 +4,16 @@
 \alias{extract_embeddings}
 \title{Extract Alpha Earth Embeddings}
 \usage{
-extract_embeddings(df, scale = 10, python_path = NULL, gee_project = NULL)
+extract_embeddings(df, scale = 10, gee_project = NULL)
 }
 \arguments{
 \item{df}{A data frame containing at least `longitude`, `latitude`, and `year`.}
 
 \item{scale}{Optional. Resolution in meters for extraction. Defaults to 10.}
 
-\item{python_path}{Optional. Path to Python executable.}
-
 \item{gee_project}{Optional. Google Cloud Project ID. If NULL, uses local config or environment variables.}
+
+\item{python_path}{Optional. Path to Python executable.}
 }
 \value{
 A data frame containing the original columns plus 64 embedding columns (A00-A63).

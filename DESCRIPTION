@@ -8,8 +8,8 @@ Encoding: UTF-8
 LazyData: true
 Imports:
     reticulate,
+    rgee,
     jsonlite,
     sf,
-    terra,
-    processx
+    terra
 RoxygenNote: 7.3.3

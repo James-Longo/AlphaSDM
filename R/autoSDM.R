@@ -25,15 +25,39 @@
 #'   `product`, `threshold`, `hinge`, `extrapolate`, `do_clamp`, `beta`, `seed`.
 #' @return A list containing training data, models, and prediction results.
 #' @export
-autoSDM <- function(data, aoi = NULL, output_dir = getwd(), scale = NULL, python_path = NULL,
-                    gee_project = NULL, cv = FALSE, predict_coords = NULL,
-                    methods = NULL, ensemble = TRUE, aoi_year = NULL, count = NULL,
-                    n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
-                    shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL, lambda_ = 0.1,
-                    n_cores = NULL, verbose_timer = FALSE, options = list()) {
+autoSDM <- function(data,
+                    aoi = NULL,
+                    output_dir = "autoSDM_output",
+                    scale = 10,
+                    gee_project = NULL,
+                    cv = 0,
+                    predict_coords = NULL,
+                    methods = NULL,
+                    ensemble = TRUE,
+                    aoi_year = 2017,
+                    count = NULL,
+                    n_trees = 100,
+                    min_leaf_population = 5,
+                    bag_fraction = 0.5,
+                    shrinkage = 0.005,
+                    max_nodes = NULL,
+                    variables_per_split = NULL,
+                    lambda_ = 0.1,
+                    verbose_timer = FALSE,
+                    options = list()) {
+
+  # Set global timer option for nested calls
+  original_timer <- getOption("autoSDM.verbose_timer")
+  options(autoSDM.verbose_timer = verbose_timer)
+  on.exit(options(autoSDM.verbose_timer = original_timer), add = TRUE)
+
+  global_start <- log_time("Starting autoSDM pipeline")
+  if (isTRUE(verbose_timer)) {
+    message(sprintf("--- Training Configuration: n_trees=%d, shrinkage=%0.4f, min_leaf=%d ---",
+                    n_trees, shrinkage, min_leaf_population))
+  }
   # 1. Input Validation
   if (missing(data)) stop("Argument 'data' is required.")
-  if (verbose_timer) message("--- autoSDM: Real-time processing feedback enabled ---")
 
   # Default AOI if not provided: Bounding box of data + buffer
   if (is.null(aoi) && is.null(predict_coords)) {
@@ -99,7 +123,6 @@ autoSDM <- function(data, aoi = NULL, output_dir = getwd(), scale = NULL, python
   if (!is.null(max_nodes)) tuning_args <- c(tuning_args, "--max-nodes", as.character(max_nodes))
   if (!is.null(variables_per_split)) tuning_args <- c(tuning_args, "--variables-per-split", as.character(variables_per_split))
 
-  message(sprintf("--- Training Configuration: n_trees=%d, shrinkage=%.4f, min_leaf=%d ---", n_trees, shrinkage, min_leaf_population))
 
   # Process advanced options
   if (length(options) > 0) {
@@ -112,376 +135,205 @@ autoSDM <- function(data, aoi = NULL, output_dir = getwd(), scale = NULL, python
 
   # If more than one method is specified, ensemble is typically expected, but we respect the explicit argument.
 
-  # 3. Python Configuration
-  # Check for virtualenv and initialize dependencies
-  python_path_detected <- ensure_autoSDM_dependencies()
-  python_path <- if (!is.null(python_path)) python_path else python_path_detected
-  python_path <- resolve_python_path(python_path)
-
-  if (is.null(python_path) || !file.exists(python_path)) {
-    stop("Could not find a valid Python environment.\nPlease ensure Python is installed and detected by `reticulate::py_config()`, or provide the `python_path` argument explicitly.")
-  }
-
-  # Locate the python source directory (inst/python)
-  pkg_py_path <- ""
-  if (file.exists(file.path(getwd(), "inst", "python"))) {
-    pkg_py_path <- file.path(getwd(), "inst", "python")
-  } else {
-    pkg_py_path <- system.file("python", package = "autoSDM")
-  }
-
-  if (pkg_py_path != "") {
-    Sys.setenv(PYTHONPATH = pkg_py_path)
-    message(sprintf("Added to PYTHONPATH: %s", pkg_py_path))
-  }
-
-  # 4. Check GEE Readiness
-  message(sprintf("Using Python: %s", python_path))
+  # 3. GEE Configuration & Auth
   ensure_gee_authenticated(project = gee_project)
+  ee <- reticulate::import("ee")
 
-  # If project was not provided, try to load it from the config that ensure_gee_authenticated might have just used/created
-  if (is.null(gee_project)) {
-    config_file <- file.path(Sys.getenv("HOME"), ".config", "autoSDM", "config.json")
-    if (file.exists(config_file)) {
-      try(
-        {
-          conf <- jsonlite::fromJSON(config_file)
-          if (!is.null(conf$gee_project)) {
-            gee_project <- conf$gee_project
-            message("Loaded GEE Project from config: ", gee_project)
-          }
-        },
-        silent = TRUE
-      )
-    }
-  }
+  # Resolve common parameters
+  if (is.null(scale)) scale <- 10
+  if (is.null(aoi_year)) aoi_year <- format(Sys.Date(), "%Y")
 
   # Create output directory
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-  # Temporary directory for inter-process CV cache (never written to output_dir)
-  cv_cache_dir <- tempfile(pattern = "autoSDM_cv_cache_")
-  dir.create(cv_cache_dir, showWarnings = FALSE)
-  cv_cache_arg <- c("--cv-cache-dir", shQuote(cv_cache_dir))
-
   # 5. Decide on Multi-Species
   is_multi_species <- "species" %in% names(data) && length(unique(data$species)) > 1
-
-  # Use the raw input data as our base; analyze/predict CLI will sample GEE as needed.
   working_data <- data
-
-  # 5. Prepare AOI arguments
-  aoi_arg <- NULL
-  if (is.list(aoi) && !is.null(aoi$lat)) {
-    aoi_arg <- c("--lat", aoi$lat, "--lon", aoi$lon, "--radius", aoi$radius)
-  } else if (is.character(aoi)) {
-    aoi_arg <- c("--aoi-path", shQuote(aoi))
-  }
-
-  # 6. Extraction/Preparation
-  # (Standardizing CSV output for Python)
-  extract_csv <- tempfile(fileext = ".csv")
-  # working_data is our raw input (coords only)
-  if (requireNamespace("vroom", quietly = TRUE)) {
-    vroom::vroom_write(working_data, extract_csv, delim = ",")
-  } else {
-    write.csv(working_data, extract_csv, row.names = FALSE)
-  }
 
   if (!is_multi_species) {
     message("--- Single-Species Mode ---")
-    proj_arg <- if (!is.null(gee_project)) c("--project", shQuote(gee_project)) else NULL
 
-    meta_files <- list()
+    # 6. GEE Geometry for AOI
+    aoi_geom <- NULL
+    if (is.list(aoi) && !is.null(aoi$lat)) {
+      aoi_geom <- ee$Geometry$Point(c(as.numeric(aoi$lon), as.numeric(aoi$lat)))$buffer(as.numeric(aoi$radius))
+    } else if (is.character(aoi) && file.exists(aoi)) {
+      # Load from file using sf and convert to GEE
+      aoi_sf <- sf::st_read(aoi, quiet = TRUE)
+      aoi_geom <- rgee::sf_as_ee(aoi_sf)$geometry()
+    } else if (!is.null(predict_coords)) {
+      # Use bounding box of predict_coords
+      bbox <- c(min(predict_coords$longitude), min(predict_coords$latitude),
+                max(predict_coords$longitude), max(predict_coords$latitude))
+      aoi_geom <- ee$Geometry$Rectangle(bbox)
+    }
 
-    # Shared Background logic for Presence-Only
-    # If any model needs background (centroid/ridge) and we don't have absences yet.
-    needs_bg <- any(methods %in% c("centroid", "ridge")) &&
+    # 7. Background Logic
+    needs_bg <- any(methods %in% c("centroid", "ridge", "linear", "robust_linear", "rf", "gbt", "cart", "maxent", "svm")) &&
       !("present" %in% names(working_data) && any(working_data$present == 0))
 
-    if (needs_bg && (!is.null(aoi) || !is.null(aoi_arg))) {
-      message("--- Step: Generating Shared Background Points (10:1) ---")
-      bg_csv <- tempfile(fileext = ".csv")
-      n_bg <- nrow(working_data) * 10
+    sampled_fc <- NULL
+    if (needs_bg && !is.null(aoi_geom)) {
+      message("--- Step: Generating Background Points (GEE-side) ---")
+      n_bg <- if (!is.null(count)) count else (nrow(working_data) * 10)
+      bg_fc <- get_background_embeddings_gee(aoi_geom, aoi_year, scale, n_bg)
 
-      .run_command_with_timer(python_path, args = c(
-        "-m", "autoSDM.cli", "background",
-        "--output", shQuote(bg_csv),
-        "--count", if (!is.null(count)) count else n_bg,
-        "--scale", scale,
-        if (!is.null(aoi_year)) c("--year", aoi_year) else NULL,
-        proj_arg, aoi_arg
-      ), label = "Generating background points", active = verbose_timer)
+      # Prepare presence points
+      prep_pres <- prep_training_data_gee(working_data, class_property = "present", scale = scale)
+      pres_fc <- prep_pres$fc
 
-      if (file.exists(bg_csv)) {
-        bg_data <- read.csv(bg_csv)
-        if (!"present" %in% names(bg_data)) bg_data$present <- 0
-        if (!"present" %in% names(working_data)) working_data$present <- 1
-
-        # Ensure column alignment
-        common_cols <- intersect(names(working_data), names(bg_data))
-        working_data <- rbind(working_data[, common_cols], bg_data[, common_cols])
-
-        # Update standardized CSV with background points
-        if (requireNamespace("vroom", quietly = TRUE)) {
-          vroom::vroom_write(working_data, extract_csv, delim = ",")
-        } else {
-          write.csv(working_data, extract_csv, row.names = FALSE)
-        }
-      }
-    }
-
-    # Track execution time
-    execution_times <- list()
-
-    message(sprintf("--- Dispatching %d Method(s) via Ensemble (GEE-side) ---", length(methods)))
-
-    # We call the CLI ONCE with all methods to "keep all the data in GEE" 
-    # and avoid the 10MB payload limit associated with uploading embeddings.
-    methods_csv <- paste(methods, collapse = ",")
-    
-    start_time_all <- Sys.time()
-    .run_command_with_timer(python_path, args = c(
-      "-m", "autoSDM.cli", "analyze",
-      "--input", shQuote(extract_csv),
-      "--output", shQuote(file.path(output_dir, "model.csv")), # Will generate model_method.csv for each
-      "--method", methods_csv,
-      "--scale", scale,
-      if (!is.null(aoi_year)) c("--year", aoi_year) else NULL,
-      if (!is.null(count)) c("--count", count) else NULL,
-      tuning_args, cv_cache_arg, proj_arg
-    ), label = "Training GEE models (Shared Context)", active = verbose_timer)
-    end_time_all <- Sys.time()
-
-    # Reconstruct parallel_results for compatibility with the rest of the R script
-    parallel_results <- lapply(methods, function(m) {
-      m_clean <- gsub("[^a-zA-Z0-9]", "", m)
-      # CLI now outputs model_method.csv and model_method.json
-      out_json <- file.path(output_dir, paste0("model_", m_clean, ".json"))
-      
-      ret <- list(method = m, meta_file = NULL, training_seconds = as.numeric(difftime(end_time_all, start_time_all, units = "secs")) / length(methods))
-      if (file.exists(out_json)) {
-        ret$meta_file <- out_json
-      }
-      return(ret)
-    })
-
-    # Reconstruct meta_files and execution_times
-    for (res in parallel_results) {
-      m <- res$method
-      m_clean <- gsub("[^a-zA-Z0-9]", "", m)
-      out_json <- res$meta_file
-
-      if (!is.null(out_json)) {
-        meta_files[[m]] <- out_json
-        
-        # 7. Generate Individual Map for this method (if requested and not in ensemble mode)
-        if (!is.null(aoi) && !ensemble) {
-           message(sprintf("--- Step: Generating Individual Map (%s) ---", m))
-           .run_command_with_timer(python_path, args = c(
-             "-m", "autoSDM.cli", "extrapolate",
-             "--meta", shQuote(out_json),
-             "--scale", scale,
-             "--prefix", m_clean,
-             if (!is.null(aoi_year)) c("--year", aoi_year) else NULL,
-             proj_arg, aoi_arg
-           ), label = paste("Mapping", m_clean, "predictions"), active = verbose_timer)
-        }
-      }
-      
-      if (is.null(execution_times[[m]])) execution_times[[m]] <- list()
-      execution_times[[m]]$training_seconds <- res$training_seconds
-    }
-
-    # 8. Predict at specific coordinates (if provided)
-    # 8. Predict at specific coordinates (if provided)
-    if (!is.null(predict_coords)) {
-      message("--- Step: Predicting at specific coordinates (GEE-side orchestration) ---")
-      
-      point_preds <- predict_coords
-      submodel_test_metrics <- list()
-
-      # Collect all valid meta files
-      valid_metas <- as.character(unlist(meta_files))
-      valid_metas <- valid_metas[file.exists(valid_metas)]
-
-      if (length(valid_metas) > 0) {
-        pred_start_time <- Sys.time()
-        # Call predict_at_coords once for all methods
-        preds_all <- predict_at_coords(
-          predict_coords, 
-          analysis_meta_paths = valid_metas, 
-          scale = scale, 
-          aoi_year = aoi_year, 
-          python_path = python_path, 
-          gee_project = gee_project, 
-          verbose_timer = verbose_timer
-        )
-        pred_end_time <- Sys.time()
-        
-        point_preds <- preds_all$data
-        point_preds$similarity <- 0
-        method_count <- 0
-        submodel_test_metrics <- list()
-
-        # Update point_preds with normalized similarities and individual results
-        for (m in names(meta_files)) {
-          m_clean <- gsub("[^a-zA-Z0-9]", "", m)
-          col_name <- if (length(valid_metas) > 1) paste0("similarity_", m) else "similarity"
-          
-          if (!col_name %in% names(point_preds)) next
-
-          # Load meta to get similarity range for normalization
-          m_meta <- jsonlite::fromJSON(meta_files[[m]])
-          s_range <- m_meta$similarity_range
-          
-          raw_sim <- point_preds[[col_name]]
-          if (!is.null(s_range) && (s_range[2] - s_range[1] > 1e-9)) {
-            norm_sim <- (raw_sim - s_range[1]) / (s_range[2] - s_range[1])
-          } else {
-            norm_sim <- raw_sim
-          }
-          
-          # Store normalized back in the df using method name as column
-          point_preds[[m]] <- norm_sim
-          point_preds$similarity <- point_preds$similarity + norm_sim
-          method_count <- method_count + 1
-          
-          # Handle metrics
-          if (!is.null(preds_all$metrics[[m]])) {
-            submodel_test_metrics[[m]] <- preds_all$metrics[[m]]$testing
-          }
-          
-          if (is.null(execution_times[[m]])) execution_times[[m]] <- list()
-          execution_times[[m]]$prediction_seconds <- as.numeric(difftime(pred_end_time, pred_start_time, units = "secs")) / length(valid_metas)
-        }
-
-        if (method_count > 0) {
-          point_preds$similarity <- point_preds$similarity / method_count
-        }
-
-        # Final normalization of the ensemble product to 0-1
-        e_min <- min(point_preds$similarity, na.rm = TRUE)
-        e_max <- max(point_preds$similarity, na.rm = TRUE)
-        if (e_max - e_min > 1e-9) {
-          point_preds$similarity <- (point_preds$similarity - e_min) / (e_max - e_min)
-        }
-      }
-    }
-
-    # 9. Generate Ensemble Map (if requested)
-    if (!is.null(aoi) && ensemble) {
-      message("--- Step: Generating Ensemble Map (consensus of all methods) ---")
-
-      ensemble_results_json <- file.path(output_dir, "ensemble_results.json")
-
-      # Build args with all meta files
-      ensemble_args <- c("-m", "autoSDM.cli", "ensemble", "--input", shQuote(extract_csv), "--output", shQuote(ensemble_results_json))
-      for (mf in meta_files) {
-        if (file.exists(mf)) ensemble_args <- c(ensemble_args, "--meta", shQuote(mf))
-      }
-      ensemble_args <- c(ensemble_args, "--scale", scale, "--prefix", "ensemble")
-      if (!is.null(aoi_year)) ensemble_args <- c(ensemble_args, "--year", aoi_year)
-
-      if (!is.null(gee_project)) ensemble_args <- c(ensemble_args, "--project", shQuote(gee_project))
-
-      if (is.list(aoi) && !is.null(aoi$lat)) {
-        ensemble_args <- c(ensemble_args, "--lat", aoi$lat, "--lon", aoi$lon, "--radius", aoi$radius)
-      } else if (is.character(aoi)) {
-        ensemble_args <- c(ensemble_args, "--aoi-path", shQuote(aoi))
-      }
-
-      # Run CV on ensemble formulation
-      cv_arg_ensemble <- if (cv) {
-        c("--cv", "--train-methods", paste(methods, collapse = ","), "--eval-methods", "ensemble")
-      } else {
-        NULL
-      }
-
-      if (!is.null(cv_arg_ensemble)) ensemble_args <- c(ensemble_args, cv_arg_ensemble, cv_cache_arg)
-
-      status <- .run_command_with_timer(python_path, args = ensemble_args, label = "Creating ensemble map", active = verbose_timer)
-      if (status != 0) stop("Ensemble extrapolation failed.")
-      final_results <- jsonlite::fromJSON(ensemble_results_json)
+      sampled_fc <- pres_fc$merge(bg_fc)
     } else {
-      # For single results, we return the last json generated or empty list
-      # The individual maps are already handled in the loop.
-      final_results <- list()
-      if (length(meta_files) > 0) {
-        final_results <- jsonlite::fromJSON(meta_files[[1]])
+      prep <- prep_training_data_gee(working_data, class_property = "present", scale = scale)
+      sampled_fc <- prep$fc
+    }
+
+    # 8. Training Loop
+    message(sprintf("--- Training %d Method(s) via R-GEE ---", length(methods)))
+
+    meta_results <- list()
+    training_params <- list(
+      numberOfTrees = n_trees,
+      minLeafPopulation = min_leaf_population,
+      bagFraction = bag_fraction,
+      shrinkage = shrinkage,
+      maxNodes = max_nodes,
+      variablesPerSplit = variables_per_split,
+      lambda_ = lambda_
+    )
+
+    # Add advanced options
+    for (opt in names(options)) training_params[[opt]] <- options[[opt]]
+
+    models <- list()
+    for (m in methods) {
+      msg <- sprintf("Training %s...", m)
+      if (verbose_timer) message(msg)
+
+      start_t <- Sys.time()
+      models[[m]] <- train_gee_model(sampled_fc, m, params = training_params)
+      end_t <- Sys.time()
+
+      # Save metadata
+      m_clean <- gsub("[^a-zA-Z0-9]", "", m)
+      meta_path <- file.path(output_dir, paste0("model_", m_clean, ".json"))
+
+      # For reducers, we store weights. For classifiers, we store the GEE ID if serialized?
+      # Actually, let's keep the model objects in memory and just write a placeholder JSON.
+      # (In the future, and for CRAN, we might want to serialize the GEE model ID)
+
+      meta <- list(
+        method = m,
+        training_seconds = as.numeric(difftime(end_t, start_t, units = "secs")),
+        is_classifier = models[[m]]$is_classifier
+      )
+      if (!is.null(models[[m]]$weights)) {
+        meta$weights <- models[[m]]$weights
+        meta$intercept <- models[[m]]$intercept
+      }
+
+      jsonlite::write_json(meta, meta_path, auto_unbox = TRUE)
+      meta_results[[m]] <- meta_path
+    }
+
+    # 9. Map Generation (Individual)
+    img_mosaic <- get_embedding_image(aoi_year, scale)
+
+    if (!ensemble && !is.null(aoi_geom)) {
+      for (m in methods) {
+        message(sprintf("--- Generating Map: %s ---", m))
+        pred_img <- predict_gee_map(models[[m]], img_mosaic)
+
+        # Download or export
+        # For now, let's assume local download if it's a small area
+        m_clean <- gsub("[^a-zA-Z0-9]", "", m)
+        tif_path <- file.path(output_dir, paste0(m_clean, ".tif"))
+
+        # Use rgee::ee_as_raster for small, or task for large
+        # We'll use a helper that decides based on size soon
+        try(rgee::ee_as_raster(image = pred_img, region = aoi_geom, scale = scale, dsn = tif_path), silent = TRUE)
       }
     }
 
+    # 10. Ensemble Logic
+    final_results <- list(methods = methods, meta_files = meta_results)
+
+    if (ensemble && !is.null(aoi_geom)) {
+      message("--- Generating Ensemble Map ---")
+
+      # consensus = mean of normalized scores
+      # (This is simplified; a better ensemble would normalize first)
+      pred_images <- lapply(models, function(mod) predict_gee_map(mod, img_mosaic))
+
+      # Combine
+      ensemble_img <- ee$ImageCollection(unname(pred_images))$mean()$rename("similarity")
+
+      # Export
+      tif_path <- file.path(output_dir, "ensemble.tif")
+      try(rgee::ee_as_raster(image = ensemble_img, region = aoi_geom, scale = scale, dsn = tif_path), silent = TRUE)
+
+      final_results$ensemble_map <- tif_path
+    }
+
+    # 11. Point Predictions
     if (!is.null(predict_coords)) {
-      final_results$point_predictions <- point_preds
-      
-      # If we have an ensemble result, calculate its testing metrics if labels are present
-      if (ensemble && !is.null(point_preds$present) && any(!is.na(point_preds$present))) {
-          # Use the testing metrics from submodels if it's a single method, 
-          # but for ensemble we might need a separate calculation.
-          # For now, if it's a single method, we just take its test_metrics.
-          if (length(methods) == 1 && !is.null(submodel_test_metrics[[methods[1]]])) {
-              final_results$metrics$testing <- submodel_test_metrics[[methods[1]]]
-          } else if (length(methods) > 1) {
-              # OPTIONAL: Add R-side ensemble AUC/CBI calculation here.
-              # For now, we'll mark it as available per sub-model in execution_times or similar,
-              # but let's try to at least provide the first one if it's representative or empty.
-          }
-      } else if (!ensemble && length(methods) == 1) {
-          final_results$metrics$testing <- submodel_test_metrics[[methods[1]]]
-      }
+      message("--- Predicting at specific coordinates (GEE-side) ---")
+      final_results$point_predictions <- predict_at_coords_gee(
+          coords_df = predict_coords,
+          models = models,
+          methods = methods,
+          scale = scale,
+          gee_project = gee_project
+      )
     }
-    
-    if (length(execution_times) > 0) final_results$execution_times <- execution_times
 
-    message("autoSDM pipeline complete!")
+    log_time("autoSDM pipeline", global_start)
     return(final_results)
   } else {
     # MULTI-SPECIES WORKFLOW
     # -------------------------------------------------------------------------
     message(sprintf("--- Multi-Species Mode: Processing %d species ---", length(unique(working_data$species))))
-    message("Orchestrating GEE server-side parallelization...")
-
-
-    cv_arg <- if (cv) "--cv" else NULL
-    proj_arg <- if (!is.null(gee_project)) c("--project", shQuote(gee_project)) else NULL
-
-    aoi_arg <- NULL
-    if (is.list(aoi) && !is.null(aoi$lat)) {
-      aoi_arg <- c("--lat", aoi$lat, "--lon", aoi$lon, "--radius", aoi$radius)
-    } else if (is.character(aoi)) {
-      aoi_arg <- c("--aoi-path", shQuote(aoi))
-    }
-
-    # Internal multi-species ensemble pipeline in Python
-    # This invokes a single Python process that loops over species and sends requests to GEE.
-    multi_args <- c(
-      "-m", "autoSDM.cli", "analyze",
-      "--input", shQuote(extract_csv),
-      "--output", shQuote(output_dir),
-      "--method", "ensemble",
-      "--species-col", "species",
-      "--scale", scale,
-      if (!is.null(aoi_year)) c("--year", aoi_year) else NULL,
-      cv_arg,
-      proj_arg,
-      aoi_arg,
-      tuning_args
-    )
-
-    status <- .run_command_with_timer(python_path, args = multi_args, label = "Running multi-species batch processing", active = verbose_timer)
-    if (status != 0) stop("Multi-species analysis failed.")
-
-    # Load and combine results from species-specific directories
+    
     species_list <- unique(working_data$species)
     results_list <- list()
+    
     for (sp in species_list) {
-      res_path <- file.path(output_dir, sp, "results.json")
-      if (file.exists(res_path)) {
-        results_list[[sp]] <- jsonlite::fromJSON(res_path)
+      message(sprintf("\n--- Processing Species: %s ---", sp))
+      sp_data <- working_data[working_data$species == sp, ]
+      sp_out <- file.path(output_dir, sp)
+      
+      # Handle predict_coords if scoped to species
+      sp_predict <- predict_coords
+      if (!is.null(predict_coords) && "species" %in% names(predict_coords)) {
+        sp_predict <- predict_coords[predict_coords$species == sp, ]
       }
+      
+      # Recursive call for each species
+      results_list[[sp]] <- autoSDM(
+        data = sp_data,
+        aoi = aoi,
+        output_dir = sp_out,
+        scale = scale,
+        gee_project = gee_project,
+        cv = cv,
+        predict_coords = sp_predict,
+        methods = methods,
+        ensemble = ensemble,
+        aoi_year = aoi_year,
+        count = count,
+        n_trees = n_trees,
+        min_leaf_population = min_leaf_population,
+        bag_fraction = bag_fraction,
+        shrinkage = shrinkage,
+        max_nodes = max_nodes,
+        variables_per_split = variables_per_split,
+        lambda_ = lambda_,
+        verbose_timer = verbose_timer,
+        options = options
+      )
     }
 
     class(results_list) <- "autoSDM_multi"
+    return(results_list)
   }
 }
