@@ -47,6 +47,17 @@ autoSDM(
 
 \item{predict_coords}{Optional. Data frame of coordinates to predict at.}
 
+\item{methods}{Optional character vector of method names. Supported:
+Classifiers: `"rf"`, `"gbt"`, `"cart"`, `"maxent"`, `"svm"`.
+Reducers: `"centroid"`, `"ridge"`, `"linear"`, `"robust_linear"`.
+Defaults to all above methods.}
+
+\item{ensemble}{Optional. Combine all methods into an ensemble map. Defaults to TRUE.}
+
+\item{aoi_year}{Optional. Alpha Earth Mosaic year for map generation or background points. Defaults to NULL.}
+
+\item{count}{Optional. Number of background points. Defaults to 10x presence points.}
+
 \item{n_cores}{Optional. Number of cores for parallel processing.}
 
 \item{verbose_timer}{Optional. Boolean to display a real-time updating timer for each processing step. Defaults to FALSE.}

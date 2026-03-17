@@ -7,9 +7,9 @@
 analyze_embeddings(
   df,
   method = "centroid",
-  python_path = NULL,
   gee_project = NULL,
-  cv = FALSE
+  cv = FALSE,
+  scale = 10
 )
 }
 \arguments{
