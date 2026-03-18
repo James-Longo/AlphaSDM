@@ -1,38 +1,20 @@
-#' Get Alpha Earth Embedding Image
-#' 
-#' @param year Year (2017-2025)
-#' @param scale Resolution in meters
-#' @keywords internal
-get_embedding_image <- function(year, scale) {
+get_embedding_image <- function(year, scale = 10) {
   ee <- reticulate::import("ee")
   asset_path <- "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
   emb_cols <- sprintf("A%02d", 0:63)
-  
+
+  # No scale arguments, no reprojection. Just the raw, composited 10m image.
+  # GEE will handle resampling automatically during sampling or export.
   img <- ee$ImageCollection(asset_path)$
     filter(ee$Filter$calendarRange(as.integer(year), as.integer(year), "year"))$
     mosaic()$
     select(emb_cols)
-    
-  if (scale > 10) {
-    # Calculate exact maxPixels needed with a 20% safety buffer
-    # This is scientifically accurate mean reduction (average of pixels in footprint)
-    pixel_ratio <- (scale / 10)^2
-    safe_max_pixels <- ceiling(pixel_ratio * 1.5)
-    
-    img <- img$setDefaultProjection("EPSG:3857", NULL, 10)$reduceResolution(
-      reducer = ee$Reducer$mean(),
-      maxPixels = safe_max_pixels
-    )$reproject(
-      crs = "EPSG:3857",
-      scale = scale
-    )
-  }
-  
+
   return(img)
 }
 
 #' Sample Embeddings at FeatureCollection
-#' 
+#'
 #' @param fc FeatureCollection with 'year' property
 #' @param scale Resolution in meters
 #' @param properties Optional properties to retain
@@ -41,18 +23,17 @@ get_embedding_image <- function(year, scale) {
 #' @keywords internal
 get_embeddings_at_fc <- function(fc, scale, properties = NULL, geometries = FALSE, years = NULL) {
   ee <- reticulate::import("ee")
-  
+
   if (is.null(years)) {
-    #aggregate_array().getInfo() can be expensive for large FCs
+    # aggregate_array().getInfo() can be expensive for large FCs
     years <- fc$aggregate_array("year")$distinct()$getInfo()
   }
-  t0 <- log_time(sprintf("Sampling embeddings at %d years", length(years)))
+
   sampled_fcs <- list()
   for (yr in years) {
-    yr_start <- log_time(sprintf("  Processing year %d", yr))
     yr_fc <- fc$filter(ee$Filter$eq("year", as.integer(yr)))
     yr_img <- get_embedding_image(yr, scale)
-    
+
     sampled <- yr_img$sampleRegions(
       collection = yr_fc,
       properties = as.list(properties),
@@ -60,86 +41,109 @@ get_embeddings_at_fc <- function(fc, scale, properties = NULL, geometries = FALS
       geometries = geometries,
       tileScale = 16L
     )$filter(ee$Filter$notNull(as.list("A00")))
-    
+
     sampled_fcs <- c(sampled_fcs, list(sampled))
-    log_time(sprintf("  Year %d", yr), yr_start)
   }
-  
-  res <- ee$FeatureCollection(sampled_fcs)$flatten()
-  log_time("Sampling complete", t0)
-  return(res)
+
+  return(ee$FeatureCollection(sampled_fcs)$flatten())
 }
 
 #' Prepare Training Data for GEE
-#' 
+#' Prepare Training Data on GEE (Pure Server-Side)
+#'
 #' @param df Data frame with longitude, latitude, year, and class_property
 #' @param class_property Column name for presence/absence
 #' @param scale Resolution in meters
 #' @keywords internal
 prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
   ee <- reticulate::import("ee")
-  
+
   # 1. Clean data
   cols_to_keep <- c("longitude", "latitude", "year")
   if (!is.null(class_property)) cols_to_keep <- c(cols_to_keep, class_property)
-  
+
   df_clean <- df[complete.cases(df[, cols_to_keep]), ]
   if (nrow(df_clean) == 0) stop("No valid training data remaining after dropping NAs.")
-  
-  # 2. Upload to GEE as MultiPoint features for efficiency
-  # We group by year and class to minimize feature count
+
+  # 2. Upload to GEE
+  # For training, we group by class/year for efficiency
+  message(sprintf("Uploading %d coordinates to GEE for training...", nrow(df_clean)))
+
   group_cols <- "year"
   if (!is.null(class_property)) group_cols <- c(group_cols, class_property)
-  
-  # For R, we can use interaction for multi-column grouping
+
   group_fac <- if (length(group_cols) > 1) {
     interaction(df_clean[, group_cols], drop = TRUE)
   } else {
     df_clean[[group_cols]]
   }
   groups <- split(df_clean, group_fac)
-  
+
   gee_features <- list()
   for (grp_name in names(groups)) {
     grp <- groups[[grp_name]]
     if (nrow(grp) == 0) next
-    
+
     yr <- grp$year[1]
     cls_val <- if (!is.null(class_property)) grp[[class_property]][1] else NULL
-    
-    coords_mat <- as.matrix(grp[, c("longitude", "latitude")])
-    
+
+    # Props for this group
     props <- list(year = as.integer(yr))
     if (!is.null(class_property)) props[[class_property]] <- cls_val
-    
-    # Chunk MultiPoints if they get too large
-    chunk_size <- 5000
+
+    # Convert points to MultiPoint
+    coords_mat <- as.matrix(grp[, c("longitude", "latitude")])
+    chunk_size <- 1000
     for (i in seq(1, nrow(coords_mat), by = chunk_size)) {
       end <- min(i + chunk_size - 1, nrow(coords_mat))
       sub_coords <- coords_mat[i:end, , drop = FALSE]
-      
-      # Convert matrix to list of lists for GEE Python compatibility
       coord_list <- lapply(seq_len(nrow(sub_coords)), function(j) as.list(unname(sub_coords[j, ])))
-      
       geom <- ee$Geometry$MultiPoint(coord_list)
       gee_features <- c(gee_features, list(ee$Feature(geom, props)))
     }
   }
-  
-  t_agg <- log_time("Aggregating points for GEE")
-  gee_features_list <- ee$FeatureCollection(gee_features)
-  log_time("Aggregation complete", t_agg)
-  
+
+  upload_fc <- ee$FeatureCollection(gee_features)
+
+  # Logging size
+  message(sprintf("GEE FeatureCollection created: %d MultiPoint features.", length(gee_features)))
+
   # 3. Sample embeddings
-  t_samp_inner <- log_time(sprintf("Sampling Alpha Earth (%dm footprint mean)", scale))
-  sampled_fc <- get_embeddings_at_fc(gee_features_list, scale, properties = group_cols)
-  log_time("Sampling complete", t_samp_inner)
-  
+  sample_props <- group_cols
+  sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = sample_props)
+
   return(list(
     fc = sampled_fc,
     df_clean = df_clean,
     class_property = class_property
   ))
+}
+
+#' Upload Individual Points to GEE with IDs
+#'
+#' @param df Data frame with longitude, latitude, year
+#' @param chunk_size Points per upload chunk
+#' @return GEE FeatureCollection
+#' @keywords internal
+upload_points_to_gee <- function(df, chunk_size = 2000) {
+  ee <- reticulate::import("ee")
+  message(sprintf("Uploading %d individual points to GEE...", nrow(df)))
+
+  all_features <- list()
+  for (i in seq(1, nrow(df), by = chunk_size)) {
+    end <- min(i + chunk_size - 1, nrow(df))
+    chunk_df <- df[i:end, ]
+    chunk_features <- lapply(seq_len(nrow(chunk_df)), function(j) {
+      ee$Feature(
+        ee$Geometry$Point(c(as.numeric(chunk_df$longitude[j]), as.numeric(chunk_df$latitude[j]))),
+        list(year = as.integer(chunk_df$year[j]), tmp_id = as.integer(i + j - 2))
+      )
+    })
+    all_features <- c(all_features, chunk_features)
+  }
+  fc <- ee$FeatureCollection(unname(all_features))
+  message(sprintf("Pure GEE FeatureCollection created: %d Features.", nrow(df)))
+  return(fc)
 }
 
 #' GEE Classifier Methods Registry
@@ -156,13 +160,11 @@ GEE_CLASSIFIER_METHODS <- list(
 #' @keywords internal
 GEE_REDUCER_METHODS <- list(
   centroid = list(reducer = "mean", encoding = "presence"),
-  ridge = list(reducer = "ridgeRegression", encoding = "binary"),
-  linear = list(reducer = "linearRegression", encoding = "binary"),
-  robust_linear = list(reducer = "robustLinearRegression", encoding = "binary")
+  ridge = list(reducer = "ridgeRegression", encoding = "presence")
 )
 
 #' Train GEE Model
-#' 
+#'
 #' @param sampled_fc Sampled FeatureCollection (from get_embeddings_at_fc)
 #' @param method Method name
 #' @param params List of hyperparameters
@@ -171,14 +173,14 @@ GEE_REDUCER_METHODS <- list(
 train_gee_model <- function(sampled_fc, method, params = list(), class_property = "present") {
   ee <- reticulate::import("ee")
   emb_cols <- sprintf("A%02d", 0:63)
-  
+
   is_classifier <- method %in% names(GEE_CLASSIFIER_METHODS)
   is_reducer <- method %in% names(GEE_REDUCER_METHODS)
-  
+
   if (!is_classifier && !is_reducer) stop("Unsupported method: ", method)
-  
+
   LABEL_COL <- "label"
-  
+
   # 1. Label Encoding
   if (is_reducer) {
     encoding <- GEE_REDUCER_METHODS[[method]]$encoding
@@ -201,7 +203,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
       f$set(LABEL_COL, ee$Number(f$get(class_property))$toInt())
     })
   }
-  
+
   # 2. Training
   if (is_classifier) {
     # Class balancing (1:1)
@@ -209,11 +211,11 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
     neg_fc <- sampled_fc$filter(ee$Filter$eq(LABEL_COL, 0L))
     pos_count <- pos_fc$size()
     balanced_fc <- pos_fc$merge(neg_fc$randomColumn()$sort("random")$limit(pos_count))
-    
+
     gee_method <- GEE_CLASSIFIER_METHODS[[method]]
     # Build classifier with params
     clf_factory <- ee$Classifier[[gee_method]]
-    
+
     # Map R params to GEE params based on method
     filtered_params <- list()
     if (gee_method == "smileRandomForest") {
@@ -236,109 +238,100 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
         minLeafPopulation = if (!is.null(params$minLeafPopulation)) as.integer(params$minLeafPopulation) else NULL
       )
     } else {
-      # For others, try to pass whatever is explicitly requested in 'options' 
-      # or just stay minimal.
-      filtered_params <- list()
+      # For MaxEnt, SVM, etc., only pass what was in the user-provided 'options'
+      # which we stored inside 'params' but we need to isolate them.
+      # To keep it simple, if it's not one of the core tree params or lambda, pass it.
+      core_params <- c("numberOfTrees", "minLeafPopulation", "bagFraction", "shrinkage", "maxNodes", "variablesPerSplit", "lambda_", "polynomial")
+      filtered_params <- params[setdiff(names(params), core_params)]
     }
-    
+
     # Remove NULLs
     filtered_params <- filtered_params[!sapply(filtered_params, is.null)]
-    
+
     clf <- do.call(clf_factory, filtered_params)
     clf <- clf$setOutputMode("PROBABILITY")
-    
-    t_train <- log_time(sprintf("Training GEE model: %s", method))
+
     trained_model <- clf$train(
       features = balanced_fc,
       classProperty = LABEL_COL,
       inputProperties = emb_cols
     )
-    log_time("Training complete", t_train)
-    
-    return(list(trained = trained_model, is_classifier = TRUE, method = method))
-    
+
+    # Retrieve model explanation (n_trees, variable importance, etc) for transparency
+    explanation <- tryCatch(trained_model$explain()$getInfo(), error = function(e) list())
+
+    return(list(
+      trained = trained_model,
+      is_classifier = TRUE,
+      method = method,
+      n_samples_total = as.integer(sampled_fc$size()$getInfo()),
+      n_samples_balanced = as.integer(balanced_fc$size()$getInfo()),
+      gee_explain = explanation
+    ))
   } else {
     # Reducer logic (Ridge, Linear, Centroid)
     reducer_info <- GEE_REDUCER_METHODS[[method]]
     reducer_name <- reducer_info$reducer
-    
+
     if (reducer_name %in% c("ridgeRegression", "linearRegression", "robustLinearRegression")) {
-      # Case weight balancing handled in R before upload? 
-      # Actually Python handled it per-fold or per-run.
-      # For now, let's assume balanced or weighted.
-      # (Skipping centering logic for now to keep it simple, can add later if accuracy differs)
-      
-      if (reducer_name == "ridgeRegression") {
-        lambda <- if (!is.null(params$lambda_)) params$lambda_ else 0.1
-        reducer <- ee$Reducer$ridgeRegression(numX = 64L, numY = 1L, lambda = lambda)
-      } else if (reducer_name == "robustLinearRegression") {
-        beta <- if (!is.null(params$beta)) params$beta else NULL
-        reducer <- ee$Reducer$robustLinearRegression(numX = 65L, numY = 1L, beta = beta)
-        # Note: robust needs constant column
-      } else {
-        reducer <- ee$Reducer$linearRegression(numX = 65L, numY = 1L)
+      lambda_val <- if (!is.null(params$lambda_)) params$lambda_ else 0.0
+      poly_degree <- if (!is.null(params$polynomial)) as.integer(params$polynomial) else 1L
+
+      training_fc <- sampled_fc
+      current_emb_cols <- emb_cols
+
+      if (poly_degree > 1) {
+        # Quadratic: Linear + Squared terms
+        training_fc <- training_fc$map(function(f) {
+          arr <- f$toArray(emb_cols)
+          sq <- arr$multiply(arr)
+          dict <- ee$Dictionary$fromLists(paste0(emb_cols, "_2"), sq$toList())
+          return(f$set(dict))
+        })
+        current_emb_cols <- c(emb_cols, paste0(emb_cols, "_2"))
       }
-      
-      # For linear/robust, need constant column
-      if (reducer_name != "ridgeRegression") {
-        sampled_fc <- sampled_fc$map(function(f) f$set("constant", 1.0))
-        selectors <- c("constant", emb_cols, LABEL_COL)
-      } else {
-        selectors <- c(emb_cols, LABEL_COL)
-      }
-      
-      result <- sampled_fc$reduceColumns(reducer = reducer, selectors = selectors)$getInfo()
+
+      num_x <- as.integer(length(current_emb_cols))
+      reducer <- ee$Reducer$ridgeRegression(numX = num_x, numY = 1L, lambda = lambda_val)
+      selectors <- c(current_emb_cols, LABEL_COL)
+
+      result <- training_fc$reduceColumns(reducer = reducer, selectors = selectors)$getInfo()
       coefs <- as.numeric(result$coefficients)
-      
-      if (reducer_name == "ridgeRegression") {
-        # Ridge GEE returns [intercept, w0, w1, ...]
-        intercept <- coefs[1]
-        weights <- coefs[2:65]
-      } else {
-        intercept <- coefs[1]
-        weights <- coefs[2:65]
-      }
-      
-      return(list(weights = weights, intercept = intercept, is_classifier = FALSE, method = method))
-      
+
+      # GEE convention for these reducers is typically Intercept first
+      intercept <- coefs[1]
+      weights <- coefs[2:length(coefs)]
+
+      return(list(
+        weights = weights,
+        intercept = intercept,
+        is_classifier = FALSE,
+        method = method,
+        polynomial = poly_degree,
+        n_samples = as.integer(sampled_fc$size()$getInfo())
+      ))
     } else if (reducer_name == "mean") {
       # Centroid
       presence_fc <- sampled_fc$filter(ee$Filter$eq(LABEL_COL, 1.0))
-      
-      # We calculate the mean using a chunked-sum approach on GEE
-      # to avoid memory limits and ENSURE no raw embeddings are pulled to R.
-      t_cent <- log_time("Calculating Centroid weights (Server-side Aggregate)")
-      
-      n_presence <- as.numeric(presence_fc$size()$getInfo())
-      if (n_presence == 0) stop("Centroid training failed: No presence points found.")
-      
-      chunk_size_agg <- 5000
-      full_list <- presence_fc$toList(n_presence)
-      total_sum <- numeric(64)
-      
-      for (i in seq(0, n_presence - 1, by = chunk_size_agg)) {
-          end_idx <- min(i + chunk_size_agg, n_presence)
-          chunk_fc <- ee$FeatureCollection(full_list$slice(i, end_idx))
-          
-          # Compute sum of embeddings for this chunk on GEE
-          chunk_sum <- chunk_fc$reduceColumns(
-              reducer = ee$Reducer$sum()$`repeat`(64L),
-              selectors = as.list(emb_cols)
-          )$getInfo()
-          
-          total_sum <- total_sum + as.numeric(chunk_sum$sum)
-      }
-      
-      weights <- total_sum / n_presence
-      log_time("Centroid calculation", t_cent)
-      
-      return(list(weights = as.numeric(weights), intercept = 0.0, is_classifier = FALSE, method = method, trained = NULL))
+      res <- presence_fc$reduceColumns(
+        reducer = ee$Reducer$mean()$`repeat`(64L),
+        selectors = emb_cols
+      )$getInfo()
+      weights <- as.numeric(res$mean)
+      return(list(
+        weights = weights,
+        intercept = 0.0,
+        is_classifier = FALSE,
+        method = method,
+        n_samples = as.integer(sampled_fc$size()$getInfo()),
+        n_samples_presence = as.integer(presence_fc$size()$getInfo())
+      ))
     }
   }
 }
 
 #' Assign Spatial Folds
-#' 
+#'
 #' @param df Data frame with longitude, latitude
 #' @param n_folds Number of folds
 #' @keywords internal
@@ -348,41 +341,43 @@ assign_spatial_folds <- function(df, n_folds = 10) {
     df$fold <- (seq_len(nrow(df)) - 1) %% n_folds
     return(df)
   }
-  
+
   # 1. Upload coordinates to GEE
   df$tmp_id_spatial <- seq_len(nrow(df)) - 1
-  
+
   features <- lapply(seq_len(nrow(df)), function(i) {
     geom <- ee$Geometry$Point(c(as.numeric(df$longitude[i]), as.numeric(df$latitude[i])))
-    ee$Feature(geom, list(tmp_id = as.integer(df$tmp_id_spatial[i]), 
-                           lat = as.numeric(df$latitude[i]), 
-                           lon = as.numeric(df$longitude[i])))
+    ee$Feature(geom, list(
+      tmp_id = as.integer(df$tmp_id_spatial[i]),
+      lat = as.numeric(df$latitude[i]),
+      lon = as.numeric(df$longitude[i])
+    ))
   })
-  
+
   fc <- ee$FeatureCollection(features)
-  
+
   # 2. KMeans on GEE
   clusterer <- ee$Clusterer$wekaKMeans(as.integer(n_folds))$train(fc, list("lat", "lon"))
   clustered <- fc$cluster(clusterer, "fold")
-  
+
   # 3. Retrieve
   cl_res <- clustered$reduceColumns(ee$Reducer$toList(2L), list("tmp_id", "fold"))$getInfo()
-  
+
   # 4. Join
   fold_list <- cl_res$list
   # fold_list is a list of lists [[id, fold], ...]
   ids <- sapply(fold_list, `[[`, 1)
   folds <- sapply(fold_list, `[[`, 2)
   fold_map <- setNames(folds, as.character(ids))
-  
+
   df$fold <- as.integer(fold_map[as.character(df$tmp_id_spatial)])
   df$tmp_id_spatial <- NULL
-  
+
   return(df)
 }
 
 #' Generate Background Embeddings
-#' 
+#'
 #' @param aoi_geom GEE Geometry
 #' @param year Year for Alpha Earth mosaic
 #' @param scale Resolution in meters
@@ -390,7 +385,7 @@ assign_spatial_folds <- function(df, n_folds = 10) {
 #' @keywords internal
 get_background_embeddings_gee <- function(aoi_geom, year, scale, count) {
   img <- get_embedding_image(year, scale)
-  
+
   # Sample background points from the image within AOI
   sampled <- img$sample(
     region = aoi_geom,
@@ -399,138 +394,180 @@ get_background_embeddings_gee <- function(aoi_geom, year, scale, count) {
     geometries = TRUE,
     tileScale = 16L
   )$map(function(f) f$set("present", 0L)$set("year", as.integer(year)))
-  
+
   return(sampled)
 }
 
 #' Predict GEE Map
-#' 
+#'
 #' @param model_res Result from train_gee_model
 #' @param img Alpha Earth mosaic
 #' @keywords internal
 predict_gee_map <- function(model_res, img) {
   ee <- reticulate::import("ee")
   emb_cols <- sprintf("A%02d", 0:63)
-  
+
   if (model_res$is_classifier) {
     score_col <- if (model_res$method == "maxent") "probability" else "classification"
     prediction <- img$classify(model_res$trained)$select(score_col)
-    
+
     if (model_res$method == "svm") {
       prediction <- ee$Image(1.0)$subtract(prediction)
     }
-    
+
     return(prediction$rename("similarity"))
   } else {
     # Reducer dot product
     weights <- model_res$weights
     intercept <- model_res$intercept
-    
-    weights_ee <- ee$Image$constant(as.list(weights))$rename(emb_cols)
-    prediction <- img$multiply(weights_ee)$reduce(ee$Reducer$sum())$add(intercept)
-    
+    poly_degree <- if (!is.null(model_res$polynomial)) model_res$polynomial else 1L
+
+    input_img <- img
+    current_cols <- emb_cols
+    if (poly_degree > 1) {
+      img_sq <- img$multiply(img)$rename(paste0(emb_cols, "_2"))
+      input_img <- img$addBands(img_sq)
+      current_cols <- c(emb_cols, paste0(emb_cols, "_2"))
+    }
+
+    weights_ee <- ee$Image$constant(as.list(weights))$rename(current_cols)
+    prediction <- input_img$multiply(weights_ee)$reduce(ee$Reducer$sum())$add(intercept)
+
     return(prediction$rename("similarity"))
   }
 }
 
-#' Predict at coordinates entirely on GEE
+#' Predict Scores for Multiple Models on GEE
+#'
+#' Consolidates scoring to minimize GEE map passes.
+#'
+#' @param fc GEE FeatureCollection with embeddings
+#' @param models_list List of model results from autoSDM
 #' @keywords internal
-predict_at_coords_gee <- function(coords_df, models, methods, scale, gee_project = NULL) {
-    ee <- reticulate::import("ee")
-    t_tot <- log_time(sprintf("Predicting %d points entirely on GEE", nrow(coords_df)))
-    
-    # 1. Upload points
-    t_prep <- log_time("Uploading points to GEE")
-    all_features <- list()
-    for (i in seq_len(nrow(coords_df))) {
-        all_features[[i]] <- ee$Feature(
-            ee$Geometry$Point(c(as.numeric(coords_df$longitude[i]), as.numeric(coords_df$latitude[i]))),
-            list(year = as.integer(coords_df$year[i]), tmp_id = as.integer(i-1))
-        )
-    }
-    upload_fc <- ee$FeatureCollection(all_features)
-    log_time("Upload complete", t_prep)
-    
-    # 2. Sample embeddings (Still on GEE)
-    t_samp <- log_time("Sampling embeddings (GEE-side)")
-    sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "tmp_id"))
-    log_time("Sampling complete", t_samp)
-    
-    # 3. Apply models
-    current_fc <- sampled_fc
-    pred_cols <- c()
-    emb_cols <- sprintf("A%02d", 0:63)
-    
-    for (m in methods) {
-        m_start <- log_time(sprintf("Applying %s on GEE", m))
-        model_res <- models[[m]]
-        pred_col <- paste0("pred_", m)
-        pred_cols <- c(pred_cols, pred_col)
-        
-        if (model_res$is_classifier) {
-            # Correct GEE usage: classify the entire collection
-            current_fc <- current_fc$classify(model_res$trained, pred_col)
-            
-            # Specific fix for SVM which returns inverted in GEE
-            if (m == "svm") {
-                current_fc <- current_fc$map(function(f) {
-                   f$set(pred_col, ee$Number(1.0)$subtract(f$getNumber(pred_col)))
-                })
-            }
-        } else {
-            # Dot product for reducers (Linear, Ridge, Centroid)
-            weights <- as.numeric(model_res$weights)
-            intercept <- as.numeric(model_res$intercept)
-            
-            # Map over FC to do dot product
-            current_fc <- current_fc$map(function(f) {
-                # Use array math for efficiency
-                vals <- f$toArray(as.list(emb_cols))
-                score <- vals$dotProduct(ee$Array(as.list(weights)))$add(intercept)
-                f$set(pred_col, score)
-            })
-        }
-        log_time(sprintf("Model %s complete", m), m_start)
-    }
-    
-    # 4. Ensemble
-    if (length(methods) > 1) {
-        t_ens <- log_time("Generating Ensemble on GEE")
-        current_fc <- current_fc$map(function(f) {
-            scores <- f$toArray(as.list(pred_cols))
-            f$set("pred_ensemble", scores$reduce(ee$Reducer$mean(), list(0L))$get(list(0L)))
-        })
-        pred_cols <- c(pred_cols, "pred_ensemble")
-        log_time("Ensemble complete", t_ens)
-    }
-    
-    # 5. Retrieve ONLY scores (Scientific integrity: preserve all points)
-    t_ret <- log_time("Retrieving scores only (joining records)")
-    
-    # Strip heavy embeddings before retrieval to stay under GEE limits
-    current_fc <- current_fc$select(as.list(c(pred_cols, "tmp_id")))
-    
-    res_list <- retrieve_gee_properties_chunked(current_fc, c(pred_cols, "tmp_id"))
-    log_time("Retrieval complete", t_ret)
-    
-    if (length(res_list) == 0) {
-        # Fallback to empty shell with NAs
-        final_df <- data.frame(tmp_id = 0:(nrow(coords_df)-1))
-        for (col in pred_cols) final_df[[col]] <- NA
+predict_all_models_gee <- function(fc, models_list) {
+  ee <- reticulate::import("ee")
+  emb_cols <- sprintf("A%02d", 0:63)
+
+  # 1. Identify Classifiers vs Reducers
+  methods <- names(models_list)
+  classifiers <- methods[sapply(models_list, function(m) m$is_classifier)]
+  reducers <- methods[!sapply(models_list, function(m) m$is_classifier)]
+
+  scored_fc <- fc
+
+  # 2. Chain Classifiers (Native and fast)
+  for (m in classifiers) {
+    model_res <- models_list[[m]]
+    score_col <- if (model_res$method == "maxent") "probability" else "classification"
+
+    # Run native classification
+    scored_fc <- scored_fc$classify(model_res$trained)
+
+    # Handle SVM inversion or MaxEnt naming
+    target_col <- paste0("pred_", m)
+    if (model_res$method == "svm") {
+      scored_fc <- scored_fc$map(function(f) f$set(target_col, ee$Number(1.0)$subtract(f$get(score_col))))
     } else {
-        res_df <- as.data.frame(do.call(rbind, res_list))
-        colnames(res_df) <- c(pred_cols, "tmp_id")
-        res_df$tmp_id <- as.numeric(res_df$tmp_id)
-        
-        # Left merge to ensure original size and order (NAs for masked points)
-        final_df <- merge(data.frame(tmp_id = 0:(nrow(coords_df)-1)), res_df, by = "tmp_id", all.x = TRUE)
-        final_df <- final_df[order(final_df$tmp_id), ]
+      scored_fc <- scored_fc$map(function(f) f$set(target_col, f$get(score_col)))
     }
-    
-    final_df$tmp_id <- NULL
-    final_df$longitude <- coords_df$longitude
-    final_df$latitude <- coords_df$latitude
-    
-    log_time("Predicting complete", t_tot)
-    return(final_df)
+  }
+
+  # 3. Consolidate Reducers into ONE map pass (Math expression map)
+  if (length(reducers) > 0) {
+    scored_fc <- scored_fc$map(function(f) {
+      emb <- ee$Array(f$toArray(emb_cols))
+
+      # Prepare squared terms if any model needs them
+      has_poly <- any(sapply(models_list[reducers], function(m) isTRUE(m$polynomial > 1)))
+      emb_aug <- emb
+      if (has_poly) {
+        sq <- emb$multiply(emb)
+        emb_aug <- ee$Array$cat(list(emb, sq), 0L)
+      }
+
+      # Scored features container
+      f_out <- f
+      for (m in reducers) {
+        model_res <- models_list[[m]]
+        poly_degree <- if (!is.null(model_res$polynomial)) model_res$polynomial else 1L
+
+        # Select active part of augmented array
+        current_emb <- if (poly_degree > 1) emb_aug else emb
+        weights_ee <- ee$Array(as.list(model_res$weights))
+        intercept <- model_res$intercept
+
+        # Dot product
+        score <- current_emb$multiply(weights_ee)$reduce(ee$Reducer$sum(), list(0L))$get(list(0L))$add(intercept)
+        f_out <- f_out$set(paste0("pred_", m), score)
+      }
+      return(f_out)
+    })
+  }
+
+  return(scored_fc)
+}
+
+#' Predict Scores for Single Model on GEE
+#'
+#' @param fc GEE FeatureCollection with embeddings
+#' @param model_res Model result
+#' @keywords internal
+predict_points_gee <- function(fc, model_res) {
+  # Wrapper for backward compatibility
+  models_list <- list()
+  models_list[[model_res$method]] <- model_res
+  res_fc <- predict_all_models_gee(fc, models_list)
+
+  # Map back to standard "score" property for caller
+  predicted_col <- paste0("pred_", model_res$method)
+  return(res_fc$map(function(f) f$set("score", f$get(predicted_col))))
+}
+
+#' Internal Training Pipeline
+#'
+#' @keywords internal
+train_autoSDM_internal <- function(data, methods, aoi_geom = NULL, scale = 10, aoi_year = NULL,
+                                   count = NULL, training_params = list()) {
+  # 1. Background Logic
+  needs_bg <- any(methods %in% c("centroid", "ridge", "rf", "gbt", "cart", "maxent", "svm")) &&
+    !("present" %in% names(data) && any(data$present == 0))
+
+  sampled_fc <- NULL
+  if (needs_bg) {
+    if (is.null(aoi_geom)) stop("Background points requested but no AOI geometry provided.")
+    message("--- Generating Background Points (GEE-side) ---")
+    n_bg <- if (!is.null(count)) count else (nrow(data) * 10)
+    bg_fc <- get_background_embeddings_gee(aoi_geom, aoi_year, scale, n_bg)
+
+    # Prepare presence points
+    prep_pres <- prep_training_data_gee(data, class_property = "present", scale = scale)
+    pres_fc <- prep_pres$fc
+
+    sampled_fc <- pres_fc$merge(bg_fc)
+  } else {
+    prep <- prep_training_data_gee(data, class_property = "present", scale = scale)
+    sampled_fc <- prep$fc
+  }
+
+  # 2. Training Loop
+  message(sprintf("--- Training %d Method(s) via R-GEE ---", length(methods)))
+
+  models <- list()
+  meta_results <- list()
+
+  for (m in methods) {
+    message(sprintf("  Training %s...", m))
+
+    start_t <- Sys.time()
+    models[[m]] <- train_gee_model(sampled_fc, m, params = training_params)
+    end_t <- Sys.time()
+
+    # Store metadata
+    meta <- models[[m]]
+    meta$trained <- NULL # Remove heavy GEE object
+    meta$training_seconds <- as.numeric(difftime(end_t, start_t, units = "secs"))
+    meta_results[[m]] <- meta
+  }
+
+  return(list(models = models, metadata = meta_results))
 }

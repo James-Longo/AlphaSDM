@@ -15,8 +15,7 @@ extrapolate(
   wait = FALSE,
   zip = FALSE,
   python_path = NULL,
-  gee_project = NULL,
-  verbose_timer = FALSE
+  gee_project = NULL
 )
 }
 \arguments{

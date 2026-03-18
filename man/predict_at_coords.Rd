@@ -9,8 +9,7 @@ predict_at_coords(
   analysis_meta_paths,
   scale = NULL,
   aoi_year = NULL,
-  gee_project = NULL,
-  verbose_timer = FALSE
+  gee_project = NULL
 )
 }
 \arguments{
@@ -24,7 +23,7 @@ predict_at_coords(
 
 \item{gee_project}{GEE Project ID.}
 
-\item{verbose_timer}{Boolean.}
+\item{options}{Named list of advanced hyperparameters.}
 }
 \value{
 A list with data (df + similarity) and metrics.

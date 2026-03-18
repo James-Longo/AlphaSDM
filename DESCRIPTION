@@ -11,5 +11,6 @@ Imports:
     rgee,
     jsonlite,
     sf,
-    terra
+    terra,
+    stars
 RoxygenNote: 7.3.3

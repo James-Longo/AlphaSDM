@@ -60,11 +60,10 @@ calculate_classifier_metrics <- function(scores_pos, scores_neg) {
     return(list(
       cbi = cbi,
       auc_roc = 0.5,
-      auc_pr = 0.0,
+      auc_prg = 0.0,
       tss = 0.0,
       ba = 0.5,
-      threshold_5pct = if (n_pos > 0) stats::quantile(scores_pos, 0.05) else 0.0,
-      threshold_10pct = if (n_pos > 0) stats::quantile(scores_pos, 0.10) else 0.0
+      cor = 0.0
     ))
   }
   
@@ -74,22 +73,33 @@ calculate_classifier_metrics <- function(scores_pos, scores_neg) {
   pos_ranks <- ranks[1:n_pos]
   auc_roc <- (sum(pos_ranks) - (n_pos * (n_pos + 1) / 2)) / (n_pos * n_neg)
   
-  # 2. AUC-PR
+  # 2. AUC-PRG (Precision-Recall Gain)
   ord <- order(scores_all, decreasing = TRUE)
   sorted_labels <- all_labels[ord]
   
   tp <- cumsum(sorted_labels)
   fp <- cumsum(1 - sorted_labels)
   
-  precision <- tp / (tp + fp)
-  recall <- tp / n_pos
+  # Formula: PrecGain = 1 - (fp/tp) / (n_neg/n_pos), RecGain = 1 - (fn/tp) / (n_neg/n_pos)
+  fn <- n_pos - tp
+  prec_gain <- 1 - (fp / tp) / (n_neg / n_pos)
+  rec_gain <- 1 - (fn / tp) / (n_neg / n_pos)
   
-  # Add start point
-  precision <- c(1.0, precision)
-  recall <- c(0.0, recall)
-  
-  # Trapezoidal rule
-  auc_pr <- sum(diff(recall) * (precision[-1] + precision[-length(precision)]) / 2)
+  # Filter for non-negative gains (random classifier is 0)
+  valid_idx <- which(prec_gain >= 0 & rec_gain >= 0)
+  if (length(valid_idx) > 0) {
+    # Add origin (0,0)
+    pg <- c(0, prec_gain[valid_idx])
+    rg <- c(0, rec_gain[valid_idx])
+    # Sort for integration
+    ord_prg <- order(rg)
+    pg <- pg[ord_prg]
+    rg <- rg[ord_prg]
+    # Trapezoidal rule
+    auc_prg <- sum(diff(rg) * (pg[-1] + pg[-length(pg)]) / 2)
+  } else {
+    auc_prg <- 0.0
+  }
   
   # 3. TSS and Balanced Accuracy
   sens <- tp / n_pos
@@ -97,21 +107,15 @@ calculate_classifier_metrics <- function(scores_pos, scores_neg) {
   tss <- max(sens + spec - 1)
   ba <- max((sens + spec) / 2)
   
-  # 4. Thresholds
-  threshold_5pct <- stats::quantile(scores_pos, 0.05)
-  threshold_10pct <- stats::quantile(scores_pos, 0.10)
-  
-  # 5. Point-Biserial Correlation
-  pb_corr <- stats::cor(all_labels, scores_all)
+  # 4. Pearson Correlation (COR)
+  cor_val <- stats::cor(all_labels, scores_all, method = "pearson")
   
   return(list(
     cbi = as.numeric(cbi),
     auc_roc = as.numeric(auc_roc),
-    auc_pr = as.numeric(auc_pr),
+    auc_prg = as.numeric(auc_prg),
     tss = as.numeric(tss),
     ba = as.numeric(ba),
-    threshold_5pct = as.numeric(threshold_5pct),
-    threshold_10pct = as.numeric(threshold_10pct),
-    point_biserial = as.numeric(pb_corr)
+    cor = as.numeric(cor_val)
   ))
 }

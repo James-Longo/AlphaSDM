@@ -2,7 +2,8 @@
 % Please edit documentation in R/gee_logic.R
 \name{prep_training_data_gee}
 \alias{prep_training_data_gee}
-\title{Prepare Training Data for GEE}
+\title{Prepare Training Data for GEE
+Prepare Training Data on GEE (Pure Server-Side)}
 \usage{
 prep_training_data_gee(df, class_property = "present", scale = 10)
 }
@@ -15,5 +16,6 @@ prep_training_data_gee(df, class_property = "present", scale = 10)
 }
 \description{
 Prepare Training Data for GEE
+Prepare Training Data on GEE (Pure Server-Side)
 }
 \keyword{internal}
