@@ -10,8 +10,7 @@ analyze_embeddings <- function(df, method = "centroid", gee_project = NULL, cv =
   # 1. GEE Auth
   ensure_gee_authenticated(project = gee_project)
 
-  # 2. Preparation (Sample embeddings from GEE)
-  message("Extracting embeddings for analysis...")
+  # 2. Preparation (Upload and sample on GEE)
   prep <- prep_training_data_gee(df, class_property = "present", scale = scale)
   sampled_fc <- prep$fc
 
@@ -19,17 +18,16 @@ analyze_embeddings <- function(df, method = "centroid", gee_project = NULL, cv =
   message(sprintf("Training %s model...", method))
   model_res <- train_gee_model(sampled_fc, method, class_property = "present")
 
-  # 4. Results
-  # For centroid, we return the mean embedding
+  # 4. Score on GEE (EXCLUDING raw embedding download)
   mean_emb <- model_res$weights
-  
-  # Calculate scores locally for the input data if possible
-  emb_cols <- sprintf("A%02d", 0:63)
-  emb_mat <- as.matrix(df[, emb_cols])
-  
   dot_products <- NULL
   if (!model_res$is_classifier) {
-    dot_products <- as.numeric((emb_mat %*% model_res$weights) + model_res$intercept)
+    message("Calculating scores on GEE...")
+    scored_fc <- predict_points_gee(sampled_fc, model_res)
+    
+    # Retrieve only the score property
+    scores_list <- scored_fc$aggregate_array("score")$getInfo()
+    dot_products <- as.numeric(scores_list)
   }
 
   return(list(

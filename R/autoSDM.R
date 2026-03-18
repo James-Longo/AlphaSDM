@@ -1,339 +1,239 @@
-#' autoSDM: Automated Species Distribution Modeling
+#' Generate SDM Map
 #'
-#' This is the main entry point for the autoSDM pipeline.
+#' Trains models on provided data and generates spatial prediction maps (rasters) on GEE.
 #'
-#' @param data A data frame formatted via `format_data()`. Must have standardized lowercase columns
-#'   (longitude, latitude, year, present).
-#' @param aoi Optional. Either a list with `lat`, `lon`, and `radius` (in meters), or a character string path to a polygon file.
-#' @param output_dir Optional. Directory to save results. Defaults to the current working directory.
-#' @param scale Optional. Resolution in meters for the final map. Defaults to 10.
-#' @param python_path Optional. Path to Python executable. Auto-detected if not provided.
-#' @param gee_project Optional. Google Cloud Project ID for Earth Engine.
-#' @param cv Optional. Boolean whether to run spatial cross-validation. Defaults to FALSE.
-#' @param predict_coords Optional. Data frame of coordinates to predict at.
-#' @param methods Optional character vector of method names. Supported:
-#'   Classifiers: `"rf"`, `"gbt"`, `"cart"`, `"maxent"`, `"svm"`.
-#'   Reducers: `"centroid"`, `"ridge"`, `"linear"`, `"robust_linear"`.
-#'   Defaults to all above methods.
-#' @param ensemble Optional. Combine all methods into an ensemble map. Defaults to TRUE.
-#' @param aoi_year Optional. Alpha Earth Mosaic year for map generation or background points. Defaults to NULL.
-#' @param count Optional. Number of background points. Defaults to 10x presence points.
-#' @param verbose_timer Optional. Boolean to display a real-time updating timer for each processing step. Defaults to FALSE.
-#' @param n_cores Optional. Number of cores for parallel processing.
-#' @param options Optional. A named list of advanced hyperparameters (e.g., `list(sampling_rate = 0.8, beta_multiplier = 2.0)`).
-#'   Supported keys: `sampling_rate`, `loss_function`, `beta_multiplier`, `output_format`, `auto_feature`, `linear`, `quadratic`,
-#'   `product`, `threshold`, `hinge`, `extrapolate`, `do_clamp`, `beta`, `seed`.
-#' @return A list containing training data, models, and prediction results.
+#' @param data A data frame formatted via `format_data()`. Must have (longitude, latitude, year, present).
+#'   If a 'species' column is present with multiple species, the function processes each separately.
+#' @param aoi Either a list with `lat`, `lon`, and `radius` (in meters), or a path to a polygon file.
+#' @param scale Resolution in meters for the final map. Defaults to 10.
+#' @param output_dir Directory to save results. Defaults to the current working directory.
+#' @param methods Character vector of method names. Supported: "rf", "gbt", "cart", "maxent", "svm", "ridge", "centroid".
+#' @param ensemble Combine all methods into an ensemble map. Defaults to TRUE.
+#' @param aoi_year Alpha Earth Mosaic year for map generation. Defaults to current year.
+#' @param count Number of background points. Defaults to 10x presence points.
+#' @param n_trees Number of trees for tree-based methods.
+#' @param min_leaf_population Min leaf size for trees.
+#' @param bag_fraction Bagging fraction.
+#' @param shrinkage Learning rate for GBT.
+#' @param lambda_ Penalty for Ridge.
+#' @param polynomial Degree of polynomial terms for Ridge regression. 1 = linear, 2 = quadratic (default).
+#' @param gee_project Optional. Google Cloud Project ID.
+#' @param python_path Optional. Path to Python executable.
+#' @param options Named list of advanced hyperparameters.
 #' @export
-autoSDM <- function(data,
-                    aoi = NULL,
-                    output_dir = "autoSDM_output",
-                    scale = 10,
-                    gee_project = NULL,
-                    cv = 0,
-                    predict_coords = NULL,
-                    methods = NULL,
-                    ensemble = TRUE,
-                    aoi_year = 2017,
-                    count = NULL,
-                    n_trees = 100,
-                    min_leaf_population = 5,
-                    bag_fraction = 0.5,
-                    shrinkage = 0.005,
-                    max_nodes = NULL,
-                    variables_per_split = NULL,
-                    lambda_ = 0.1,
-                    verbose_timer = FALSE,
-                    options = list()) {
-
-  # Set global timer option for nested calls
-  original_timer <- getOption("autoSDM.verbose_timer")
-  options(autoSDM.verbose_timer = verbose_timer)
-  on.exit(options(autoSDM.verbose_timer = original_timer), add = TRUE)
-
-  global_start <- log_time("Starting autoSDM pipeline")
-  if (isTRUE(verbose_timer)) {
-    message(sprintf("--- Training Configuration: n_trees=%d, shrinkage=%0.4f, min_leaf=%d ---",
-                    n_trees, shrinkage, min_leaf_population))
-  }
-  # 1. Input Validation
-  if (missing(data)) stop("Argument 'data' is required.")
-
-  # Default AOI if not provided: Bounding box of data + buffer
-  if (is.null(aoi) && is.null(predict_coords)) {
-    message("No AOI provided. Calculating default bounding box from input data...")
-    coords <- if (inherits(data, "sf")) sf::st_coordinates(data) else data[, c("longitude", "latitude")]
-
-    min_lon <- min(coords[, 1], na.rm = TRUE)
-    max_lon <- max(coords[, 1], na.rm = TRUE)
-    min_lat <- min(coords[, 2], na.rm = TRUE)
-    max_lat <- max(coords[, 2], na.rm = TRUE)
-
-    lon_range <- max_lon - min_lon
-    lat_range <- max_lat - min_lat
-
-    # Center and radius approximation for CLI
-    center_lon <- (min_lon + max_lon) / 2
-    center_lat <- (min_lat + max_lat) / 2
-    # Radius in meters approx (1 deg ~ 111km)
-    # We use the larger dimension to cover the rectangle with a circle
-    radius_m <- max(lon_range, lat_range) / 2 * 111000
-
-    aoi <- list(lat = center_lat, lon = center_lon, radius = radius_m)
-    message(sprintf("  Default AOI: %0.1f km radius around %0.4f, %0.4f", radius_m / 1000, center_lat, center_lon))
-  }
-
-  # Validate: need at least aoi or predict_coords
-  if (is.null(aoi) && is.null(predict_coords)) {
-    stop("You must provide either 'aoi' (for map generation) or 'predict_coords' (for point predictions), or both.")
-  }
-  # 1. Validate standardized column names
-  required_cols <- c("longitude", "latitude", "year")
-  missing <- setdiff(required_cols, names(data))
-  if (length(missing) > 0) {
-    stop(sprintf(
-      "Missing required columns: %s\nPlease use format_data() to standardize your data.",
-      paste(missing, collapse = ", ")
-    ))
-  }
-
-
-  # 2b. Check if data is Presence-Only (no absences)
-
-
-  if (is.null(methods)) {
-    methods <- c("centroid", "ridge", "linear", "robust_linear", "rf", "gbt", "cart", "maxent", "svm")
-  }
-
-  # Ensure "ensemble" is not accidentally listed in methods list
-  methods <- setdiff(methods, "ensemble")
-
-  if (length(methods) == 0) {
-    stop("No valid matching methods found.")
-  }
-
-  # Build global tuning args
-  tuning_args <- c(
-    "--n-trees", as.character(as.integer(n_trees)),
-    "--min-leaf-population", as.character(as.integer(min_leaf_population)),
-    "--bag-fraction", as.character(bag_fraction),
-    "--lambda", as.character(lambda_)
-  )
-  if (!is.null(shrinkage)) tuning_args <- c(tuning_args, "--shrinkage", as.character(shrinkage))
-  if (!is.null(max_nodes)) tuning_args <- c(tuning_args, "--max-nodes", as.character(max_nodes))
-  if (!is.null(variables_per_split)) tuning_args <- c(tuning_args, "--variables-per-split", as.character(variables_per_split))
-
-
-  # Process advanced options
-  if (length(options) > 0) {
-    for (name in names(options)) {
-      val <- options[[name]]
-      cli_flag <- paste0("--", gsub("_", "-", name))
-      tuning_args <- c(tuning_args, cli_flag, as.character(val))
-    }
-  }
-
-  # If more than one method is specified, ensemble is typically expected, but we respect the explicit argument.
-
-  # 3. GEE Configuration & Auth
+generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
+                        methods = NULL, ensemble = TRUE, aoi_year = NULL, count = NULL,
+                        n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
+                        shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL, lambda_ = 0.0,
+                        polynomial = 2L,
+                        gee_project = NULL, python_path = NULL,
+                        options = list()) {
   ensure_gee_authenticated(project = gee_project)
   ee <- reticulate::import("ee")
 
-  # Resolve common parameters
-  if (is.null(scale)) scale <- 10
-  if (is.null(aoi_year)) aoi_year <- format(Sys.Date(), "%Y")
-
-  # Create output directory
-  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-
-  # 5. Decide on Multi-Species
-  is_multi_species <- "species" %in% names(data) && length(unique(data$species)) > 1
-  working_data <- data
-
-  if (!is_multi_species) {
-    message("--- Single-Species Mode ---")
-
-    # 6. GEE Geometry for AOI
-    aoi_geom <- NULL
-    if (is.list(aoi) && !is.null(aoi$lat)) {
-      aoi_geom <- ee$Geometry$Point(c(as.numeric(aoi$lon), as.numeric(aoi$lat)))$buffer(as.numeric(aoi$radius))
-    } else if (is.character(aoi) && file.exists(aoi)) {
-      # Load from file using sf and convert to GEE
-      aoi_sf <- sf::st_read(aoi, quiet = TRUE)
-      aoi_geom <- rgee::sf_as_ee(aoi_sf)$geometry()
-    } else if (!is.null(predict_coords)) {
-      # Use bounding box of predict_coords
-      bbox <- c(min(predict_coords$longitude), min(predict_coords$latitude),
-                max(predict_coords$longitude), max(predict_coords$latitude))
-      aoi_geom <- ee$Geometry$Rectangle(bbox)
-    }
-
-    # 7. Background Logic
-    needs_bg <- any(methods %in% c("centroid", "ridge", "linear", "robust_linear", "rf", "gbt", "cart", "maxent", "svm")) &&
-      !("present" %in% names(working_data) && any(working_data$present == 0))
-
-    sampled_fc <- NULL
-    if (needs_bg && !is.null(aoi_geom)) {
-      message("--- Step: Generating Background Points (GEE-side) ---")
-      n_bg <- if (!is.null(count)) count else (nrow(working_data) * 10)
-      bg_fc <- get_background_embeddings_gee(aoi_geom, aoi_year, scale, n_bg)
-
-      # Prepare presence points
-      prep_pres <- prep_training_data_gee(working_data, class_property = "present", scale = scale)
-      pres_fc <- prep_pres$fc
-
-      sampled_fc <- pres_fc$merge(bg_fc)
-    } else {
-      prep <- prep_training_data_gee(working_data, class_property = "present", scale = scale)
-      sampled_fc <- prep$fc
-    }
-
-    # 8. Training Loop
-    message(sprintf("--- Training %d Method(s) via R-GEE ---", length(methods)))
-
-    meta_results <- list()
-    training_params <- list(
-      numberOfTrees = n_trees,
-      minLeafPopulation = min_leaf_population,
-      bagFraction = bag_fraction,
-      shrinkage = shrinkage,
-      maxNodes = max_nodes,
-      variablesPerSplit = variables_per_split,
-      lambda_ = lambda_
-    )
-
-    # Add advanced options
-    for (opt in names(options)) training_params[[opt]] <- options[[opt]]
-
-    models <- list()
-    for (m in methods) {
-      msg <- sprintf("Training %s...", m)
-      if (verbose_timer) message(msg)
-
-      start_t <- Sys.time()
-      models[[m]] <- train_gee_model(sampled_fc, m, params = training_params)
-      end_t <- Sys.time()
-
-      # Save metadata
-      m_clean <- gsub("[^a-zA-Z0-9]", "", m)
-      meta_path <- file.path(output_dir, paste0("model_", m_clean, ".json"))
-
-      # For reducers, we store weights. For classifiers, we store the GEE ID if serialized?
-      # Actually, let's keep the model objects in memory and just write a placeholder JSON.
-      # (In the future, and for CRAN, we might want to serialize the GEE model ID)
-
-      meta <- list(
-        method = m,
-        training_seconds = as.numeric(difftime(end_t, start_t, units = "secs")),
-        is_classifier = models[[m]]$is_classifier
-      )
-      if (!is.null(models[[m]]$weights)) {
-        meta$weights <- models[[m]]$weights
-        meta$intercept <- models[[m]]$intercept
-      }
-
-      jsonlite::write_json(meta, meta_path, auto_unbox = TRUE)
-      meta_results[[m]] <- meta_path
-    }
-
-    # 9. Map Generation (Individual)
-    img_mosaic <- get_embedding_image(aoi_year, scale)
-
-    if (!ensemble && !is.null(aoi_geom)) {
-      for (m in methods) {
-        message(sprintf("--- Generating Map: %s ---", m))
-        pred_img <- predict_gee_map(models[[m]], img_mosaic)
-
-        # Download or export
-        # For now, let's assume local download if it's a small area
-        m_clean <- gsub("[^a-zA-Z0-9]", "", m)
-        tif_path <- file.path(output_dir, paste0(m_clean, ".tif"))
-
-        # Use rgee::ee_as_raster for small, or task for large
-        # We'll use a helper that decides based on size soon
-        try(rgee::ee_as_raster(image = pred_img, region = aoi_geom, scale = scale, dsn = tif_path), silent = TRUE)
-      }
-    }
-
-    # 10. Ensemble Logic
-    final_results <- list(methods = methods, meta_files = meta_results)
-
-    if (ensemble && !is.null(aoi_geom)) {
-      message("--- Generating Ensemble Map ---")
-
-      # consensus = mean of normalized scores
-      # (This is simplified; a better ensemble would normalize first)
-      pred_images <- lapply(models, function(mod) predict_gee_map(mod, img_mosaic))
-
-      # Combine
-      ensemble_img <- ee$ImageCollection(unname(pred_images))$mean()$rename("similarity")
-
-      # Export
-      tif_path <- file.path(output_dir, "ensemble.tif")
-      try(rgee::ee_as_raster(image = ensemble_img, region = aoi_geom, scale = scale, dsn = tif_path), silent = TRUE)
-
-      final_results$ensemble_map <- tif_path
-    }
-
-    # 11. Point Predictions
-    if (!is.null(predict_coords)) {
-      message("--- Predicting at specific coordinates (GEE-side) ---")
-      final_results$point_predictions <- predict_at_coords_gee(
-          coords_df = predict_coords,
-          models = models,
-          methods = methods,
-          scale = scale,
-          gee_project = gee_project
-      )
-    }
-
-    log_time("autoSDM pipeline", global_start)
-    return(final_results)
-  } else {
-    # MULTI-SPECIES WORKFLOW
-    # -------------------------------------------------------------------------
-    message(sprintf("--- Multi-Species Mode: Processing %d species ---", length(unique(working_data$species))))
-    
-    species_list <- unique(working_data$species)
+  # Multi-species check
+  if ("species" %in% names(data) && length(unique(data$species)) > 1) {
+    species_list <- unique(data$species)
+    message(sprintf("--- Multi-Species Mode: Processing %d species ---", length(species_list)))
     results_list <- list()
-    
     for (sp in species_list) {
-      message(sprintf("\n--- Processing Species: %s ---", sp))
-      sp_data <- working_data[working_data$species == sp, ]
-      sp_out <- file.path(output_dir, sp)
-      
-      # Handle predict_coords if scoped to species
-      sp_predict <- predict_coords
-      if (!is.null(predict_coords) && "species" %in% names(predict_coords)) {
-        sp_predict <- predict_coords[predict_coords$species == sp, ]
-      }
-      
-      # Recursive call for each species
-      results_list[[sp]] <- autoSDM(
-        data = sp_data,
-        aoi = aoi,
-        output_dir = sp_out,
-        scale = scale,
-        gee_project = gee_project,
-        cv = cv,
-        predict_coords = sp_predict,
-        methods = methods,
-        ensemble = ensemble,
-        aoi_year = aoi_year,
-        count = count,
-        n_trees = n_trees,
-        min_leaf_population = min_leaf_population,
-        bag_fraction = bag_fraction,
-        shrinkage = shrinkage,
-        max_nodes = max_nodes,
-        variables_per_split = variables_per_split,
-        lambda_ = lambda_,
-        verbose_timer = verbose_timer,
-        options = options
+      message(sprintf("\n--- Species: %s ---", sp))
+      results_list[[sp]] <- generate_map(
+        data[data$species == sp, ], aoi, scale, file.path(output_dir, sp),
+        methods, ensemble, aoi_year, count, n_trees, min_leaf_population,
+        bag_fraction, shrinkage, max_nodes, variables_per_split, lambda_,
+        polynomial,
+        gee_project, python_path, options
       )
     }
-
-    class(results_list) <- "autoSDM_multi"
     return(results_list)
   }
+
+  if (is.null(aoi_year)) aoi_year <- 2023
+  if (is.null(methods)) methods <- c("centroid", "ridge", "rf", "gbt", "cart", "maxent", "svm")
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # 1. Prepare AOI Geometry
+  aoi_geom <- NULL
+  if (is.list(aoi) && !is.null(aoi$lat)) {
+    aoi_geom <- ee$Geometry$Point(c(as.numeric(aoi$lon), as.numeric(aoi$lat)))$buffer(as.numeric(aoi$radius))
+  } else if (is.character(aoi) && file.exists(aoi)) {
+    aoi_sf <- sf::st_read(aoi, quiet = TRUE)
+    aoi_geom <- rgee::sf_as_ee(aoi_sf)$geometry()
+  } else {
+    stop("Invalid AOI. Please provide a center/radius list or a valid spatial file path.")
+  }
+
+  # 2. Train Models (Shared Pipeline)
+  training_params <- list(
+    numberOfTrees = n_trees, minLeafPopulation = min_leaf_population,
+    bagFraction = bag_fraction, shrinkage = shrinkage,
+    maxNodes = max_nodes, variablesPerSplit = variables_per_split, lambda_ = lambda_,
+    polynomial = polynomial
+  )
+  for (opt in names(options)) training_params[[opt]] <- options[[opt]]
+
+  train_res <- train_autoSDM_internal(
+    data = data, methods = methods, aoi_geom = aoi_geom, scale = scale,
+    aoi_year = aoi_year, count = count, training_params = training_params
+  )
+
+  models <- train_res$models
+  final_results <- list(methods = methods, model_metadata = train_res$metadata)
+
+  # 3. Map Generation
+  img_mosaic <- get_embedding_image(aoi_year, scale)
+
+  # Individual maps
+  message("--- Generating Maps on GEE ---")
+  for (m in methods) {
+    pred_img <- predict_gee_map(models[[m]], img_mosaic)
+    tif_path <- normalizePath(file.path(output_dir, paste0(gsub("[^a-zA-Z0-9]", "", m), ".tif")), mustWork = FALSE)
+    message(sprintf("  Saving map to: %s", tif_path))
+    try(rgee::ee_as_rast(image = pred_img, region = aoi_geom$bounds(), scale = scale, dsn = tif_path), silent = TRUE)
+    final_results[[paste0(m, "_map")]] <- tif_path
+  }
+
+  # Ensemble map
+  if (ensemble && length(methods) > 1) {
+    message("  Calculating ensemble map...")
+    pred_images <- lapply(models, function(mod) predict_gee_map(mod, img_mosaic))
+    ensemble_img <- ee$ImageCollection(unname(pred_images))$mean()$rename("similarity")
+    tif_path <- file.path(output_dir, "ensemble.tif")
+    try(rgee::ee_as_rast(image = ensemble_img, region = aoi_geom$bounds(), scale = scale, dsn = tif_path), silent = TRUE)
+    final_results$ensemble_map <- tif_path
+  }
+
+  return(final_results)
+}
+
+#' Evaluate SDM Models
+#'
+#' Trains models on provided data and evaluates them at specific coordinates to calculate accuracy metrics.
+#'
+#' @param data A data frame formatted via `format_data()`. Must have (longitude, latitude, year, present).
+#' @param predict_coords Data frame of coordinates to evaluate at. Must have (longitude, latitude, year, present).
+#' @param methods Character vector of method names.
+#' @param scale Resolution in meters for sampling. Defaults to 10.
+#' @param output_dir Directory to save results.
+#' @param count Number of background points for training (if data is presence-only).
+#' @param gee_project Optional. Google Cloud Project ID.
+#' @param python_path Optional. Path to Python executable.
+#' @param options Named list of advanced hyperparameters.
+#' @export
+evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, output_dir = getwd(),
+                           aoi_year = NULL, count = NULL,
+                           n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
+                           shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL, lambda_ = 0.0,
+                           polynomial = 2L,
+                           gee_project = NULL, python_path = NULL,
+                           options = list()) {
+  ensure_gee_authenticated(project = gee_project)
+  ee <- reticulate::import("ee")
+
+  # Multi-species check
+  if ("species" %in% names(data) && length(unique(data$species)) > 1) {
+    species_list <- unique(data$species)
+    message(sprintf("--- Multi-Species Mode: Evaluating %d species ---", length(species_list)))
+    results_list <- list()
+    for (sp in species_list) {
+      message(sprintf("\n--- Species: %s ---", sp))
+      sp_predict <- if ("species" %in% names(predict_coords)) predict_coords[predict_coords$species == sp, ] else predict_coords
+      results_list[[sp]] <- evaluate_models(
+        data[data$species == sp, ], sp_predict, methods, scale, file.path(output_dir, sp),
+        aoi_year, count, n_trees, min_leaf_population,
+        bag_fraction, shrinkage, max_nodes, variables_per_split, lambda_,
+        polynomial,
+        gee_project, python_path, options
+      )
+    }
+    return(results_list)
+  }
+
+  if (is.null(aoi_year)) aoi_year <- 2023
+  if (is.null(methods)) methods <- c("centroid", "ridge", "rf", "gbt", "cart", "maxent", "svm")
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # 1. Prepare AOI Geometry for Background Generation (Bounding Box of predict_coords)
+  bbox <- c(
+    min(predict_coords$longitude), min(predict_coords$latitude),
+    max(predict_coords$longitude), max(predict_coords$latitude)
+  )
+  aoi_geom <- ee$Geometry$Rectangle(bbox)
+
+  # 2. Train Models (Shared Pipeline)
+  training_params <- list(
+    numberOfTrees = n_trees, minLeafPopulation = min_leaf_population,
+    bagFraction = bag_fraction, shrinkage = shrinkage,
+    maxNodes = max_nodes, variablesPerSplit = variables_per_split, lambda_ = lambda_,
+    polynomial = polynomial
+  )
+  for (opt in names(options)) training_params[[opt]] <- options[[opt]]
+
+  train_res <- train_autoSDM_internal(
+    data = data, methods = methods, aoi_geom = aoi_geom, scale = scale,
+    aoi_year = aoi_year, count = count, training_params = training_params
+  )
+
+  models <- train_res$models
+  final_results <- list(methods = methods, model_metadata = train_res$metadata)
+
+  # 3. Coordinate Prediction
+  message("--- Predicting at specific coordinates (Server-side) ---")
+  upload_fc <- upload_points_to_gee(predict_coords)
+  sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "tmp_id"))
+  scored_fc <- predict_all_models_gee(sampled_fc, models)
+
+  # Ensemble point scores
+  if (length(methods) > 1) {
+    message("  Calculating ensemble scores...")
+    pred_cols <- paste0("pred_", methods)
+    scored_fc <- scored_fc$map(function(f) {
+      vals <- pred_cols %>% lapply(function(p) f$get(p))
+      ensemble_score <- ee$List(vals)$reduce(ee$Reducer$mean())
+      return(f$set("pred_ensemble", ensemble_score))
+    })
+  }
+
+  # 4. Download Results
+  selectors <- c("tmp_id", paste0("pred_", methods))
+  if (length(methods) > 1) selectors <- c(selectors, "pred_ensemble")
+
+  message(sprintf("  Downloading %d scores from GEE...", nrow(predict_coords)))
+  result_table <- scored_fc$reduceColumns(
+    reducer = ee$Reducer$toList()$`repeat`(length(selectors)),
+    selectors = as.list(selectors)
+  )$getInfo()
+
+  res_df <- as.data.frame(do.call(cbind, result_table$list))
+  colnames(res_df) <- selectors
+  res_df$tmp_id <- as.numeric(res_df$tmp_id)
+  res_df <- res_df[order(res_df$tmp_id), ]
+
+  final_pred <- predict_coords
+  for (col in setdiff(selectors, "tmp_id")) {
+    final_pred[[col]] <- as.numeric(res_df[[col]])
+  }
+
+  # 5. Calculate Metrics
+  if ("present" %in% names(final_pred)) {
+    message("  Calculating evaluation metrics...")
+    metrics_list <- list()
+    for (m in methods) {
+      scores <- final_pred[[paste0("pred_", m)]]
+      pos <- scores[final_pred$present == 1]; neg <- scores[final_pred$present == 0]
+      pos <- pos[!is.na(pos)]; neg <- neg[!is.na(neg)]
+      if (length(pos) > 0 && length(neg) > 0) metrics_list[[m]] <- calculate_classifier_metrics(pos, neg)
+    }
+    if (length(methods) > 1 && "pred_ensemble" %in% names(final_pred)) {
+      scores <- final_pred$pred_ensemble
+      pos <- scores[final_pred$present == 1]; neg <- scores[final_pred$present == 0]
+      pos <- pos[!is.na(pos)]; neg <- neg[!is.na(neg)]
+      if (length(pos) > 0 && length(neg) > 0) metrics_list[["ensemble"]] <- calculate_classifier_metrics(pos, neg)
+    }
+    final_results$metrics <- metrics_list
+  }
+
+  final_results$point_predictions <- final_pred
+  return(final_results)
 }

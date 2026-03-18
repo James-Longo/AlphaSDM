@@ -109,14 +109,8 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL) {
         result$species <- as.character(data[[species]])
     }
 
-    # 11. Preserve Alpha Earth Embeddings (A00-A63) if they exist
-    emb_cols <- sprintf("A%02d", 0:63)
-    available_embs <- intersect(emb_cols, names(data))
-    if (length(available_embs) > 0) {
-        for (ec in available_embs) {
-            result[[ec]] <- data[[ec]]
-        }
-    }
+    # 11. (REMOVED) Local preservation of Alpha Earth Embeddings is disabled per security policy.
+    # Prediction and training always happen server-side on GEE.
 
     # 12. Filter to years with Alpha Earth data (2017+)
     rows_before <- nrow(result)

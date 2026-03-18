@@ -13,7 +13,7 @@
 #' @param zip Logical. If TRUE, zips the output rasters into a single archive (local mode only).
 #' @return A list containing the paths to the generated map files, HTML, or GCS export details.
 #' @keywords internal
-extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NULL, aoi_year = NULL, view = FALSE, gcs_bucket = NULL, wait = FALSE, zip = FALSE, python_path = NULL, gee_project = NULL, verbose_timer = FALSE) {
+extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NULL, aoi_year = NULL, view = FALSE, gcs_bucket = NULL, wait = FALSE, zip = FALSE, python_path = NULL, gee_project = NULL) {
   # 1. GEE Auth
   ensure_gee_authenticated(project = gee_project)
   ee <- reticulate::import("ee")
@@ -49,7 +49,7 @@ extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NU
   tif_path <- file.path(output_dir, paste0(m_clean, "_extrapolation.tif"))
   
   message("Exporting extrapolation map to ", tif_path, "...")
-  try(rgee::ee_as_raster(image = prediction, region = aoi_geom, scale = scale, dsn = tif_path), silent = TRUE)
+  try(rgee::ee_as_rast(image = prediction, region = aoi_geom, scale = scale, dsn = tif_path), silent = TRUE)
 
   return(list(map_path = tif_path, method = meta$method))
 }
@@ -61,23 +61,27 @@ extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NU
 #' @param scale Resolution in meters.
 #' @param aoi_year Year for Alpha Earth mosaic.
 #' @param gee_project GEE Project ID.
-#' @param verbose_timer Boolean.
+#' @param options Named list of advanced hyperparameters.
 #' @return A list with data (df + similarity) and metrics.
 #' @export
-predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = NULL, gee_project = NULL, verbose_timer = FALSE) {
+predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = NULL, gee_project = NULL) {
   # 1. GEE Auth
   ensure_gee_authenticated(project = gee_project)
   
   if (is.null(scale)) scale <- 10
   
-  # 2. Extract Embeddings
-  message("Extracting embeddings for prediction coordinates...")
-  df_emb <- extract_embeddings(df, scale = scale, gee_project = gee_project)
+  # 2. Upload and Score on GEE
+  message("Predicting at coordinates (Server-side)...")
+  
+  # 1. Upload points and sample embeddings (stays on GEE)
+  upload_fc <- upload_points_to_gee(df)
+  sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "tmp_id"))
+  
+  # results data
+  results <- df
+  scored_fc <- sampled_fc
   
   # 3. Score for each model
-  results <- df_emb
-  metrics <- list()
-  
   for (mp in analysis_meta_paths) {
     if (!file.exists(mp)) next
     meta <- jsonlite::fromJSON(mp)
@@ -85,22 +89,32 @@ predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = 
     
     col_name <- if (length(analysis_meta_paths) > 1) paste0("similarity_", m) else "similarity"
     
+    # We need model_res format for predict_points_gee
+    model_res <- list(
+        method = m,
+        is_classifier = meta$is_classifier,
+        trained = NULL # Classifiers need serialized state for point prediction in this context
+    )
     if (!meta$is_classifier) {
-      # Reducer (weights): score = (emb * weights) + intercept
-      weights <- as.numeric(meta$weights)
-      intercept <- as.numeric(meta$intercept)
-      
-      emb_cols <- sprintf("A%02d", 0:63)
-      emb_mat <- as.matrix(df_emb[, emb_cols])
-      scores <- (emb_mat %*% weights) + intercept
-      
-      results[[col_name]] <- as.numeric(scores)
+        model_res$weights <- as.numeric(meta$weights)
+        model_res$intercept <- as.numeric(meta$intercept)
+    }
+    
+    if (!meta$is_classifier) {
+        res_fc <- predict_points_gee(scored_fc, model_res)
+        
+        # Download results (aggregate_array is faster)
+        message(sprintf("  Downloading scores for: %s", m))
+        ids <- as.numeric(res_fc$aggregate_array("tmp_id")$getInfo())
+        scores <- as.numeric(res_fc$aggregate_array("score")$getInfo())
+        
+        # Align with tmp_id
+        results[ids + 1, col_name] <- scores
     } else {
-      # Classifier scoring needs GEE if we don't have local weights
-      message("Warning: Classifier point prediction in R is currently limited.")
-      results[[col_name]] <- NA
+        message("Warning: Classifier point prediction in R is currently limited.")
+        results[[col_name]] <- NA
     }
   }
   
-  return(list(data = results, metrics = metrics))
+  return(list(data = results, metrics = list()))
 }

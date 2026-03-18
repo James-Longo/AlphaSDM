@@ -4,7 +4,7 @@
 \alias{.run_command_with_timer}
 \title{Shared internal helper for live-updating timer}
 \usage{
-.run_command_with_timer(command, args, label, active = FALSE)
+.run_command_with_timer(label, active = FALSE)
 }
 \description{
 Shared internal helper for live-updating timer

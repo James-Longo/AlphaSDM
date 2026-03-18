@@ -5,7 +5,7 @@
 \alias{GEE_REDUCER_METHODS}
 \title{GEE Reducer Methods Registry}
 \format{
-An object of class \code{list} of length 4.
+An object of class \code{list} of length 2.
 }
 \usage{
 GEE_REDUCER_METHODS

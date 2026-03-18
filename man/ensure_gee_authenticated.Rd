@@ -2,11 +2,11 @@
 % Please edit documentation in R/install.R
 \name{ensure_gee_authenticated}
 \alias{ensure_gee_authenticated}
-\title{Ensure Google Earth Engine is Authenticated (Internal)}
+\title{Ensure Google Earth Engine is Authenticated and Python is Setup (Internal)}
 \usage{
 ensure_gee_authenticated(project = NULL)
 }
 \description{
-Ensure Google Earth Engine is Authenticated (Internal)
+Ensure Google Earth Engine is Authenticated and Python is Setup (Internal)
 }
 \keyword{internal}
