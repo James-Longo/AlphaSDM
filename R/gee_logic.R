@@ -1,3 +1,25 @@
+#' Internal helper for retrying GEE operations with exponential backoff
+#' 
+#' @keywords internal
+retry_curl_download <- function(expr, max_retries = 5, initial_delay = 1) {
+  for (i in seq_len(max_retries)) {
+    res <- try(expr, silent = TRUE)
+    if (!inherits(res, "try-error")) return(res)
+    
+    msg <- as.character(res)
+    is_retryable <- grepl("429", msg) || grepl("Computation timed out", msg) || 
+                   grepl("Unknown Error", msg) || grepl("cannot open the connection", msg)
+                   
+    if (is_retryable && i < max_retries) {
+      delay <- initial_delay * (2 ^ (i - 1)) + runif(1, 0, 1)
+      message(sprintf("  GEE rate limit/timeout hit. Retrying in %.2f seconds (Attempt %d/%d)...", delay, i, max_retries))
+      Sys.sleep(delay)
+    } else {
+      stop(res)
+    }
+  }
+}
+
 get_embedding_image <- function(year, scale = 10) {
   ee <- reticulate::import("ee")
   asset_path <- "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
@@ -113,6 +135,14 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
   sample_props <- group_cols
   sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = sample_props)
 
+  # Log valid points remaining
+  final_count <- as.integer(sampled_fc$size()$getInfo())
+  dropped <- nrow(df_clean) - final_count
+  if (dropped > 0) {
+    message(sprintf("  -> Discarded %d presence points due to missing embeddings (e.g., over water).", dropped))
+  }
+  message(sprintf("  -> Final valid presence points: %d", final_count))
+
   return(list(
     fc = sampled_fc,
     df_clean = df_clean,
@@ -151,7 +181,9 @@ upload_points_to_gee <- function(df, chunk_size = 2000, id_offset = 0) {
       geom <- ee$Geometry$MultiPoint(coords_list)
       props <- list(
         year = yr,
-        tmp_ids = ee$List(ids_list)
+        tmp_ids = ee$List(ids_list),
+        lons = ee$List(as.list(as.numeric(chunk_df$longitude))),
+        lats = ee$List(as.list(as.numeric(chunk_df$latitude)))
       )
       
       all_features <- c(all_features, list(ee$Feature(geom, props)))
@@ -168,11 +200,18 @@ def unpack_compressed_geom(f):
     f = ee.Feature(f)
     coords = f.geometry().coordinates()
     ids = ee.List(f.get('tmp_ids'))
+    lons = ee.List(f.get('lons'))
+    lats = ee.List(f.get('lats'))
     yr = f.get('year')
-    return coords.zip(ids).map(
-        lambda pair: ee.Feature(
-            ee.Geometry.Point(ee.List(ee.List(pair).get(0))),
-            {'year': yr, 'tmp_id': ee.List(pair).get(1)}
+    return coords.zip(ids).zip(lons).zip(lats).map(
+        lambda triple: ee.Feature(
+            ee.Geometry.Point(ee.List(ee.List(ee.List(triple).get(0)).get(0)).get(0)),
+            {
+                'year': yr, 
+                'tmp_id': ee.List(ee.List(ee.List(triple).get(0)).get(0)).get(1),
+                'longitude': ee.List(ee.List(triple).get(0)).get(1),
+                'latitude': ee.List(triple).get(1)
+            }
         )
     )
   ")
@@ -188,7 +227,6 @@ def unpack_compressed_geom(f):
 GEE_CLASSIFIER_METHODS <- list(
   rf = "smileRandomForest",
   gbt = "smileGradientTreeBoost",
-  cart = "smileCart",
   maxent = "amnhMaxent",
   svm = "libsvm"
 )
@@ -268,11 +306,6 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
         numberOfTrees = as.integer(params$numberOfTrees),
         shrinkage = params$shrinkage,
         maxNodes = if (!is.null(params$maxNodes)) as.integer(params$maxNodes) else NULL
-      )
-    } else if (gee_method == "smileCart") {
-      filtered_params <- list(
-        maxNodes = if (!is.null(params$maxNodes)) as.integer(params$maxNodes) else NULL,
-        minLeafPopulation = if (!is.null(params$minLeafPopulation)) as.integer(params$minLeafPopulation) else NULL
       )
     } else {
       # For MaxEnt, SVM, etc., only pass what was in the user-provided 'options'
@@ -438,44 +471,71 @@ get_background_embeddings_gee <- function(data, scale, count) {
 
   year_counts <- table(data$year)
   total_train <- sum(year_counts)
+  
+  # Safe batch limit per single GEE sample() call based on resolution
+  batch_limit <- if (scale <= 10) 1000L else if (scale <= 160) 5000L else 10000L
+
+  message("  -> Generating background points with embeddings (100% server-side)...")
 
   bg_fcs <- list()
+  total_requested <- 0
   total_generated <- 0
-
-  message("  -> Generating background points proportionally across years:")
 
   for (yr_str in names(year_counts)) {
     yr <- as.integer(yr_str)
     n_yr <- round(count * (year_counts[[yr_str]] / total_train))
     if (n_yr == 0) next
 
-    message(sprintf("     Year %d: %d points requested", yr, n_yr))
-
     img <- get_embedding_image(yr, scale)
+    
+    # Process one batch at a time, forcing evaluation between batches
+    remaining <- n_yr
+    batch_seed <- 0L
+    yr_generated <- 0
+    while (remaining > 0) {
+      n_batch <- min(remaining, batch_limit)
+      
+      sampled <- img$sample(
+        region = aoi_geom,
+        scale = scale,
+        numPixels = as.integer(n_batch),
+        geometries = FALSE,
+        tileScale = 16L,
+        seed = as.integer(yr * 100L + batch_seed)
+      )$filter(ee$Filter$notNull(list("A00")))$
+        map(function(f) f$set("present", 0L)$set("year", as.integer(yr)))
 
-    sampled <- img$sample(
-      region = aoi_geom,
-      scale = scale,
-      numPixels = as.integer(n_yr),
-      geometries = TRUE,
-      tileScale = 16L
-    )$map(function(f) f$set("present", 0L)$set("year", as.integer(yr)))
-
-    bg_fcs <- c(bg_fcs, list(sampled))
-    total_generated <- total_generated + n_yr
+      # Force evaluation of this single batch before proceeding
+      batch_count <- sampled$size()$getInfo()
+      if (batch_count > 0) {
+        bg_fcs <- c(bg_fcs, list(sampled))
+        yr_generated <- yr_generated + batch_count
+      }
+      
+      remaining <- remaining - n_batch
+      batch_seed <- batch_seed + 1L
+    }
+    
+    total_requested <- total_requested + n_yr
+    total_generated <- total_generated + yr_generated
+    message(sprintf("     Year %d: %d requested, %d valid", yr, n_yr, yr_generated))
   }
 
-  bg_fc <- ee$FeatureCollection(bg_fcs)$flatten()
+  # Safe merge: all FCs are already evaluated, so this is just a metadata union
+  bg_fc <- bg_fcs[[1]]
+  if (length(bg_fcs) > 1) {
+    for (j in 2:length(bg_fcs)) {
+      bg_fc <- bg_fc$merge(bg_fcs[[j]])
+    }
+  }
 
-  # Count final number to notify discarded NAs (e.g. over water without Alpha Earth coverage)
-  final_bg_count <- bg_fc$size()$getInfo()
-  dropped <- total_generated - final_bg_count
+  dropped <- total_requested - total_generated
 
-  message(sprintf("  -> Total requested: %d", total_generated))
+  message(sprintf("  -> Total requested: %d", total_requested))
   if (dropped > 0) {
-    message(sprintf("  -> Discarded due to NAs (e.g., over water or missing embeddings): %d", dropped))
+    message(sprintf("  -> Discarded due to NAs (e.g., over water): %d", dropped))
   }
-  message(sprintf("  -> Final background points generated: %d\n", final_bg_count))
+  message(sprintf("  -> Final background points generated: %d\n", total_generated))
 
   return(bg_fc)
 }
@@ -611,7 +671,7 @@ predict_points_gee <- function(fc, model_res) {
 train_autoSDM_internal <- function(data, methods, aoi_geom = NULL, scale = 10, aoi_year = NULL,
                                    count = NULL, training_params = list()) {
   # 1. Background Logic
-  needs_bg <- any(methods %in% c("centroid", "ridge", "rf", "gbt", "cart", "maxent", "svm")) &&
+  needs_bg <- any(methods %in% c("centroid", "ridge", "rf", "gbt", "maxent", "svm")) &&
     !("present" %in% names(data) && any(data$present == 0))
 
   sampled_fc <- NULL
