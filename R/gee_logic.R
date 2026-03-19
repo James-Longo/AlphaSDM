@@ -67,7 +67,8 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
 
   # 2. Upload to GEE
   # For training, we group by class/year for efficiency
-  message(sprintf("Uploading %d coordinates to GEE for training...", nrow(df_clean)))
+  message("\n--- Uploading User Data ---")
+  message(sprintf("  -> Transferring %d provided coordinates to GEE...", nrow(df_clean)))
 
   group_cols <- "year"
   if (!is.null(class_property)) group_cols <- c(group_cols, class_property)
@@ -123,27 +124,63 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
 #'
 #' @param df Data frame with longitude, latitude, year
 #' @param chunk_size Points per upload chunk
+#' @param id_offset Numeric offset for tmp_id to support outer batching
 #' @return GEE FeatureCollection
 #' @keywords internal
-upload_points_to_gee <- function(df, chunk_size = 2000) {
+upload_points_to_gee <- function(df, chunk_size = 2000, id_offset = 0) {
   ee <- reticulate::import("ee")
-  message(sprintf("Uploading %d individual points to GEE...", nrow(df)))
+  message(sprintf("Uploading %d coordinates to GEE via efficient MultiPoint compression...", nrow(df)))
 
+  df$tmp_id <- as.integer(id_offset + seq_len(nrow(df)) - 1)
+  groups <- split(df, df$year)
+  
   all_features <- list()
-  for (i in seq(1, nrow(df), by = chunk_size)) {
-    end <- min(i + chunk_size - 1, nrow(df))
-    chunk_df <- df[i:end, ]
-    chunk_features <- lapply(seq_len(nrow(chunk_df)), function(j) {
-      ee$Feature(
-        ee$Geometry$Point(c(as.numeric(chunk_df$longitude[j]), as.numeric(chunk_df$latitude[j]))),
-        list(year = as.integer(chunk_df$year[j]), tmp_id = as.integer(i + j - 2))
+  for (yr_str in names(groups)) {
+    grp <- groups[[yr_str]]
+    yr <- as.integer(yr_str)
+    
+    for (i in seq(1, nrow(grp), by = chunk_size)) {
+      end <- min(i + chunk_size - 1, nrow(grp))
+      chunk_df <- grp[i:end, , drop = FALSE]
+      
+      coords_list <- lapply(seq_len(nrow(chunk_df)), function(j) {
+        list(as.numeric(chunk_df$longitude[j]), as.numeric(chunk_df$latitude[j]))
+      })
+      ids_list <- as.list(as.integer(chunk_df$tmp_id))
+      
+      geom <- ee$Geometry$MultiPoint(coords_list)
+      props <- list(
+        year = yr,
+        tmp_ids = ee$List(ids_list)
       )
-    })
-    all_features <- c(all_features, chunk_features)
+      
+      all_features <- c(all_features, list(ee$Feature(geom, props)))
+    }
   }
-  fc <- ee$FeatureCollection(unname(all_features))
-  message(sprintf("Pure GEE FeatureCollection created: %d Features.", nrow(df)))
-  return(fc)
+
+  compressed_fc <- ee$FeatureCollection(unname(all_features))
+  num_feats <- as.integer(length(all_features))
+
+  # Unpack cleanly on remote server using pure Python definition to bypass R scoping limits
+  reticulate::py_run_string("
+import ee
+def unpack_compressed_geom(f):
+    f = ee.Feature(f)
+    coords = f.geometry().coordinates()
+    ids = ee.List(f.get('tmp_ids'))
+    yr = f.get('year')
+    return coords.zip(ids).map(
+        lambda pair: ee.Feature(
+            ee.Geometry.Point(ee.List(ee.List(pair).get(0))),
+            {'year': yr, 'tmp_id': ee.List(pair).get(1)}
+        )
+    )
+  ")
+  
+  unpack_func <- reticulate::py$unpack_compressed_geom
+  unpacked_list <- compressed_fc$toList(num_feats)$map(unpack_func)$flatten()
+
+  return(ee$FeatureCollection(unpacked_list))
 }
 
 #' GEE Classifier Methods Registry
@@ -378,24 +415,69 @@ assign_spatial_folds <- function(df, n_folds = 10) {
 
 #' Generate Background Embeddings
 #'
-#' @param aoi_geom GEE Geometry
-#' @param year Year for Alpha Earth mosaic
+#' @param data Training data frame containing longitude, latitude, and year
 #' @param scale Resolution in meters
-#' @param count Number of points
+#' @param count Total number of points to generate
 #' @keywords internal
-get_background_embeddings_gee <- function(aoi_geom, year, scale, count) {
-  img <- get_embedding_image(year, scale)
+get_background_embeddings_gee <- function(data, scale, count) {
+  ee <- reticulate::import("ee")
 
-  # Sample background points from the image within AOI
-  sampled <- img$sample(
-    region = aoi_geom,
-    scale = scale,
-    numPixels = as.integer(count),
-    geometries = TRUE,
-    tileScale = 16L
-  )$map(function(f) f$set("present", 0L)$set("year", as.integer(year)))
+  bbox <- c(
+    min(data$longitude, na.rm = TRUE), min(data$latitude, na.rm = TRUE),
+    max(data$longitude, na.rm = TRUE), max(data$latitude, na.rm = TRUE)
+  )
 
-  return(sampled)
+  # if there's only one point, buffer it to create a valid bbox
+  if (bbox[1] == bbox[3] && bbox[2] == bbox[4]) {
+    aoi_geom <- ee$Geometry$Point(c(bbox[1], bbox[2]))$buffer(1000)
+    message(sprintf("  -> Using buffered 1km point (single point dataset): [%.4f, %.4f]", bbox[1], bbox[2]))
+  } else {
+    aoi_geom <- ee$Geometry$Rectangle(bbox)
+    message(sprintf("  -> Using training data bounding box: [%.4f, %.4f, %.4f, %.4f]", bbox[1], bbox[2], bbox[3], bbox[4]))
+  }
+
+  year_counts <- table(data$year)
+  total_train <- sum(year_counts)
+
+  bg_fcs <- list()
+  total_generated <- 0
+
+  message("  -> Generating background points proportionally across years:")
+
+  for (yr_str in names(year_counts)) {
+    yr <- as.integer(yr_str)
+    n_yr <- round(count * (year_counts[[yr_str]] / total_train))
+    if (n_yr == 0) next
+
+    message(sprintf("     Year %d: %d points requested", yr, n_yr))
+
+    img <- get_embedding_image(yr, scale)
+
+    sampled <- img$sample(
+      region = aoi_geom,
+      scale = scale,
+      numPixels = as.integer(n_yr),
+      geometries = TRUE,
+      tileScale = 16L
+    )$map(function(f) f$set("present", 0L)$set("year", as.integer(yr)))
+
+    bg_fcs <- c(bg_fcs, list(sampled))
+    total_generated <- total_generated + n_yr
+  }
+
+  bg_fc <- ee$FeatureCollection(bg_fcs)$flatten()
+
+  # Count final number to notify discarded NAs (e.g. over water without Alpha Earth coverage)
+  final_bg_count <- bg_fc$size()$getInfo()
+  dropped <- total_generated - final_bg_count
+
+  message(sprintf("  -> Total requested: %d", total_generated))
+  if (dropped > 0) {
+    message(sprintf("  -> Discarded due to NAs (e.g., over water or missing embeddings): %d", dropped))
+  }
+  message(sprintf("  -> Final background points generated: %d\n", final_bg_count))
+
+  return(bg_fc)
 }
 
 #' Predict GEE Map
@@ -534,10 +616,9 @@ train_autoSDM_internal <- function(data, methods, aoi_geom = NULL, scale = 10, a
 
   sampled_fc <- NULL
   if (needs_bg) {
-    if (is.null(aoi_geom)) stop("Background points requested but no AOI geometry provided.")
-    message("--- Generating Background Points (GEE-side) ---")
+    message("\n--- Generating Background Points (GEE-side) ---")
     n_bg <- if (!is.null(count)) count else (nrow(data) * 10)
-    bg_fc <- get_background_embeddings_gee(aoi_geom, aoi_year, scale, n_bg)
+    bg_fc <- get_background_embeddings_gee(data, scale, n_bg)
 
     # Prepare presence points
     prep_pres <- prep_training_data_gee(data, class_property = "present", scale = scale)
