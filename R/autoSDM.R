@@ -7,7 +7,7 @@
 #' @param aoi Either a list with `lat`, `lon`, and `radius` (in meters), or a path to a polygon file.
 #' @param scale Resolution in meters for the final map. Defaults to 10.
 #' @param output_dir Directory to save results. Defaults to the current working directory.
-#' @param methods Character vector of method names. Supported: "rf", "gbt", "cart", "maxent", "svm", "ridge", "centroid".
+#' @param methods Character vector of method names. Supported: "rf", "gbt", "maxent", "svm", "ridge", "centroid".
 #' @param ensemble Combine all methods into an ensemble map. Defaults to TRUE.
 #' @param aoi_year Alpha Earth Mosaic year for map generation. Defaults to current year.
 #' @param count Number of background points. Defaults to 10x presence points.
@@ -22,12 +22,12 @@
 #' @param options Named list of advanced hyperparameters.
 #' @export
 generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
-                        methods = NULL, ensemble = TRUE, aoi_year = NULL, count = NULL,
-                        n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
-                        shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL, lambda_ = 0.0,
-                        polynomial = 2L,
-                        gee_project = NULL, python_path = NULL,
-                        options = list()) {
+                         methods = NULL, ensemble = TRUE, aoi_year = NULL, count = NULL,
+                         n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
+                         shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL, lambda_ = 0.0,
+                         polynomial = 2L,
+                         gee_project = NULL, python_path = NULL,
+                         options = list()) {
   ensure_gee_authenticated(project = gee_project)
   ee <- reticulate::import("ee")
 
@@ -50,7 +50,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   }
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  if (is.null(methods)) methods <- c("centroid", "ridge", "rf", "gbt", "cart", "maxent", "svm")
+  if (is.null(methods)) methods <- c("centroid", "ridge", "rf", "gbt", "maxent", "svm")
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
   # 1. Prepare AOI Geometry
@@ -122,12 +122,12 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
 #' @param options Named list of advanced hyperparameters.
 #' @export
 evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, output_dir = getwd(),
-                           aoi_year = NULL, count = NULL,
-                           n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
-                           shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL, lambda_ = 0.0,
-                           polynomial = 2L,
-                           gee_project = NULL, python_path = NULL,
-                           options = list()) {
+                            aoi_year = NULL, count = NULL,
+                            n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
+                            shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL, lambda_ = 0.0,
+                            polynomial = 2L,
+                            gee_project = NULL, python_path = NULL,
+                            options = list()) {
   ensure_gee_authenticated(project = gee_project)
   ee <- reticulate::import("ee")
 
@@ -151,7 +151,7 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
   }
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  if (is.null(methods)) methods <- c("centroid", "ridge", "rf", "gbt", "cart", "maxent", "svm")
+  if (is.null(methods)) methods <- c("centroid", "ridge", "rf", "gbt", "maxent", "svm")
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
   # 1. Prepare AOI Geometry for Background Generation (Bounding Box of predict_coords)
@@ -180,19 +180,32 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
 
   # 3 & 4. Batch Coordinate Prediction & Fast Egress
   message(sprintf("--- Predicting at %d coordinates (Server-side, Batched) ---", nrow(predict_coords)))
-  
+
   selectors <- c("tmp_id", paste0("pred_", methods))
   if (length(methods) > 1) selectors <- c(selectors, "pred_ensemble")
-  
-  chunk_size <- 10000
-  all_res_df <- list()
 
-  for (i in seq(1, nrow(predict_coords), by = chunk_size)) {
+  # Safe floor for chunk size based on resolution
+  safe_chunk_size <- if (scale <= 160) 5000 else 10000
+
+  # Ensure we don't exceed GEE's concurrent aggregation limits (approx. 40)
+  chunk_size <- max(safe_chunk_size, ceiling(nrow(predict_coords) / 40))
+
+  batch_starts <- seq(1, nrow(predict_coords), by = chunk_size)
+  message(sprintf(
+    "  Processing %d coordinates across %d parallel batches (Batch size: %d)...",
+    nrow(predict_coords), length(batch_starts), chunk_size
+  ))
+
+  message(sprintf("  -> Generating signed GEE computation URLs (Main Thread)..."))
+
+  # 1. Main Thread (Python/EE): Generate signed URLs sequentially.
+  # This is fast as it only defines the task on the server.
+  batch_urls <- list()
+  for (i in batch_starts) {
     end_idx <- min(i + chunk_size - 1, nrow(predict_coords))
     chunk_df <- predict_coords[i:end_idx, , drop = FALSE]
-    message(sprintf("  Processing batch %d to %d...", i, end_idx))
 
-    # We tell upload_points_to_gee to offset tmp_id so they match predict_coords global index
+    # Process batch definition on GEE
     upload_fc <- upload_points_to_gee(chunk_df, id_offset = i - 1)
     sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "tmp_id"))
     scored_fc <- predict_all_models_gee(sampled_fc, models)
@@ -207,30 +220,40 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
       })
     }
 
-    # Egress: getDownloadURL natively egresses massive tables cleanly
-    res_batch <- tryCatch({
-      url <- scored_fc$getDownloadURL(filetype = "CSV", selectors = as.list(selectors))
-      read.csv(url)
-    }, error = function(e) {
-      result_table <- scored_fc$reduceColumns(
-        reducer = ee$Reducer$toList()$`repeat`(length(selectors)),
-        selectors = as.list(selectors)
-      )$getInfo()
-      
-      batch_df <- as.data.frame(do.call(cbind, result_table$list))
-      if (nrow(batch_df) > 0) {
-        colnames(batch_df) <- selectors
-        for (col in selectors) batch_df[[col]] <- as.numeric(batch_df[[col]])
-      }
-      batch_df
-    })
-
-    if (is.data.frame(res_batch) && nrow(res_batch) > 0) {
-      all_res_df[[length(all_res_df) + 1]] <- res_batch
-    }
+    # Generate direct REST link
+    batch_urls[[length(batch_urls) + 1]] <- scored_fc$getDownloadURL(filetype = "CSV", selectors = as.list(selectors))
   }
 
-  res_df <- do.call(rbind, all_res_df)
+  # 2. Parallel Pool (Pure R): Concurrent downloads via mclapply.
+  # No Python/ee calls happen inside this loop — just HTTP GET requests.
+  n_cores <- min(length(batch_urls), parallel::detectCores(logical = FALSE), 40L)
+  message(sprintf("  -> Downloading %d batch results in parallel (%d cores)...", length(batch_urls), n_cores))
+  
+  download_one <- function(url) {
+    max_retries <- 5L
+    for (attempt in seq_len(max_retries)) {
+      res <- tryCatch(read.csv(url), error = function(e) e)
+      if (is.data.frame(res)) return(res)
+      
+      err_msg <- conditionMessage(res)
+      is_retryable <- grepl("429", err_msg) || grepl("timed out", err_msg) || 
+                     grepl("cannot open", err_msg)
+      if (is_retryable && attempt < max_retries) {
+        Sys.sleep(2^(attempt - 1) + runif(1, 0, 1))
+      } else {
+        return(data.frame())
+      }
+    }
+    data.frame()
+  }
+  
+  if (.Platform$OS.type == "unix") {
+    all_res_list <- parallel::mclapply(batch_urls, download_one, mc.cores = n_cores)
+  } else {
+    all_res_list <- lapply(batch_urls, download_one)
+  }
+
+  res_df <- do.call(rbind, all_res_list)
 
   # Re-attach scores to predict_coords safely
   final_pred <- predict_coords
@@ -242,7 +265,7 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
     res_df <- res_df[order(res_df$tmp_id), ]
     idx <- match(res_df$tmp_id, (seq_len(nrow(predict_coords)) - 1))
     valid_mask <- !is.na(idx)
-    
+
     for (col in setdiff(selectors, "tmp_id")) {
       final_pred[idx[valid_mask], col] <- as.numeric(res_df[[col]][valid_mask])
     }
@@ -256,14 +279,18 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
     metrics_list <- list()
     for (m in methods) {
       scores <- final_pred[[paste0("pred_", m)]]
-      pos <- scores[final_pred$present == 1]; neg <- scores[final_pred$present == 0]
-      pos <- pos[!is.na(pos)]; neg <- neg[!is.na(neg)]
+      pos <- scores[final_pred$present == 1]
+      neg <- scores[final_pred$present == 0]
+      pos <- pos[!is.na(pos)]
+      neg <- neg[!is.na(neg)]
       if (length(pos) > 0 && length(neg) > 0) metrics_list[[m]] <- calculate_classifier_metrics(pos, neg)
     }
     if (length(methods) > 1 && "pred_ensemble" %in% names(final_pred)) {
       scores <- final_pred$pred_ensemble
-      pos <- scores[final_pred$present == 1]; neg <- scores[final_pred$present == 0]
-      pos <- pos[!is.na(pos)]; neg <- neg[!is.na(neg)]
+      pos <- scores[final_pred$present == 1]
+      neg <- scores[final_pred$present == 0]
+      pos <- pos[!is.na(pos)]
+      neg <- neg[!is.na(neg)]
       if (length(pos) > 0 && length(neg) > 0) metrics_list[["ensemble"]] <- calculate_classifier_metrics(pos, neg)
     }
     final_results$metrics <- metrics_list
