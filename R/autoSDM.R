@@ -178,41 +178,76 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
   models <- train_res$models
   final_results <- list(methods = methods, model_metadata = train_res$metadata)
 
-  # 3. Coordinate Prediction
-  message("--- Predicting at specific coordinates (Server-side) ---")
-  upload_fc <- upload_points_to_gee(predict_coords)
-  sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "tmp_id"))
-  scored_fc <- predict_all_models_gee(sampled_fc, models)
-
-  # Ensemble point scores
-  if (length(methods) > 1) {
-    message("  Calculating ensemble scores...")
-    pred_cols <- paste0("pred_", methods)
-    scored_fc <- scored_fc$map(function(f) {
-      vals <- pred_cols %>% lapply(function(p) f$get(p))
-      ensemble_score <- ee$List(vals)$reduce(ee$Reducer$mean())
-      return(f$set("pred_ensemble", ensemble_score))
-    })
-  }
-
-  # 4. Download Results
+  # 3 & 4. Batch Coordinate Prediction & Fast Egress
+  message(sprintf("--- Predicting at %d coordinates (Server-side, Batched) ---", nrow(predict_coords)))
+  
   selectors <- c("tmp_id", paste0("pred_", methods))
   if (length(methods) > 1) selectors <- c(selectors, "pred_ensemble")
+  
+  chunk_size <- 10000
+  all_res_df <- list()
 
-  message(sprintf("  Downloading %d scores from GEE...", nrow(predict_coords)))
-  result_table <- scored_fc$reduceColumns(
-    reducer = ee$Reducer$toList()$`repeat`(length(selectors)),
-    selectors = as.list(selectors)
-  )$getInfo()
+  for (i in seq(1, nrow(predict_coords), by = chunk_size)) {
+    end_idx <- min(i + chunk_size - 1, nrow(predict_coords))
+    chunk_df <- predict_coords[i:end_idx, , drop = FALSE]
+    message(sprintf("  Processing batch %d to %d...", i, end_idx))
 
-  res_df <- as.data.frame(do.call(cbind, result_table$list))
-  colnames(res_df) <- selectors
-  res_df$tmp_id <- as.numeric(res_df$tmp_id)
-  res_df <- res_df[order(res_df$tmp_id), ]
+    # We tell upload_points_to_gee to offset tmp_id so they match predict_coords global index
+    upload_fc <- upload_points_to_gee(chunk_df, id_offset = i - 1)
+    sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "tmp_id"))
+    scored_fc <- predict_all_models_gee(sampled_fc, models)
 
+    # Ensemble point scores
+    if (length(methods) > 1) {
+      pred_cols <- paste0("pred_", methods)
+      scored_fc <- scored_fc$map(function(f) {
+        vals <- pred_cols %>% lapply(function(p) f$get(p))
+        ensemble_score <- ee$List(vals)$reduce(ee$Reducer$mean())
+        return(f$set("pred_ensemble", ensemble_score))
+      })
+    }
+
+    # Egress: getDownloadURL natively egresses massive tables cleanly
+    res_batch <- tryCatch({
+      url <- scored_fc$getDownloadURL(filetype = "CSV", selectors = as.list(selectors))
+      read.csv(url)
+    }, error = function(e) {
+      result_table <- scored_fc$reduceColumns(
+        reducer = ee$Reducer$toList()$`repeat`(length(selectors)),
+        selectors = as.list(selectors)
+      )$getInfo()
+      
+      batch_df <- as.data.frame(do.call(cbind, result_table$list))
+      if (nrow(batch_df) > 0) {
+        colnames(batch_df) <- selectors
+        for (col in selectors) batch_df[[col]] <- as.numeric(batch_df[[col]])
+      }
+      batch_df
+    })
+
+    if (is.data.frame(res_batch) && nrow(res_batch) > 0) {
+      all_res_df[[length(all_res_df) + 1]] <- res_batch
+    }
+  }
+
+  res_df <- do.call(rbind, all_res_df)
+
+  # Re-attach scores to predict_coords safely
   final_pred <- predict_coords
   for (col in setdiff(selectors, "tmp_id")) {
-    final_pred[[col]] <- as.numeric(res_df[[col]])
+    final_pred[[col]] <- NA # initialize natively
+  }
+
+  if (!is.null(res_df) && nrow(res_df) > 0) {
+    res_df <- res_df[order(res_df$tmp_id), ]
+    idx <- match(res_df$tmp_id, (seq_len(nrow(predict_coords)) - 1))
+    valid_mask <- !is.na(idx)
+    
+    for (col in setdiff(selectors, "tmp_id")) {
+      final_pred[idx[valid_mask], col] <- as.numeric(res_df[[col]][valid_mask])
+    }
+  } else {
+    message("Warning: Failed to process prediction coordinates (all dropped or GEE evaluation failed).")
   }
 
   # 5. Calculate Metrics

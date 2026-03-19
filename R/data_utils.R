@@ -102,6 +102,11 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL) {
     # 8. Add presence column (lowercase "present")
     if (!is.null(presence)) {
         result$present <- as.numeric(data[[presence]])
+    } else {
+        message("\n--- Missing 'presence' column: Assuming Presence-Only Data ---")
+        message("  -> Treating all provided coordinates as presences (1).")
+        message("  -> The downstream pipeline will automatically generate background pseudo-absences.\n")
+        result$present <- 1
     }
 
     # 9. Add species column (lowercase "species")
