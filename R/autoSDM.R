@@ -34,10 +34,10 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   # Multi-species check
   if ("species" %in% names(data) && length(unique(data$species)) > 1) {
     species_list <- unique(data$species)
-    message(sprintf("--- Multi-Species Mode: Processing %d species ---", length(species_list)))
+    timestamp_message(sprintf("--- Multi-Species Mode: Processing %d species ---", length(species_list)))
     results_list <- list()
     for (sp in species_list) {
-      message(sprintf("\n--- Species: %s ---", sp))
+      timestamp_message(sprintf("\n--- Species: %s ---", sp))
       results_list[[sp]] <- generate_map(
         data[data$species == sp, ], aoi, scale, file.path(output_dir, sp),
         methods, ensemble, aoi_year, count, n_trees, min_leaf_population,
@@ -85,18 +85,18 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   img_mosaic <- get_embedding_image(aoi_year, scale)
 
   # Individual maps
-  message("--- Generating Maps on GEE ---")
+  timestamp_message("--- Generating Maps on GEE ---")
   for (m in methods) {
     pred_img <- predict_gee_map(models[[m]], img_mosaic)
     tif_path <- normalizePath(file.path(output_dir, paste0(gsub("[^a-zA-Z0-9]", "", m), ".tif")), mustWork = FALSE)
-    message(sprintf("  Saving map to: %s", tif_path))
+    timestamp_message(sprintf("  Saving map to: %s", tif_path))
     try(rgee::ee_as_rast(image = pred_img, region = aoi_geom$bounds(), scale = scale, dsn = tif_path), silent = TRUE)
     final_results[[paste0(m, "_map")]] <- tif_path
   }
 
   # Ensemble map
   if (ensemble && length(methods) > 1) {
-    message("  Calculating ensemble map...")
+    timestamp_message("  Calculating ensemble map...")
     pred_images <- lapply(models, function(mod) predict_gee_map(mod, img_mosaic))
     ensemble_img <- ee$ImageCollection(unname(pred_images))$mean()$rename("similarity")
     tif_path <- file.path(output_dir, "ensemble.tif")
@@ -134,10 +134,10 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
   # Multi-species check
   if ("species" %in% names(data) && length(unique(data$species)) > 1) {
     species_list <- unique(data$species)
-    message(sprintf("--- Multi-Species Mode: Evaluating %d species ---", length(species_list)))
+    timestamp_message(sprintf("--- Multi-Species Mode: Evaluating %d species ---", length(species_list)))
     results_list <- list()
     for (sp in species_list) {
-      message(sprintf("\n--- Species: %s ---", sp))
+      timestamp_message(sprintf("\n--- Species: %s ---", sp))
       sp_predict <- if ("species" %in% names(predict_coords)) predict_coords[predict_coords$species == sp, ] else predict_coords
       results_list[[sp]] <- evaluate_models(
         data[data$species == sp, ], sp_predict, methods, scale, file.path(output_dir, sp),
@@ -179,7 +179,7 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
   final_results <- list(methods = methods, model_metadata = train_res$metadata)
 
   # 3 & 4. Batch Coordinate Prediction & Fast Egress
-  message(sprintf("--- Predicting at %d coordinates (Server-side, Batched) ---", nrow(predict_coords)))
+  timestamp_message(sprintf("--- Predicting at %d coordinates (Server-side, Batched) ---", nrow(predict_coords)))
 
   selectors <- c("tmp_id", paste0("pred_", methods))
   if (length(methods) > 1) selectors <- c(selectors, "pred_ensemble")
@@ -191,21 +191,24 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
   chunk_size <- max(safe_chunk_size, ceiling(nrow(predict_coords) / 40))
 
   batch_starts <- seq(1, nrow(predict_coords), by = chunk_size)
-  message(sprintf(
+  timestamp_message(sprintf(
     "  Processing %d coordinates across %d parallel batches (Batch size: %d)...",
     nrow(predict_coords), length(batch_starts), chunk_size
   ))
 
-  message(sprintf("  -> Generating signed GEE computation URLs (Main Thread)..."))
-
-  # 1. Main Thread (Python/EE): Generate signed URLs sequentially.
-  # This is fast as it only defines the task on the server.
-  batch_urls <- list()
-  for (i in batch_starts) {
+  # Run full prediction pipeline in parallel via mclapply (fork-safe on Linux).
+  # Each worker independently: uploads coords → samples embeddings → runs models → downloads CSV.
+  # This is the fastest approach because getDownloadURL() triggers the actual GEE computation,
+  # so it MUST happen inside the parallel workers to achieve true concurrency.
+  n_cores <- min(length(batch_starts), parallel::detectCores(logical = FALSE), 40L)
+  timestamp_message(sprintf("  -> Running %d batches in parallel (%d cores)...", length(batch_starts), n_cores))
+  
+  process_batch <- function(idx) {
+    i <- batch_starts[idx]
     end_idx <- min(i + chunk_size - 1, nrow(predict_coords))
     chunk_df <- predict_coords[i:end_idx, , drop = FALSE]
 
-    # Process batch definition on GEE
+    # Full pipeline per worker
     upload_fc <- upload_points_to_gee(chunk_df, id_offset = i - 1)
     sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "tmp_id"))
     scored_fc <- predict_all_models_gee(sampled_fc, models)
@@ -220,19 +223,13 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
       })
     }
 
-    # Generate direct REST link
-    batch_urls[[length(batch_urls) + 1]] <- scored_fc$getDownloadURL(filetype = "CSV", selectors = as.list(selectors))
-  }
-
-  # 2. Parallel Pool (Pure R): Concurrent downloads via mclapply.
-  # No Python/ee calls happen inside this loop — just HTTP GET requests.
-  n_cores <- min(length(batch_urls), parallel::detectCores(logical = FALSE), 40L)
-  message(sprintf("  -> Downloading %d batch results in parallel (%d cores)...", length(batch_urls), n_cores))
-  
-  download_one <- function(url) {
+    # This triggers the actual GEE computation + downloads the result
     max_retries <- 5L
     for (attempt in seq_len(max_retries)) {
-      res <- tryCatch(read.csv(url), error = function(e) e)
+      res <- tryCatch({
+        url <- scored_fc$getDownloadURL(filetype = "CSV", selectors = as.list(selectors))
+        read.csv(url)
+      }, error = function(e) e)
       if (is.data.frame(res)) return(res)
       
       err_msg <- conditionMessage(res)
@@ -247,11 +244,15 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
     data.frame()
   }
   
+  t_start_pred <- Sys.time()
   if (.Platform$OS.type == "unix") {
-    all_res_list <- parallel::mclapply(batch_urls, download_one, mc.cores = n_cores)
+    all_res_list <- parallel::mclapply(seq_along(batch_starts), process_batch, mc.cores = n_cores)
   } else {
-    all_res_list <- lapply(batch_urls, download_one)
+    all_res_list <- lapply(seq_along(batch_starts), process_batch)
   }
+  t_end_pred <- Sys.time()
+  timestamp_message(sprintf("  -> All %d batches complete in %.1f seconds.", length(batch_starts), 
+                  as.numeric(difftime(t_end_pred, t_start_pred, units = "secs"))))
 
   res_df <- do.call(rbind, all_res_list)
 
@@ -270,12 +271,12 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
       final_pred[idx[valid_mask], col] <- as.numeric(res_df[[col]][valid_mask])
     }
   } else {
-    message("Warning: Failed to process prediction coordinates (all dropped or GEE evaluation failed).")
+    timestamp_message("Warning: Failed to process prediction coordinates (all dropped or GEE evaluation failed).")
   }
 
   # 5. Calculate Metrics
   if ("present" %in% names(final_pred)) {
-    message("  Calculating evaluation metrics...")
+    timestamp_message("  Calculating evaluation metrics...")
     metrics_list <- list()
     for (m in methods) {
       scores <- final_pred[[paste0("pred_", m)]]
@@ -294,6 +295,12 @@ evaluate_models <- function(data, predict_coords, methods = NULL, scale = 10, ou
       if (length(pos) > 0 && length(neg) > 0) metrics_list[["ensemble"]] <- calculate_classifier_metrics(pos, neg)
     }
     final_results$metrics <- metrics_list
+
+    # Live metric printing for ensemble
+    if (!is.null(metrics_list[["ensemble"]])) {
+      m <- metrics_list[["ensemble"]]
+      timestamp_message(sprintf("  -> Evaluation (Ensemble): AUC=%.3f, TSS=%.3f", m$auc, m$tss))
+    }
   }
 
   final_results$point_predictions <- final_pred

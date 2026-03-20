@@ -12,7 +12,7 @@ retry_curl_download <- function(expr, max_retries = 5, initial_delay = 1) {
                    
     if (is_retryable && i < max_retries) {
       delay <- initial_delay * (2 ^ (i - 1)) + runif(1, 0, 1)
-      message(sprintf("  GEE rate limit/timeout hit. Retrying in %.2f seconds (Attempt %d/%d)...", delay, i, max_retries))
+      timestamp_message(sprintf("  GEE rate limit/timeout hit. Retrying in %.2f seconds (Attempt %d/%d)...", delay, i, max_retries))
       Sys.sleep(delay)
     } else {
       stop(res)
@@ -89,8 +89,8 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
 
   # 2. Upload to GEE
   # For training, we group by class/year for efficiency
-  message("\n--- Uploading User Data ---")
-  message(sprintf("  -> Transferring %d provided coordinates to GEE...", nrow(df_clean)))
+  timestamp_message("\n--- Uploading User Data ---")
+  timestamp_message(sprintf("  -> Transferring %d provided coordinates to GEE...", nrow(df_clean)))
 
   group_cols <- "year"
   if (!is.null(class_property)) group_cols <- c(group_cols, class_property)
@@ -129,7 +129,7 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
   upload_fc <- ee$FeatureCollection(gee_features)
 
   # Logging size
-  message(sprintf("GEE FeatureCollection created: %d MultiPoint features.", length(gee_features)))
+  timestamp_message(sprintf("GEE FeatureCollection created: %d MultiPoint features.", length(gee_features)))
 
   # 3. Sample embeddings
   sample_props <- group_cols
@@ -139,9 +139,9 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
   final_count <- as.integer(sampled_fc$size()$getInfo())
   dropped <- nrow(df_clean) - final_count
   if (dropped > 0) {
-    message(sprintf("  -> Discarded %d presence points due to missing embeddings (e.g., over water).", dropped))
+    timestamp_message(sprintf("  -> Discarded %d presence points due to missing embeddings (e.g., over water).", dropped))
   }
-  message(sprintf("  -> Final valid presence points: %d", final_count))
+  timestamp_message(sprintf("  -> Final valid presence points: %d", final_count))
 
   return(list(
     fc = sampled_fc,
@@ -159,7 +159,7 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
 #' @keywords internal
 upload_points_to_gee <- function(df, chunk_size = 2000, id_offset = 0) {
   ee <- reticulate::import("ee")
-  message(sprintf("Uploading %d coordinates to GEE via efficient MultiPoint compression...", nrow(df)))
+  timestamp_message(sprintf("Uploading %d coordinates to GEE via efficient MultiPoint compression...", nrow(df)))
 
   df$tmp_id <- as.integer(id_offset + seq_len(nrow(df)) - 1)
   groups <- split(df, df$year)
@@ -463,10 +463,10 @@ get_background_embeddings_gee <- function(data, scale, count) {
   # if there's only one point, buffer it to create a valid bbox
   if (bbox[1] == bbox[3] && bbox[2] == bbox[4]) {
     aoi_geom <- ee$Geometry$Point(c(bbox[1], bbox[2]))$buffer(1000)
-    message(sprintf("  -> Using buffered 1km point (single point dataset): [%.4f, %.4f]", bbox[1], bbox[2]))
+    timestamp_message(sprintf("  -> Using buffered 1km point (single point dataset): [%.4f, %.4f]", bbox[1], bbox[2]))
   } else {
     aoi_geom <- ee$Geometry$Rectangle(bbox)
-    message(sprintf("  -> Using training data bounding box: [%.4f, %.4f, %.4f, %.4f]", bbox[1], bbox[2], bbox[3], bbox[4]))
+    timestamp_message(sprintf("  -> Using training data bounding box: [%.4f, %.4f, %.4f, %.4f]", bbox[1], bbox[2], bbox[3], bbox[4]))
   }
 
   year_counts <- table(data$year)
@@ -475,7 +475,7 @@ get_background_embeddings_gee <- function(data, scale, count) {
   # Safe batch limit per single GEE sample() call based on resolution
   batch_limit <- if (scale <= 10) 1000L else if (scale <= 160) 5000L else 10000L
 
-  message("  -> Generating background points with embeddings (100% server-side)...")
+  timestamp_message("  -> Generating background points with embeddings (100% server-side)...")
 
   bg_fcs <- list()
   total_requested <- 0
@@ -518,7 +518,7 @@ get_background_embeddings_gee <- function(data, scale, count) {
     
     total_requested <- total_requested + n_yr
     total_generated <- total_generated + yr_generated
-    message(sprintf("     Year %d: %d requested, %d valid", yr, n_yr, yr_generated))
+    timestamp_message(sprintf("     Year %d: %d requested, %d valid", yr, n_yr, yr_generated))
   }
 
   # Safe merge: all FCs are already evaluated, so this is just a metadata union
@@ -531,11 +531,11 @@ get_background_embeddings_gee <- function(data, scale, count) {
 
   dropped <- total_requested - total_generated
 
-  message(sprintf("  -> Total requested: %d", total_requested))
+  timestamp_message(sprintf("  -> Total requested: %d", total_requested))
   if (dropped > 0) {
-    message(sprintf("  -> Discarded due to NAs (e.g., over water): %d", dropped))
+    timestamp_message(sprintf("  -> Discarded due to NAs (e.g., over water): %d", dropped))
   }
-  message(sprintf("  -> Final background points generated: %d\n", total_generated))
+  timestamp_message(sprintf("  -> Final background points generated: %d\n", total_generated))
 
   return(bg_fc)
 }
@@ -676,7 +676,7 @@ train_autoSDM_internal <- function(data, methods, aoi_geom = NULL, scale = 10, a
 
   sampled_fc <- NULL
   if (needs_bg) {
-    message("\n--- Generating Background Points (GEE-side) ---")
+    timestamp_message("\n--- Generating Background Points (GEE-side) ---")
     n_bg <- if (!is.null(count)) count else (nrow(data) * 10)
     bg_fc <- get_background_embeddings_gee(data, scale, n_bg)
 
@@ -691,13 +691,13 @@ train_autoSDM_internal <- function(data, methods, aoi_geom = NULL, scale = 10, a
   }
 
   # 2. Training Loop
-  message(sprintf("--- Training %d Method(s) via R-GEE ---", length(methods)))
+  timestamp_message(sprintf("--- Training %d Method(s) via R-GEE ---", length(methods)))
 
   models <- list()
   meta_results <- list()
 
   for (m in methods) {
-    message(sprintf("  Training %s...", m))
+    timestamp_message(sprintf("  Training %s...", m))
 
     start_t <- Sys.time()
     models[[m]] <- train_gee_model(sampled_fc, m, params = training_params)

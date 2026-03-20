@@ -103,9 +103,9 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL) {
     if (!is.null(presence)) {
         result$present <- as.numeric(data[[presence]])
     } else {
-        message("\n--- Missing 'presence' column: Assuming Presence-Only Data ---")
-        message("  -> Treating all provided coordinates as presences (1).")
-        message("  -> The downstream pipeline will automatically generate background pseudo-absences.\n")
+        timestamp_message("\n--- Missing 'presence' column: Assuming Presence-Only Data ---")
+        timestamp_message("  -> Treating all provided coordinates as presences (1).")
+        timestamp_message("  -> The downstream pipeline will automatically generate background pseudo-absences.\n")
         result$present <- 1
     }
 
@@ -123,7 +123,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL) {
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        message(sprintf("Removed %d rows outside Alpha Earth coverage (2017-2025).", rows_before - rows_after))
+        timestamp_message(sprintf("Removed %d rows outside Alpha Earth coverage (2017-2025).", rows_before - rows_after))
     }
 
     # 13. Remove rows with NA values
@@ -132,7 +132,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL) {
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        message(sprintf("Removed %d rows with missing values.", rows_before - rows_after))
+        timestamp_message(sprintf("Removed %d rows with missing values.", rows_before - rows_after))
     }
 
     # 14. Remove duplicate rows
@@ -141,12 +141,12 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL) {
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        message(sprintf("Removed %d duplicate rows.", rows_before - rows_after))
+        timestamp_message(sprintf("Removed %d duplicate rows.", rows_before - rows_after))
     }
 
     # List final columns
     cols_desc <- paste(names(result), collapse = ", ")
-    message(sprintf("Data formatted: %d rows, %d columns (%s)", nrow(result), ncol(result), cols_desc))
+    timestamp_message(sprintf("Data formatted: %d rows, %d columns (%s)", nrow(result), ncol(result), cols_desc))
 
     return(result)
 }
