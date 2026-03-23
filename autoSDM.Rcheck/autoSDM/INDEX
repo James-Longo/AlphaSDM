@@ -1,0 +1,9 @@
+calculate_cbi           Calculate Continuous Boyce Index (CBI)
+calculate_classifier_metrics
+                        Calculate Classifier Metrics
+ee_hard_reset           Hard Reset Google Earth Engine Credentials
+evaluate_models         Evaluate SDM Models
+format_data             Format Data for autoSDM
+generate_map            Generate SDM Map
+install_autoSDM         Install autoSDM Python Dependencies
+predict_at_coords       Predict at Specific Coordinates
