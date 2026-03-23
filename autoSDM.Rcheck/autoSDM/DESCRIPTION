@@ -7,20 +7,13 @@ Description: Facilitates Species Distribution Modeling (SDM) by leveraging Googl
 License: MIT + file LICENSE
 Encoding: UTF-8
 RoxygenNote: 7.3.3
-Imports: 
-    parallel,
-    reticulate,
-    rgee,
-    jsonlite,
-    sf,
-    stars,
-    data.table,
-    magrittr
+Imports: parallel, reticulate, rgee, jsonlite, sf, stars, data.table,
+        magrittr
 URL: https://github.com/James-Longo/autoSDM
 BugReports: https://github.com/James-Longo/autoSDM/issues
-Suggests: 
-    testthat (>= 3.0.0),
-    knitr,
-    rmarkdown
+Suggests: testthat (>= 3.0.0), knitr, rmarkdown
 VignetteBuilder: knitr
 Config/testthat/edition: 3
+NeedsCompilation: no
+Packaged: 2026-03-23 18:15:09 UTC; james-longo
+Built: R 4.3.3; ; 2026-03-23 18:15:20 UTC; unix
