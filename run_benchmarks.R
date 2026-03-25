@@ -36,7 +36,7 @@ if (!is.null(project_id) && project_id != "") {
 
 # 4. Load the 5.1M Row Dataset
 print("AlphaSDM: Loading GeoPlant data (5.1M records)...")
-df <- fread("../autoSDM_benchmarks/GeoPlant/PresenceOnlyOccurrences/PO_metadata_train.csv")
+df <- fread("../AlphaSDM_benchmarks/GeoPlant/PresenceOnlyOccurrences/PO_metadata_train.csv")
 setnames(df, old=c("lat", "lon"), new=c("latitude", "longitude"))
 
 # 5. Trigger the Year-by-Year extraction

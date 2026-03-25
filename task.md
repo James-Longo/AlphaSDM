@@ -1,7 +1,7 @@
 - [x] R Package Refactoring
     - [x] Create `R/data_utils.R` with `format_data`
-    - [x] Refactor `R/autoSDM.R` for ensemble-only consolidated workflow
-    - [x] Update `NAMESPACE` to only export `format_data` and `autoSDM`
+    - [x] Refactor `R/AlphaSDM.R` for ensemble-only consolidated workflow
+    - [x] Update `NAMESPACE` to only export `format_data` and `AlphaSDM`
     - [x] Make `ee_auth_service`, `extract_embeddings`, `analyze_embeddings`, `extrapolate` internal
 - [x] Python Package Refactoring
     - [x] Update `cli.py` for optional `--key` and GEE session auth
