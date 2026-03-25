@@ -5,7 +5,7 @@
 ^\.git
 ^\.agent
 ^\.gitignore
-^autoSDM\.Rcheck
+^AlphaSDM\.Rcheck
 ^\.\.Rcheck
 \.Rhistory
 \.RData

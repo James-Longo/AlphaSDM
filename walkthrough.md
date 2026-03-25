@@ -1,13 +1,13 @@
-# autoSDM Detailed Walkthrough
+# AlphaSDM Detailed Walkthrough
 
-This guide covers the advanced usage of the `autoSDM` pipeline, including multi-model comparisons and high-resolution ensembling.
+This guide covers the advanced usage of the `AlphaSDM` pipeline, including multi-model comparisons and high-resolution ensembling.
 
 ## 1. Simplified Workflow (R)
  
- The easiest way to use `autoSDM` is via the R interface, which consolidates the entire process into a single function call.
+ The easiest way to use `AlphaSDM` is via the R interface, which consolidates the entire process into a single function call.
  
  ```r
- library(autoSDM)
+ library(AlphaSDM)
  
  # 1. Prepare your data
  # Rename columns and ensure correct types
@@ -24,7 +24,7 @@ This guide covers the advanced usage of the `autoSDM` pipeline, including multi-
  # - Centroid Analysis (geometric median)
  # - Maxent Analysis (bias-corrected)
  # - Ensemble Extrapolation (Agreement Map)
- results <- autoSDM(
+ results <- AlphaSDM(
    formatted_data, 
    aoi = list(lat=44.3, lon=-71.3, radius=5000),
    nuisance_vars = c("ObserverID", "Time"),
@@ -43,23 +43,23 @@ You can include nuisance variables to account for sampling bias.
 
 ### 2.2. Extraction & Robust Analysis
 
-We extract embeddings at our target resolution. `autoSDM` uses the **Geometric Median** for centroid analysis, which is the "central" point in 64-dimensional space, effectively ignoring outliers in your presence data.
+We extract embeddings at our target resolution. `AlphaSDM` uses the **Geometric Median** for centroid analysis, which is the "central" point in 64-dimensional space, effectively ignoring outliers in your presence data.
 
 ```bash
 # 1. Extract 100m embeddings
-python -m autoSDM.cli extract --input sightings.csv --output extraction_100m.csv --scale 100
+python -m AlphaSDM.cli extract --input sightings.csv --output extraction_100m.csv --scale 100
 
 # 2. Analyze using Centroid Method
-python -m autoSDM.cli analyze --input extraction_100m.csv --output centroid_results.csv --method centroid
+python -m AlphaSDM.cli analyze --input extraction_100m.csv --output centroid_results.csv --method centroid
 ```
 
 ## 3. Advanced Modeling (Maxent)
 
-For presence-absence data, you can train a Maxent model. `autoSDM` handles nuisance standardization automatically by holding non-ecological variables at their "optima" during map generation.
+For presence-absence data, you can train a Maxent model. `AlphaSDM` handles nuisance standardization automatically by holding non-ecological variables at their "optima" during map generation.
 
 ```bash
 # Analyze using Maxent with Nuisance variables
-python -m autoSDM.cli analyze --input extraction_100m.csv --output maxent_results.csv --method maxent --nuisance ObserverID,Count.Time1
+python -m AlphaSDM.cli analyze --input extraction_100m.csv --output maxent_results.csv --method maxent --nuisance ObserverID,Count.Time1
 ```
 
 ## 4. High-Resolution Extrapolation
@@ -71,11 +71,11 @@ Mapping at 10m involves downloading thousands of tiles. The pipeline handles thi
 
 ```bash
 # Create individual maps (Similarity & Probability)
-python -m autoSDM.cli extrapolate --input centroid_results.csv --output centroid_map.json --meta centroid_results.csv.json --scale 10 --prefix centroid
+python -m AlphaSDM.cli extrapolate --input centroid_results.csv --output centroid_map.json --meta centroid_results.csv.json --scale 10 --prefix centroid
 
 # Create an Ensemble Map (Maxent * Centroid)
 # This highlights areas where both models agree suitability is high.
-python -m autoSDM.cli ensemble --input extraction_10m.csv --meta maxent_results.csv.json --meta2 centroid_results.csv.json --output ensemble_results.json --scale 10 --prefix ensemble
+python -m AlphaSDM.cli ensemble --input extraction_10m.csv --meta maxent_results.csv.json --meta2 centroid_results.csv.json --output ensemble_results.json --scale 10 --prefix ensemble
 ```
 
 ## 5. Performance Optimization
