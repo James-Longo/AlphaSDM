@@ -14,6 +14,7 @@
 #' @return A list containing the paths to the generated map files, HTML, or GCS export details.
 #' @keywords internal
 extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NULL, aoi_year = NULL, view = FALSE, gcs_bucket = NULL, wait = FALSE, zip = FALSE, python_path = NULL, gee_project = NULL) {
+  if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   # 1. GEE Auth
   ensure_gee_authenticated(project = gee_project)
   ee <- reticulate::import("ee")
@@ -65,6 +66,7 @@ extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NU
 #' @return A list with data (df + similarity) and metrics.
 #' @export
 predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = NULL, gee_project = NULL, options = list()) {
+  if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   # 1. GEE Auth
   ensure_gee_authenticated(project = gee_project)
   
