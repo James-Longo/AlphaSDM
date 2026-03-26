@@ -35,6 +35,8 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          polynomial = 2L,
                          gee_project = NULL, python_path = NULL,
                          options = list()) {
+
+    if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)
   ee <- reticulate::import("ee")
 
@@ -143,6 +145,8 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
                             polynomial = 2L,
                             gee_project = NULL, python_path = NULL,
                             options = list()) {
+
+    if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)
   ee <- reticulate::import("ee")
 

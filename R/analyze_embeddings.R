@@ -7,6 +7,7 @@
 #' @return A list containing the results.
 #' @keywords internal
 analyze_embeddings <- function(df, method, gee_project = NULL, cv = FALSE, scale) {
+  if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   if (is.null(method)) stop("Parameter 'method' (e.g., 'centroid' or 'ridge') must be provided.")
   if (is.null(scale)) stop("Parameter 'scale' (resolution in meters) must be provided.")
   # 1. GEE Auth
