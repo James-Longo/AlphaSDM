@@ -227,40 +227,55 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
     end_idx <- min(i + chunk_size - 1, nrow(predict_coords))
     chunk_df <- predict_coords[i:end_idx, , drop = FALSE]
 
-    # Full pipeline per worker
+    # 1. Base Sampling (Common for all models)
     upload_fc <- upload_points_to_gee(chunk_df, id_offset = i - 1)
     sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "tmp_id"))
-    scored_fc <- predict_all_models_gee(sampled_fc, models)
 
-    # Ensemble point scores
-    if (length(methods) > 1) {
-      pred_cols <- paste0("pred_", methods)
-      scored_fc <- scored_fc$map(function(f) {
-        vals <- lapply(pred_cols, function(p) f$get(p))
-        ensemble_score <- ee$List(vals)$reduce(ee$Reducer$mean())
-        return(f$set("pred_ensemble", ensemble_score))
-      })
-    }
-
-    # This triggers the actual GEE computation + downloads the result
-    max_retries <- 5L
-    for (attempt in seq_len(max_retries)) {
-      res <- tryCatch({
-        url <- scored_fc$getDownloadURL(filetype = "CSV", selectors = as.list(selectors))
-        read.csv(url)
-      }, error = function(e) e)
-      if (is.data.frame(res)) return(res)
+    # 2. Resilient Model Prediction (Decoupled per method)
+    chunk_results <- data.frame(tmp_id = (i - 1):(end_idx - 1))
+    
+    for (m in methods) {
+      m_col <- paste0("pred_", m)
+      model_obj <- models[m] # models is a list
+      scored_fc <- predict_all_models_gee(sampled_fc, model_obj)
       
-      err_msg <- conditionMessage(res)
-      is_retryable <- grepl("429", err_msg) || grepl("timed out", err_msg) || 
-                     grepl("cannot open", err_msg)
-      if (is_retryable && attempt < max_retries) {
-        Sys.sleep(2^(attempt - 1) + runif(1, 0, 1))
+      max_retries <- 5L
+      model_df <- NULL
+      for (attempt in seq_len(max_retries)) {
+        res <- tryCatch({
+          url <- scored_fc$getDownloadURL(filetype = "CSV", selectors = as.list(c("tmp_id", m_col)))
+          read.csv(url)
+        }, error = function(e) e)
+        
+        if (is.data.frame(res)) {
+          model_df <- res
+          break
+        }
+        
+        if (attempt == max_retries) {
+          cat(sprintf("\n  ! Warning: Model %s failed for batch %d: %s\n", m, idx, conditionMessage(res)))
+        } else {
+          Sys.sleep(2^(attempt - 1))
+        }
+      }
+      
+      if (!is.null(model_df)) {
+        chunk_results <- merge(chunk_results, model_df, by = "tmp_id", all.x = TRUE)
       } else {
-        return(data.frame())
+        chunk_results[[m_col]] <- as.numeric(NA)
       }
     }
-    data.frame()
+
+    # 3. Ensemble calculation (R-side for resilience)
+    if (length(methods) > 1) {
+      pred_cols <- paste0("pred_", methods)
+      # Calculate means excluding NAs where possible
+      chunk_results$pred_ensemble <- rowMeans(chunk_results[, pred_cols, drop = FALSE], na.rm = TRUE)
+      # If all models failed, result will be NaN. Convert to NA.
+      chunk_results$pred_ensemble[is.nan(chunk_results$pred_ensemble)] <- NA
+    }
+
+    return(chunk_results)
   }
   
   t_start_pred <- Sys.time()
