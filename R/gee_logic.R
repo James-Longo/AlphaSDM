@@ -43,11 +43,10 @@ get_embedding_image <- function(year, scale = 10) {
 #' @param geometries Boolean, retain geometries?
 #' @param years Optional list of years to filter
 #' @keywords internal
-get_embeddings_at_fc <- function(fc, scale, properties = NULL, geometries = FALSE, years = NULL) {
+get_embeddings_at_fc_raw <- function(fc, scale, properties = NULL, geometries = FALSE, years = NULL) {
   ee <- reticulate::import("ee")
 
   if (is.null(years)) {
-    # aggregate_array().getInfo() can be expensive for large FCs
     years <- fc$aggregate_array("year")$distinct()$getInfo()
   }
 
@@ -62,12 +61,16 @@ get_embeddings_at_fc <- function(fc, scale, properties = NULL, geometries = FALS
       scale = scale,
       geometries = geometries,
       tileScale = 16L
-    )$filter(ee$Filter$notNull(as.list("A00")))
-
+    )
     sampled_fcs <- c(sampled_fcs, list(sampled))
   }
-
   return(ee$FeatureCollection(sampled_fcs)$flatten())
+}
+
+get_embeddings_at_fc <- function(fc, scale, properties = NULL, geometries = FALSE, years = NULL) {
+  ee <- reticulate::import("ee")
+  raw <- get_embeddings_at_fc_raw(fc, scale, properties, geometries, years)
+  return(raw$filter(ee$Filter$notNull(as.list("A00"))))
 }
 
 #' Prepare Training Data for GEE
@@ -126,20 +129,81 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
     }
   }
 
-  upload_fc <- ee$FeatureCollection(gee_features)
+  compressed_fc <- ee$FeatureCollection(gee_features)
+  
+  # 2.5 Unpack MultiPoints into individual Point features on GEE
+  # This ensures sampleRegions treats every coordinate as a unique point.
+  reticulate::py_run_string("
+import ee
+def unpack_simple_multipoint(f):
+    f = ee.Feature(f)
+    coords = f.geometry().coordinates()
+    yr = f.get('year')
+    cls = f.get('present')
+    return coords.map(
+        lambda pt: ee.Feature(ee.Geometry.Point(pt), {'year': yr, 'present': cls})
+    )
+  ")
+  
+  unpack_func <- reticulate::py$unpack_simple_multipoint
+  num_feats <- as.integer(length(gee_features))
+  upload_fc <- compressed_fc$toList(num_feats)$map(unpack_func)$flatten()
+  upload_fc <- ee$FeatureCollection(upload_fc)
 
   # Logging size
-  timestamp_message(sprintf("GEE FeatureCollection created: %d MultiPoint features.", length(gee_features)))
+  timestamp_message(sprintf("GEE FeatureCollection created & unpacked: %d Points.", as.integer(upload_fc$size()$getInfo())))
 
   # 3. Sample embeddings
   sample_props <- group_cols
   sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = sample_props)
 
   # Log valid points remaining
-  final_count <- as.integer(sampled_fc$size()$getInfo())
+  final_count <- as.numeric(sampled_fc$size()$getInfo())
   dropped <- nrow(df_clean) - final_count
   if (dropped > 0) {
     timestamp_message(sprintf("  -> Discarded %d presence points due to missing embeddings (e.g., over water).", dropped))
+    
+    # Attempt to retrieve the discarded coordinates for diagnostic investigation
+    tryCatch({
+      # Use an inverted join to find features that were in the upload but not in the result
+      # This works by finding features in 'upload_fc' whose geometry doesn't match anything in 'sampled_fc'
+      dist_filter <- ee$Filter$withinDistance(
+        distance = scale, # Small spatial tolerance
+        leftField = ".geo",
+        rightField = ".geo"
+      )
+      
+      inverted_join <- ee$Join$inverted()
+      orphans_fc <- inverted_join$apply(upload_fc, sampled_fc, dist_filter)
+      
+      # Limit to first 500 orphans to avoid GEE memory overflow during download
+      orphans_info <- orphans_fc$limit(500L)$getInfo()$features
+      
+      if (length(orphans_info) > 0) {
+        orphan_rows <- list()
+        for (f in orphans_info) {
+           # MultiPoint coordinates is a list of [lon, lat] pairs
+           coords_list <- f$geometry$coordinates
+           for (pt in coords_list) {
+             orphan_rows <- c(orphan_rows, list(data.frame(
+               longitude = pt[[1]],
+               latitude = pt[[2]],
+               year = f$properties$year,
+               species = if("species" %in% names(df_clean)) df_clean$species[1] else "unknown"
+             )))
+           }
+        }
+        orphan_df <- do.call(rbind, orphan_rows)
+        
+        # Log to shared CSV
+        log_path <- "discarded_embedding_points.csv"
+        write.table(orphan_df, file = log_path, sep = ",", append = file.exists(log_path), 
+                    col.names = !file.exists(log_path), row.names = FALSE)
+        timestamp_message(sprintf("  -> Logged %d orphaned coordinates to %s", nrow(orphan_df), log_path))
+      }
+    }, error = function(e) {
+      timestamp_message(sprintf("  ! Failed to log orphaned coordinates: %s", e$message))
+    })
   }
   timestamp_message(sprintf("  -> Final valid presence points: %d", final_count))
 

@@ -147,6 +147,30 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
                             options = list()) {
 
     if (!is.null(gee_project)) gee_project <- as.character(gee_project)
+  
+  # --- 0. PRE-FLIGHT VALIDATION (Catch naming errors early) ---
+  req_cols <- c("longitude", "latitude", "year", "present")
+  missing_data <- setdiff(req_cols, names(data))
+  if (length(missing_data) > 0) {
+      # Help the user catch 'presence' vs 'present'
+      if ("presence" %in% names(data)) {
+          stop("Naming error: AlphaSDM expects 'present' column, but found 'presence'. Please use 'format_data()' to standardize your inputs.")
+      }
+      stop(sprintf("Training data is missing required columns: %s", paste(missing_data, collapse = ", ")))
+  }
+  
+  # Validate predict_coords (if provided)
+  predict_req <- c("longitude", "latitude", "year")
+  missing_predict <- setdiff(predict_req, names(predict_coords))
+  if (length(missing_predict) > 0) {
+      stop(sprintf("Prediction coordinates are missing required columns: %s", paste(missing_predict, collapse = ", ")))
+  }
+  
+  # Fuzzy check for 'presence' in predict_coords (common failure)
+  if ("presence" %in% names(predict_coords) && !"present" %in% names(predict_coords)) {
+      stop("Naming error: 'presence' column detected in predict_coords. For AlphaSDM to calculate metrics, the target column must be named 'present'. Use 'format_data()'.")
+  }
+
   ensure_gee_authenticated(project = gee_project)
   ee <- reticulate::import("ee")
 
@@ -203,11 +227,11 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
   selectors <- c("tmp_id", paste0("pred_", methods))
   if (length(methods) > 1) selectors <- c(selectors, "pred_ensemble")
 
-  # Safe floor for chunk size based on resolution
-  safe_chunk_size <- if (scale <= 160) 5000 else 10000
+  # Prediction batch size (Default 5000, overridable by options)
+  batch_limit <- if (!is.null(options$batch_size)) as.integer(options$batch_size) else 5000L
 
   # Ensure we don't exceed GEE's concurrent aggregation limits (approx. 40)
-  chunk_size <- max(safe_chunk_size, ceiling(nrow(predict_coords) / 40))
+  chunk_size <- max(batch_limit, ceiling(nrow(predict_coords) / 40))
 
   batch_starts <- seq(1, nrow(predict_coords), by = chunk_size)
   timestamp_message(sprintf(
