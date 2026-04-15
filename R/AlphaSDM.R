@@ -335,6 +335,15 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
   # 5. Calculate Metrics
   if ("present" %in% names(final_pred)) {
     timestamp_message("  Calculating evaluation metrics...")
+    
+    # Check for Class Degeneracy (Must have both 0 and 1)
+    u_vals <- unique(final_pred$present[!is.na(final_pred$present)])
+    if (length(u_vals) < 2) {
+        msg <- if (isTRUE(all(u_vals == 1))) "Presence-only" else "Absence-only"
+        timestamp_message(sprintf("  ! Warning: Cannot calculate accuracy metrics (AUC/TSS). Evaluation set is %s.", msg))
+        final_results$evaluation_error <- sprintf("Metric calculation skipped: validation set has %s samples.", msg)
+    }
+    
     metrics_list <- list()
     for (m in methods) {
       scores <- final_pred[[paste0("pred_", m)]]

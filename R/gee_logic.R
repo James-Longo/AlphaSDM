@@ -1,17 +1,19 @@
 #' Internal helper for retrying GEE operations with exponential backoff
-#' 
+#'
 #' @keywords internal
 retry_curl_download <- function(expr, max_retries = 5, initial_delay = 1) {
   for (i in seq_len(max_retries)) {
     res <- try(expr, silent = TRUE)
-    if (!inherits(res, "try-error")) return(res)
-    
+    if (!inherits(res, "try-error")) {
+      return(res)
+    }
+
     msg <- as.character(res)
-    is_retryable <- grepl("429", msg) || grepl("Computation timed out", msg) || 
-                   grepl("Unknown Error", msg) || grepl("cannot open the connection", msg)
-                   
+    is_retryable <- grepl("429", msg) || grepl("Computation timed out", msg) ||
+      grepl("Unknown Error", msg) || grepl("cannot open the connection", msg)
+
     if (is_retryable && i < max_retries) {
-      delay <- initial_delay * (2 ^ (i - 1)) + runif(1, 0, 1)
+      delay <- initial_delay * (2^(i - 1)) + runif(1, 0, 1)
       timestamp_message(sprintf("  GEE rate limit/timeout hit. Retrying in %.2f seconds (Attempt %d/%d)...", delay, i, max_retries))
       Sys.sleep(delay)
     } else {
@@ -130,7 +132,7 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
   }
 
   compressed_fc <- ee$FeatureCollection(gee_features)
-  
+
   # 2.5 Unpack MultiPoints into individual Point features on GEE
   # This ensures sampleRegions treats every coordinate as a unique point.
   reticulate::py_run_string("
@@ -144,7 +146,7 @@ def unpack_simple_multipoint(f):
         lambda pt: ee.Feature(ee.Geometry.Point(pt), {'year': yr, 'present': cls})
     )
   ")
-  
+
   unpack_func <- reticulate::py$unpack_simple_multipoint
   num_feats <- as.integer(length(gee_features))
   upload_fc <- compressed_fc$toList(num_feats)$map(unpack_func)$flatten()
@@ -162,48 +164,53 @@ def unpack_simple_multipoint(f):
   dropped <- nrow(df_clean) - final_count
   if (dropped > 0) {
     timestamp_message(sprintf("  -> Discarded %d presence points due to missing embeddings (e.g., over water).", dropped))
-    
+
     # Attempt to retrieve the discarded coordinates for diagnostic investigation
-    tryCatch({
-      # Use an inverted join to find features that were in the upload but not in the result
-      # This works by finding features in 'upload_fc' whose geometry doesn't match anything in 'sampled_fc'
-      dist_filter <- ee$Filter$withinDistance(
-        distance = scale, # Small spatial tolerance
-        leftField = ".geo",
-        rightField = ".geo"
-      )
-      
-      inverted_join <- ee$Join$inverted()
-      orphans_fc <- inverted_join$apply(upload_fc, sampled_fc, dist_filter)
-      
-      # Limit to first 500 orphans to avoid GEE memory overflow during download
-      orphans_info <- orphans_fc$limit(500L)$getInfo()$features
-      
-      if (length(orphans_info) > 0) {
-        orphan_rows <- list()
-        for (f in orphans_info) {
-           # MultiPoint coordinates is a list of [lon, lat] pairs
-           coords_list <- f$geometry$coordinates
-           for (pt in coords_list) {
-             orphan_rows <- c(orphan_rows, list(data.frame(
-               longitude = pt[[1]],
-               latitude = pt[[2]],
-               year = f$properties$year,
-               species = if("species" %in% names(df_clean)) df_clean$species[1] else "unknown"
-             )))
-           }
+    tryCatch(
+      {
+        # Use an inverted join to find features that were in the upload but not in the result
+        # This works by finding features in 'upload_fc' whose geometry doesn't match anything in 'sampled_fc'
+        dist_filter <- ee$Filter$withinDistance(
+          distance = scale, # Small spatial tolerance
+          leftField = ".geo",
+          rightField = ".geo"
+        )
+
+        inverted_join <- ee$Join$inverted()
+        orphans_fc <- inverted_join$apply(upload_fc, sampled_fc, dist_filter)
+
+        # Limit to first 500 orphans to avoid GEE memory overflow during download
+        orphans_info <- orphans_fc$limit(500L)$getInfo()$features
+
+        if (length(orphans_info) > 0) {
+          orphan_rows <- list()
+          for (f in orphans_info) {
+            # MultiPoint coordinates is a list of [lon, lat] pairs
+            coords_list <- f$geometry$coordinates
+            for (pt in coords_list) {
+              orphan_rows <- c(orphan_rows, list(data.frame(
+                longitude = pt[[1]],
+                latitude = pt[[2]],
+                year = f$properties$year,
+                species = if ("species" %in% names(df_clean)) df_clean$species[1] else "unknown"
+              )))
+            }
+          }
+          orphan_df <- do.call(rbind, orphan_rows)
+
+          # Log to shared CSV
+          log_path <- "discarded_embedding_points.csv"
+          write.table(orphan_df,
+            file = log_path, sep = ",", append = file.exists(log_path),
+            col.names = !file.exists(log_path), row.names = FALSE
+          )
+          timestamp_message(sprintf("  -> Logged %d orphaned coordinates to %s", nrow(orphan_df), log_path))
         }
-        orphan_df <- do.call(rbind, orphan_rows)
-        
-        # Log to shared CSV
-        log_path <- "discarded_embedding_points.csv"
-        write.table(orphan_df, file = log_path, sep = ",", append = file.exists(log_path), 
-                    col.names = !file.exists(log_path), row.names = FALSE)
-        timestamp_message(sprintf("  -> Logged %d orphaned coordinates to %s", nrow(orphan_df), log_path))
+      },
+      error = function(e) {
+        timestamp_message(sprintf("  ! Failed to log orphaned coordinates: %s", e$message))
       }
-    }, error = function(e) {
-      timestamp_message(sprintf("  ! Failed to log orphaned coordinates: %s", e$message))
-    })
+    )
   }
   timestamp_message(sprintf("  -> Final valid presence points: %d", final_count))
 
@@ -227,21 +234,21 @@ upload_points_to_gee <- function(df, chunk_size = 2000, id_offset = 0) {
 
   df$tmp_id <- as.integer(id_offset + seq_len(nrow(df)) - 1)
   groups <- split(df, df$year)
-  
+
   all_features <- list()
   for (yr_str in names(groups)) {
     grp <- groups[[yr_str]]
     yr <- as.integer(yr_str)
-    
+
     for (i in seq(1, nrow(grp), by = chunk_size)) {
       end <- min(i + chunk_size - 1, nrow(grp))
       chunk_df <- grp[i:end, , drop = FALSE]
-      
+
       coords_list <- lapply(seq_len(nrow(chunk_df)), function(j) {
         list(as.numeric(chunk_df$longitude[j]), as.numeric(chunk_df$latitude[j]))
       })
       ids_list <- as.list(as.integer(chunk_df$tmp_id))
-      
+
       geom <- ee$Geometry$MultiPoint(coords_list)
       props <- list(
         year = yr,
@@ -249,7 +256,7 @@ upload_points_to_gee <- function(df, chunk_size = 2000, id_offset = 0) {
         lons = ee$List(as.list(as.numeric(chunk_df$longitude))),
         lats = ee$List(as.list(as.numeric(chunk_df$latitude)))
       )
-      
+
       all_features <- c(all_features, list(ee$Feature(geom, props)))
     }
   }
@@ -271,7 +278,7 @@ def unpack_compressed_geom(f):
         lambda triple: ee.Feature(
             ee.Geometry.Point(ee.List(ee.List(ee.List(triple).get(0)).get(0)).get(0)),
             {
-                'year': yr, 
+                'year': yr,
                 'tmp_id': ee.List(ee.List(ee.List(triple).get(0)).get(0)).get(1),
                 'longitude': ee.List(ee.List(triple).get(0)).get(1),
                 'latitude': ee.List(triple).get(1)
@@ -279,7 +286,7 @@ def unpack_compressed_geom(f):
         )
     )
   ")
-  
+
   unpack_func <- reticulate::py$unpack_compressed_geom
   unpacked_list <- compressed_fc$toList(num_feats)$map(unpack_func)$flatten()
 
@@ -535,7 +542,7 @@ get_background_embeddings_gee <- function(data, scale, count) {
 
   year_counts <- table(data$year)
   total_train <- sum(year_counts)
-  
+
   # Safe batch limit per single GEE sample() call based on resolution
   batch_limit <- if (scale <= 10) 1000L else if (scale <= 160) 5000L else 10000L
 
@@ -551,13 +558,20 @@ get_background_embeddings_gee <- function(data, scale, count) {
     if (n_yr == 0) next
 
     img <- get_embedding_image(yr, scale)
-    
-    # Process one batch at a time, forcing evaluation between batches
+
+    # Process one year at a time
     remaining <- n_yr
     batch_seed <- 0L
     yr_generated <- 0
-    while (remaining > 0) {
-      n_batch <- min(remaining, batch_limit)
+    yr_fcs <- list()
+    
+    # Try up to 5x the requested count to find enough land points
+    max_total_requests <- n_yr * 5
+    attempts_made <- 0
+    
+    while (remaining > 0 && attempts_made < max_total_requests) {
+      n_batch <- min(remaining * 2, batch_limit) # Request 2x remaining to fill gaps faster
+      attempts_made <- attempts_made + n_batch
       
       sampled <- img$sample(
         region = aoi_geom,
@@ -569,23 +583,42 @@ get_background_embeddings_gee <- function(data, scale, count) {
       )$filter(ee$Filter$notNull(list("A00")))$
         map(function(f) f$set("present", 0L)$set("year", as.integer(yr)))
 
-      # Force evaluation of this single batch before proceeding
-      batch_count <- sampled$size()$getInfo()
+      batch_count <- as.integer(sampled$size()$getInfo())
       if (batch_count > 0) {
-        bg_fcs <- c(bg_fcs, list(sampled))
-        yr_generated <- yr_generated + batch_count
+        # Take only what we need to avoid exceeding the target
+        take_now <- min(batch_count, remaining)
+        if (take_now < batch_count) {
+            sampled <- sampled$limit(as.integer(take_now))
+        }
+        
+        yr_fcs <- c(yr_fcs, list(sampled))
+        yr_generated <- yr_generated + take_now
+        remaining <- remaining - take_now
       }
       
-      remaining <- remaining - n_batch
       batch_seed <- batch_seed + 1L
+      if (batch_count == 0 && attempts_made < max_total_requests) {
+        # If we got 0, the AOI might be mostly water. 
+        # We'll try one more large batch before giving up on this year.
+        n_batch <- batch_limit 
+      }
     }
     
-    total_requested <- total_requested + n_yr
-    total_generated <- total_generated + yr_generated
-    timestamp_message(sprintf("     Year %d: %d requested, %d valid", yr, n_yr, yr_generated))
+    if (length(yr_fcs) > 0) {
+        total_requested <- total_requested + n_yr
+        total_generated <- total_generated + yr_generated
+        timestamp_message(sprintf("     Year %d: Target %d, Final %d (Attempts: %d points sampled)", yr, n_yr, yr_generated, attempts_made))
+        
+        # Merge all chunks for this year
+        yr_merged <- yr_fcs[[1]]
+        if (length(yr_fcs) > 1) {
+            for (j in 2:length(yr_fcs)) yr_merged <- yr_merged$merge(yr_fcs[[j]])
+        }
+        bg_fcs <- c(bg_fcs, list(yr_merged))
+    }
   }
 
-  # Safe merge: all FCs are already evaluated, so this is just a metadata union
+  # Final Merge
   bg_fc <- bg_fcs[[1]]
   if (length(bg_fcs) > 1) {
     for (j in 2:length(bg_fcs)) {
@@ -593,13 +626,7 @@ get_background_embeddings_gee <- function(data, scale, count) {
     }
   }
 
-  dropped <- total_requested - total_generated
-
-  timestamp_message(sprintf("  -> Total requested: %d", total_requested))
-  if (dropped > 0) {
-    timestamp_message(sprintf("  -> Discarded due to NAs (e.g., over water): %d", dropped))
-  }
-  timestamp_message(sprintf("  -> Final background points generated: %d\n", total_generated))
+  timestamp_message(sprintf("  -> Total Background Points Finalized: %d\n", total_generated))
 
   return(bg_fc)
 }
@@ -733,7 +760,7 @@ predict_points_gee <- function(fc, model_res) {
 #'
 #' @keywords internal
 train_AlphaSDM_internal <- function(data, methods, aoi_geom = NULL, scale = 10, aoi_year = NULL,
-                                   count = NULL, training_params = list()) {
+                                    count = NULL, training_params = list()) {
   # 1. Background Logic
   needs_bg <- any(methods %in% c("centroid", "ridge", "rf", "gbt", "maxent", "svm")) &&
     !("present" %in% names(data) && any(data$present == 0))
@@ -741,7 +768,7 @@ train_AlphaSDM_internal <- function(data, methods, aoi_geom = NULL, scale = 10, 
   sampled_fc <- NULL
   if (needs_bg) {
     timestamp_message("\n--- Generating Background Points (GEE-side) ---")
-    n_bg <- if (!is.null(count)) count else (nrow(data) * 10)
+    n_bg <- if (!is.null(count)) count else nrow(data)
     bg_fc <- get_background_embeddings_gee(data, scale, n_bg)
 
     # Prepare presence points
