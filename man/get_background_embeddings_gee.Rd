@@ -4,7 +4,7 @@
 \alias{get_background_embeddings_gee}
 \title{Generate Background Embeddings}
 \usage{
-get_background_embeddings_gee(data, scale, count)
+get_background_embeddings_gee(data, scale, count, bbox = NULL, aoi_year = NULL)
 }
 \arguments{
 \item{data}{Training data frame containing longitude, latitude, and year}

@@ -49,7 +49,7 @@ get_embeddings_at_fc_raw <- function(fc, scale, properties = NULL, geometries = 
   ee <- reticulate::import("ee")
 
   if (is.null(years)) {
-    years <- fc$aggregate_array("year")$distinct()$getInfo()
+    years <- retry_curl_download(fc$aggregate_array("year")$distinct()$getInfo())
   }
 
   sampled_fcs <- list()
@@ -153,14 +153,14 @@ def unpack_simple_multipoint(f):
   upload_fc <- ee$FeatureCollection(upload_fc)
 
   # Logging size
-  timestamp_message(sprintf("GEE FeatureCollection created & unpacked: %d Points.", as.integer(upload_fc$size()$getInfo())))
+  timestamp_message(sprintf("GEE FeatureCollection created & unpacked: %d Points.", as.integer(retry_curl_download(upload_fc$size()$getInfo()))))
 
   # 3. Sample embeddings
   sample_props <- group_cols
   sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = sample_props)
 
   # Log valid points remaining
-  final_count <- as.numeric(sampled_fc$size()$getInfo())
+  final_count <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
   dropped <- nrow(df_clean) - final_count
   if (dropped > 0) {
     timestamp_message(sprintf("  -> Discarded %d presence points due to missing embeddings (e.g., over water).", dropped))
@@ -180,7 +180,7 @@ def unpack_simple_multipoint(f):
         orphans_fc <- inverted_join$apply(upload_fc, sampled_fc, dist_filter)
 
         # Limit to first 500 orphans to avoid GEE memory overflow during download
-        orphans_info <- orphans_fc$limit(500L)$getInfo()$features
+        orphans_info <- retry_curl_download(orphans_fc$limit(500L)$getInfo())$features
 
         if (length(orphans_info) > 0) {
           orphan_rows <- list()
@@ -382,7 +382,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
       # For MaxEnt, SVM, etc., only pass what was in the user-provided 'options'
       # which we stored inside 'params' but we need to isolate them.
       # To keep it simple, if it's not one of the core tree params or lambda, pass it.
-      core_params <- c("numberOfTrees", "minLeafPopulation", "bagFraction", "shrinkage", "maxNodes", "variablesPerSplit", "lambda_", "polynomial")
+      core_params <- c("numberOfTrees", "minLeafPopulation", "bagFraction", "shrinkage", "maxNodes", "variablesPerSplit", "lambda_", "polynomial", "batch_size")
       filtered_params <- params[setdiff(names(params), core_params)]
     }
 
@@ -399,7 +399,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
     )
 
     # Retrieve model explanation (n_trees, variable importance, etc) for transparency
-    explanation <- tryCatch(trained_model$explain()$getInfo(), error = function(e) list())
+    explanation <- tryCatch(retry_curl_download(trained_model$explain()$getInfo()), error = function(e) list())
 
     return(list(
       trained = trained_model,
@@ -436,7 +436,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
       reducer <- ee$Reducer$ridgeRegression(numX = num_x, numY = 1L, lambda = lambda_val)
       selectors <- c(current_emb_cols, LABEL_COL)
 
-      result <- training_fc$reduceColumns(reducer = reducer, selectors = selectors)$getInfo()
+      result <- retry_curl_download(training_fc$reduceColumns(reducer = reducer, selectors = selectors)$getInfo())
       coefs <- as.numeric(result$coefficients)
 
       # GEE convention for these reducers is typically Intercept first
@@ -502,7 +502,7 @@ assign_spatial_folds <- function(df, n_folds = 10) {
   clustered <- fc$cluster(clusterer, "fold")
 
   # 3. Retrieve
-  cl_res <- clustered$reduceColumns(ee$Reducer$toList(2L), list("tmp_id", "fold"))$getInfo()
+  cl_res <- retry_curl_download(clustered$reduceColumns(ee$Reducer$toList(2L), list("tmp_id", "fold"))$getInfo())
 
   # 4. Join
   fold_list <- cl_res$list
@@ -523,13 +523,15 @@ assign_spatial_folds <- function(df, n_folds = 10) {
 #' @param scale Resolution in meters
 #' @param count Total number of points to generate
 #' @keywords internal
-get_background_embeddings_gee <- function(data, scale, count) {
+get_background_embeddings_gee <- function(data, scale, count, bbox = NULL, aoi_year = NULL) {
   ee <- reticulate::import("ee")
 
-  bbox <- c(
-    min(data$longitude, na.rm = TRUE), min(data$latitude, na.rm = TRUE),
-    max(data$longitude, na.rm = TRUE), max(data$latitude, na.rm = TRUE)
-  )
+  if (is.null(bbox)) {
+    bbox <- c(
+      min(data$longitude, na.rm = TRUE), min(data$latitude, na.rm = TRUE),
+      max(data$longitude, na.rm = TRUE), max(data$latitude, na.rm = TRUE)
+    )
+  }
 
   # if there's only one point, buffer it to create a valid bbox
   if (bbox[1] == bbox[3] && bbox[2] == bbox[4]) {
@@ -540,7 +542,7 @@ get_background_embeddings_gee <- function(data, scale, count) {
     timestamp_message(sprintf("  -> Using training data bounding box: [%.4f, %.4f, %.4f, %.4f]", bbox[1], bbox[2], bbox[3], bbox[4]))
   }
 
-  year_counts <- table(data$year)
+  year_counts <- if (!is.null(aoi_year)) setNames(count, as.character(aoi_year)) else table(data$year)
   total_train <- sum(year_counts)
 
   # Safe batch limit per single GEE sample() call based on resolution
@@ -583,7 +585,7 @@ get_background_embeddings_gee <- function(data, scale, count) {
       )$filter(ee$Filter$notNull(list("A00")))$
         map(function(f) f$set("present", 0L)$set("year", as.integer(yr)))
 
-      batch_count <- as.integer(sampled$size()$getInfo())
+      batch_count <- as.integer(retry_curl_download(sampled$size()$getInfo()))
       if (batch_count > 0) {
         # Take only what we need to avoid exceeding the target
         take_now <- min(batch_count, remaining)

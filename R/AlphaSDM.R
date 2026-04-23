@@ -228,10 +228,11 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
   if (length(methods) > 1) selectors <- c(selectors, "pred_ensemble")
 
   # Prediction batch size (Default 5000, overridable by options)
-  batch_limit <- if (!is.null(options$batch_size)) as.integer(options$batch_size) else 5000L
-
-  # Ensure we don't exceed GEE's concurrent aggregation limits (approx. 40)
-  chunk_size <- max(batch_limit, ceiling(nrow(predict_coords) / 40))
+  chunk_size <- if (!is.null(options$batch_size)) {
+      as.integer(options$batch_size)
+  } else {
+      max(5000L, ceiling(nrow(predict_coords) / 40))
+  }
 
   batch_starts <- seq(1, nrow(predict_coords), by = chunk_size)
   timestamp_message(sprintf(

@@ -87,20 +87,31 @@ predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = 
     # 3. Score for each model
     message(sprintf("  Scoring %d model(s)...", length(analysis_meta_paths)))
     models_to_score <- list()
-    for (mp in analysis_meta_paths) {
-        if (!file.exists(mp)) next
-        meta <- jsonlite::fromJSON(mp)
-        m <- meta$method
-        model_res <- list(
-            method = m,
-            is_classifier = meta$is_classifier,
-            trained = NULL 
-        )
-        if (!meta$is_classifier) {
-            model_res$weights <- as.numeric(meta$weights)
-            model_res$intercept <- as.numeric(meta$intercept)
+    for (i in seq_along(analysis_meta_paths)) {
+        item <- analysis_meta_paths[[i]]
+        m_name <- names(analysis_meta_paths)[i]
+        
+        if (is.character(item)) {
+            # It's a path to JSON
+            if (!file.exists(item)) next
+            meta <- jsonlite::fromJSON(item)
+            m_name <- meta$method
+            model_res <- list(
+                method = m_name,
+                is_classifier = meta$is_classifier,
+                weights = if (!meta$is_classifier) as.numeric(meta$weights) else NULL,
+                intercept = if (!meta$is_classifier) as.numeric(meta$intercept) else NULL,
+                trained = if (meta$is_classifier) item else NULL # Placeholder or path
+            )
+        } else if (is.list(item)) {
+            # It's a pre-loaded model object
+            model_res <- item
+            if (is.null(m_name)) m_name <- item$method
+        } else {
+            next
         }
-        models_to_score[[m]] <- model_res
+        
+        models_to_score[[m_name]] <- model_res
     }
     
     # Run the optimized prediction pipeline
@@ -108,8 +119,16 @@ predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = 
     
     # 4. Download results (Parallel Batched CSV)
     selectors <- as.list(c("tmp_id", paste0("pred_", names(models_to_score))))
-    safe_chunk_size <- if (scale <= 160) 5000 else 10000
-    chunk_size <- max(safe_chunk_size, ceiling(nrow(df) / 40))
+    
+    # If user provided a batch_size, respect it strictly.
+    # Otherwise, default to 5000 or 40-core scale.
+    chunk_size <- if (!is.null(options$batch_size)) {
+        as.integer(options$batch_size)
+    } else {
+        safe_chunk_size <- if (scale <= 160) 5000 else 10000
+        max(safe_chunk_size, ceiling(nrow(df) / 40))
+    }
+    
     batch_starts <- seq(1, nrow(df), by = chunk_size)
     n_cores <- min(length(batch_starts), parallel::detectCores(logical = FALSE), 40L)
     
