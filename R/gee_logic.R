@@ -305,8 +305,7 @@ GEE_CLASSIFIER_METHODS <- list(
 #' GEE Reducer Methods Registry
 #' @keywords internal
 GEE_REDUCER_METHODS <- list(
-  centroid = list(reducer = "mean", encoding = "presence"),
-  ridge = list(reducer = "ridgeRegression", encoding = "presence")
+  similarity = list(reducer = "mean", encoding = "presence")
 )
 
 #' Train GEE Model
@@ -764,7 +763,7 @@ predict_points_gee <- function(fc, model_res) {
 train_AlphaSDM_internal <- function(data, methods, aoi_geom = NULL, scale = 10, aoi_year = NULL,
                                     count = NULL, training_params = list()) {
   # 1. Background Logic
-  needs_bg <- any(methods %in% c("centroid", "ridge", "rf", "gbt", "maxent", "svm")) &&
+  needs_bg <- any(methods %in% c("similarity", "rf", "gbt", "maxent", "svm")) &&
     !("present" %in% names(data) && any(data$present == 0))
 
   sampled_fc <- NULL
