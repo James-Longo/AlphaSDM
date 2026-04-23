@@ -1,206 +1,207 @@
-#' Install AlphaSDM Python Dependencies
-#'
-#' This function installs the required Python dependencies for AlphaSDM
-#' using reticulate.
-#'
-#' @param method Installation method. Pass "auto" to let reticulate decide.
-#' @param envname The name, or full path, of the environment in which Python packages are to be installed.
-#' @export
-install_AlphaSDM <- function(method = "virtualenv", envname = "r-AlphaSDM") {
-    if (!requireNamespace("reticulate", quietly = TRUE)) {
-        stop("The 'reticulate' package is required to manage Python dependencies.")
-    }
+# ---- Internal Helpers ----
 
-    packages <- c("earthengine-api")
-
-    message("Installing Python dependencies for AlphaSDM into environment: ", envname)
-
-    # Force creation if it doesn't exist to avoid reticulate's uv search
-    if (!reticulate::virtualenv_exists(envname)) {
-        message("Creating virtual environment...")
-        reticulate::virtualenv_create(envname)
-    }
-
-    reticulate::py_install(packages, envname = envname, method = method, pip = TRUE)
-
-    message("\nSuccess! GEE Python API installed.")
+#' Read saved GEE project ID from AlphaSDM config
+#' @keywords internal
+.read_saved_project <- function() {
+    f <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json")
+    if (!file.exists(f)) return(NULL)
+    tryCatch(jsonlite::fromJSON(f)$gee_project, error = function(e) NULL)
 }
 
-#' Ensure Google Earth Engine is Authenticated and Python is Setup (Internal)
+#' Save GEE project ID to AlphaSDM config
 #' @keywords internal
-ensure_gee_authenticated <- function(project = NULL) {
+.save_project <- function(project) {
+    dir <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM")
+    dir.create(dir, showWarnings = FALSE, recursive = TRUE)
+    jsonlite::write_json(list(gee_project = project),
+                         file.path(dir, "config.json"), auto_unbox = TRUE)
+}
+
+#' Check if GEE credentials exist on disk
+#' @keywords internal
+.gee_credentials_exist <- function() {
+    file.exists(file.path(Sys.getenv("HOME"), ".config", "earthengine", "credentials"))
+}
+
+# ---- Exported Functions ----
+
+#' Set Up Google Earth Engine for AlphaSDM
+#'
+#' One-time interactive setup. Installs Python dependencies via rgee,
+#' authenticates with GEE through a browser OAuth flow, and saves your
+#' project ID locally. After running this once, all AlphaSDM functions
+#' connect to GEE automatically without further prompts.
+#'
+#' @param project Google Cloud Project ID (e.g., "my-ee-project").
+#'   If NULL, you will be prompted to enter it interactively.
+#' @param force If TRUE, re-run the full setup even if already configured.
+#' @export
+setup_gee <- function(project = NULL, force = FALSE) {
     if (!requireNamespace("rgee", quietly = TRUE)) {
-        stop("The 'rgee' package is required.")
+        stop("The 'rgee' package is required. Install it with: install.packages('rgee')")
     }
 
-    # 0. Check session cache
+    # 1. Python environment: use rgee's own installer
+    #    Creates a virtualenv, installs earthengine-api + numpy,
+    #    and writes EARTHENGINE_PYTHON / EARTHENGINE_ENV to ~/.Renviron
+    if (force || Sys.getenv("EARTHENGINE_PYTHON") == "") {
+        message("[AlphaSDM] Setting up Python environment via rgee...")
+        rgee::ee_install(py_env = "rgee", confirm = FALSE)
+        # ee_install writes to .Renviron, but reticulate can't switch
+        # Python mid-session. User must restart R, then re-run setup_gee().
+        message("\n[AlphaSDM] Python environment installed!")
+        message("[AlphaSDM] Please RESTART your R session, then run: AlphaSDM::setup_gee()")
+        return(invisible(FALSE))
+    }
+
+    # 2. Authenticate (browser OAuth — creates persistent token)
+    if (force || !.gee_credentials_exist()) {
+        message("[AlphaSDM] Authenticating with Google Earth Engine...")
+        rgee::ee_Authenticate()
+    }
+
+    # 3. Get project ID
+    if (is.null(project) || project == "") {
+        project <- .read_saved_project()
+    }
+    if ((is.null(project) || project == "") && interactive()) {
+        project <- readline("[AlphaSDM] Enter your Google Cloud Project ID: ")
+    }
+    if (is.null(project) || trimws(project) == "") {
+        stop("A Google Cloud Project ID is required. ",
+             "Get one at https://console.cloud.google.com/ ",
+             "and enable the Earth Engine API.")
+    }
+    project <- trimws(project)
+
+    # 4. Verify the connection works
+    message("[AlphaSDM] Verifying GEE connection...")
+    tryCatch({
+        rgee::ee_Initialize(project = project, drive = FALSE, gcs = FALSE, quiet = TRUE)
+    }, warning = function(w) {
+        # rgee wraps the real GEE error as a warning; catch and re-raise clearly
+        msg <- conditionMessage(w)
+        if (grepl("Billing is disabled", msg, ignore.case = TRUE)) {
+            stop(sprintf(
+                "Billing is not enabled for project '%s'.\n",
+                project,
+                "Even for free-tier GEE usage, a billing account must be linked.\n",
+                "Enable it at: https://console.cloud.google.com/billing/linkedaccount?project=",
+                project
+            ), call. = FALSE)
+        }
+        if (grepl("not registered", msg, ignore.case = TRUE) || grepl("not found", msg, ignore.case = TRUE)) {
+            stop(sprintf(
+                "Project '%s' is not registered for Earth Engine.\n%s%s",
+                project,
+                "Register at: https://code.earthengine.google.com/register\n",
+                "Make sure the Earth Engine API is enabled in your Google Cloud Console."
+            ), call. = FALSE)
+        }
+        # For other warnings, re-raise the original error
+        warning(w)
+    }, error = function(e) {
+        msg <- conditionMessage(e)
+        if (grepl("Billing is disabled", msg, ignore.case = TRUE)) {
+            stop(sprintf(
+                "Billing is not enabled for project '%s'.\n%s%s%s",
+                project,
+                "Even for free-tier GEE usage, a billing account must be linked.\n",
+                "Enable it at: https://console.cloud.google.com/billing/linkedaccount?project=",
+                project
+            ), call. = FALSE)
+        }
+        stop("GEE initialization failed for project '", project, "'.\nError: ", msg, call. = FALSE)
+    })
+
+    # 5. Persist project ID for future sessions
+    .save_project(project)
+    options(AlphaSDM.gee_initialized = TRUE)
+
+    message(sprintf("[AlphaSDM] Setup complete! Project '%s' saved.", project))
+    invisible(TRUE)
+}
+
+#' Clear All GEE Credentials and Configuration
+#'
+#' Removes all locally stored GEE credentials and the saved project ID.
+#' After calling this, you will need to run \code{\link{setup_gee}} again.
+#'
+#' @export
+clear_gee_credentials <- function() {
+    # Clear rgee's internal credentials
+    if (requireNamespace("rgee", quietly = TRUE)) {
+        try(rgee::ee_clean_user_credentials(), silent = TRUE)
+    }
+
+    # Clear earthengine config directory
+    ee_cfg <- file.path(Sys.getenv("HOME"), ".config", "earthengine")
+    if (dir.exists(ee_cfg)) {
+        unlink(ee_cfg, recursive = TRUE)
+        message("[AlphaSDM] Removed: ", ee_cfg)
+    }
+
+    # Clear our saved config
+    config_file <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json")
+    if (file.exists(config_file)) {
+        unlink(config_file)
+        message("[AlphaSDM] Removed: ", config_file)
+    }
+
+    # Clear session cache
+    options(AlphaSDM.gee_initialized = NULL)
+
+    message("[AlphaSDM] All GEE credentials cleared. Run setup_gee() to reconfigure.")
+    invisible(TRUE)
+}
+
+# ---- Internal Authentication Gate ----
+
+#' Ensure GEE is authenticated and initialized (internal)
+#'
+#' Called at the top of every user-facing function. Silently connects
+#' if credentials exist, or triggers setup_gee() if interactive.
+#'
+#' @param project Optional project ID override.
+#' @keywords internal
+ensure_gee_authenticated <- function(project = NULL) {
+    # Session cache — already initialized this R session
     if (isTRUE(getOption("AlphaSDM.gee_initialized"))) {
         return(TRUE)
     }
 
-    # 1. Automate Python Environment Selection
-    # If the user hasn't set one, try to use our internal one
-    if (!reticulate::py_available() || !reticulate::py_module_available("ee")) {
-        py_path <- resolve_python_path()
-        if (!is.null(py_path)) {
-            try(reticulate::use_python(py_path, required = FALSE), silent = TRUE)
-        }
+    if (!requireNamespace("rgee", quietly = TRUE)) {
+        stop("The 'rgee' package is required. Install it with: install.packages('rgee')")
     }
 
-    # 2. Check if earthengine-api is actually installed
-    if (!reticulate::py_module_available("ee")) {
-        message("[AlphaSDM] GEE Python API not found. Attempting automatic installation...")
-        install_AlphaSDM()
-        # After install, we really should restart, but let's try to proceed
-        py_path <- resolve_python_path()
-        if (!is.null(py_path)) {
-            try(reticulate::use_python(py_path, required = FALSE), silent = TRUE)
-        }
-    }
-
-    config_dir <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM")
-    config_file <- file.path(config_dir, "config.json")
-
-    # 3. Determine Project ID
-    # Prioritize the credentials file because it's what the user just authorized
+    # Resolve project: argument > saved config > env var
     if (is.null(project) || project == "") {
-        creds_file <- file.path(Sys.getenv("HOME"), ".config", "earthengine", "credentials")
-        if (file.exists(creds_file)) {
-            try({
-                creds <- jsonlite::fromJSON(creds_file)
-                project <- creds$project
-            }, silent = TRUE)
-        }
+        project <- .read_saved_project()
     }
-
-    # Fallback 1: Environment variable
     if (is.null(project) || project == "") {
         project <- Sys.getenv("EARTHENGINE_PROJECT", unset = "")
     }
+    if (project == "") project <- NULL
 
-    # Fallback 2: Local AlphaSDM config
-    if (is.null(project) || project == "") {
-        if (file.exists(config_file)) {
-            try({
-                conf <- jsonlite::fromJSON(config_file)
-                project <- conf$gee_project
-            }, silent = TRUE)
-        }
-    }
+    # Try to initialize (rgee handles expired token retry internally)
+    result <- tryCatch({
+        rgee::ee_Initialize(project = project, drive = FALSE, gcs = FALSE, quiet = TRUE)
+        TRUE
+    }, error = function(e) e)
 
-    # 4. Try simple initialization
-    message("Initializing Google Earth Engine...")
-    success <- tryCatch(
-        {
-            if (!is.null(project) && project != "") {
-                rgee::ee_Initialize(project = project, drive = FALSE, gcs = FALSE)
-            } else {
-                rgee::ee_Initialize(drive = FALSE, gcs = FALSE)
-            }
-            TRUE
-        },
-        error = function(e) {
-            # If it fails, return the error object to check message
-            return(e)
-        }
-    )
-
-    if (isTRUE(success)) {
+    if (isTRUE(result)) {
         options(AlphaSDM.gee_initialized = TRUE)
         return(TRUE)
     }
 
-    # 5. Handle Failure
-    err_msg <- success$message
-    
-    # Handle missing Python package error
-    if (grepl("does not have the Python package", err_msg)) {
-        message("\n[AlphaSDM] GEE Python dependencies are missing or misconfigured.")
-        install_AlphaSDM()
-        stop("AlphaSDM environment created. Please RESTART your R session to use the new environment.")
+    # If interactive and it failed, offer to run setup
+    if (interactive()) {
+        message("\n[AlphaSDM] GEE is not configured. Running first-time setup...")
+        setup_gee(project = project)
+        return(TRUE)
     }
 
-    # Check for actual expiration vs project mismatch
-    is_expired <- grepl("expired", err_msg, ignore.case = TRUE)
-    is_project_error <- grepl("project", err_msg, ignore.case = TRUE) || grepl("permission", err_msg, ignore.case = TRUE)
-
-    if (is_expired && !is_project_error) {
-        message("\n[AlphaSDM] GEE credentials appear to be EXPIRED.")
-        # Only offer cleanup if interactive
-        if (interactive()) {
-            confirm <- utils::askYesNo("Would you like to clear local credentials and re-authenticate?")
-            if (isTRUE(confirm)) {
-                 rgee::ee_clean_user_credentials()
-                 rgee::ee_Authenticate()
-                 message("\n[AlphaSDM] Credentials reset. PLEASE RESTART YOUR R SESSION for changes to take effect.")
-                 stop("R session restart required after GEE credential reset.")
-            }
-        } else {
-            stop("GEE credentials expired. Run rgee::ee_clean_user_credentials() and re-authenticate in an interactive session.")
-        }
-    } else if (is_project_error) {
-        message("\n[AlphaSDM] GEE Initialization failed due to a Project ID or Permission issue.")
-        message("Error: ", err_msg)
-        if (is.null(project) || project == "") {
-            message("\nTIP: Try specifying your Google Cloud Project ID explicitly:")
-            message("AlphaSDM(..., gee_project = 'your-project-id')")
-        }
-        stop("GEE Project ID error. Please ensure your project is correct and GEE is enabled.")
-    } else {
-        # General failure - try one re-auth attempt
-        message("\n[AlphaSDM] GEE initialization failed. Attempting setup...")
-        rgee::ee_Authenticate()
-        tryCatch({
-            rgee::ee_Initialize(project = project, drive = FALSE, gcs = FALSE)
-            options(AlphaSDM.gee_initialized = TRUE)
-        }, error = function(e2) {
-            stop("Final GEE initialization attempt failed. Please check your internet connection, Project ID, and GEE account status.\nError: ", e2$message)
-        })
-    }
-    
-    return(TRUE)
-}
-
-#' Hard Reset Google Earth Engine Credentials
-#'
-#' This function forcefully removes all local Google Earth Engine credentials
-#' to resolve persistent authentication loops or "expired token" errors.
-#' After running this, your next GEE-related call will prompt for a fresh browser authentication.
-#'
-#' @export
-ee_hard_reset <- function() {
-    if (!requireNamespace("rgee", quietly = TRUE)) stop("rgee package required.")
-    
-    message("Performing hard reset of Google Earth Engine credentials...")
-    
-    # Use rgee helper
-    try(rgee::ee_clean_user_credentials(), silent = TRUE)
-    
-    # Manual target search
-    ee_cfg <- file.path(Sys.getenv("HOME"), ".config", "earthengine")
-    if (dir.exists(ee_cfg)) {
-        message("Removing directory: ", ee_cfg)
-        unlink(ee_cfg, recursive = TRUE)
-    }
-    
-    message("Reset complete. Please restart your R session and run AlphaSDM again.")
-}
-
-#' Ensure dependencies are met (Internal)
-#' @keywords internal
-ensure_AlphaSDM_dependencies <- function() {
-    if (!requireNamespace("rgee", quietly = TRUE)) {
-        stop("The 'rgee' package is required.")
-    }
-    ensure_gee_authenticated()
-    return(TRUE)
-}
-
-#' Resolve Python Path (Internal)
-#' @keywords internal
-resolve_python_path <- function(path = NULL) {
-    if (!is.null(path)) return(path)
-    if (reticulate::virtualenv_exists("r-AlphaSDM")) return(reticulate::virtualenv_python("r-AlphaSDM"))
-    if (reticulate::py_available()) return(reticulate::py_config()$python)
-    return(NULL)
+    # Non-interactive: clear error message
+    stop("GEE not configured. Run AlphaSDM::setup_gee() in an interactive session first.\n",
+         "Error: ", result$message)
 }

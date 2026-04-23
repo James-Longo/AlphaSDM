@@ -2,11 +2,15 @@
 % Please edit documentation in R/install.R
 \name{ensure_gee_authenticated}
 \alias{ensure_gee_authenticated}
-\title{Ensure Google Earth Engine is Authenticated and Python is Setup (Internal)}
+\title{Ensure GEE is authenticated and initialized (internal)}
 \usage{
 ensure_gee_authenticated(project = NULL)
 }
+\arguments{
+\item{project}{Optional project ID override.}
+}
 \description{
-Ensure Google Earth Engine is Authenticated and Python is Setup (Internal)
+Called at the top of every user-facing function. Silently connects
+if credentials exist, or triggers setup_gee() if interactive.
 }
 \keyword{internal}
