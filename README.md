@@ -1,14 +1,12 @@
-# AlphaSDM: Making High-Resolution Species Distribution Modeling Faster, Easier, and More Accurate
+# AlphaSDM
 
-`AlphaSDM` is an R package designed for large-scale, high-resolution species distribution modeling. It leverages **Google's Alpha Earth satellite embeddings** (64-dimensional dense vectors) to provide 10m-resolution mapping without the need for manual covariate selection or local data extraction.
+An R package for species distribution modeling at up to 10m resolution. AlphaSDM uses **Google's Alpha Earth satellite embeddings** — 64-dimensional vectors that capture the environmental characteristics of any location on Earth — so you don't need to find, download, or align environmental layers yourself.
 
-All heavy computation—including embedding sampling, model training, and spatial prediction—is handled **server-side on Google Earth Engine (GEE)**, ensuring maximum performance even for millions of presence points.
+Everything runs on **Google Earth Engine**, from data extraction to model training to spatial prediction.
 
 ---
 
 ## Installation
-
-You can install `AlphaSDM` directly from GitHub:
 
 ```r
 # install.packages("devtools")
@@ -19,11 +17,11 @@ devtools::install_github("James-Longo/AlphaSDM")
 
 ## Google Earth Engine Setup
 
-`AlphaSDM` requires a Google Earth Engine account. Setup is a one-time process:
+AlphaSDM needs a Google Earth Engine account. You only have to set this up once.
 
 ### Prerequisites
-- **GEE Account**: Register at [earthengine.google.com](https://earthengine.google.com/signup/). GEE is free for academic and non-commercial use.
-- **Google Cloud Project**: Create a project at [console.cloud.google.com](https://console.cloud.google.com/) with the **Earth Engine API** enabled. Note your Project ID (e.g., `"my-ee-project"`).
+- **GEE Account**: Sign up at [earthengine.google.com](https://earthengine.google.com/signup/). Free for academic and non-commercial use.
+- **Google Cloud Project**: Create one at [console.cloud.google.com](https://console.cloud.google.com/) and enable the **Earth Engine API**. Note your Project ID (e.g., `"my-ee-project"`).
 
 ### One-Time Setup
 
@@ -39,11 +37,11 @@ On first run, `setup_gee()` will:
 2. Open a browser window for Google OAuth — just click **Allow**
 3. Save your project ID locally so you never have to enter it again
 
-**That's it.** All subsequent R sessions connect automatically — no further prompts or configuration needed.
+**That's it.** Future R sessions connect automatically.
 
 ### Resetting Credentials
 
-To clear all saved credentials (e.g., for troubleshooting or switching accounts):
+If you need to switch accounts or troubleshoot:
 
 ```r
 clear_gee_credentials()
@@ -56,24 +54,26 @@ setup_gee(project = "your-project-id")
 
 ## Key Features
 
-*   **10m Resolution**: Native support for high-resolution 64-band Alpha Earth embeddings across the globe.
-*   **Fully Server-Side**: No local covariate downloads. Data preparation and model execution happen on GEE's distributed infrastructure.
-*   **Modeling Framework**: Support for diverse modeling approaches:
-    *   **Classification**: Random Forest (RF), Gradient Boosted Trees (GBT), Support Vector Machines (SVM), Maxent.
-    *   **Regression & Similarity**: Ridge Regression (Linear/Quadratic), Species Niche Centroid (Mean embedding dot-product).
+*   **10m Resolution**: Model habitat at up to 10m resolution, anywhere on the globe, using Google's 64-band Alpha Earth satellite embeddings.
+*   **Fully Server-Side**: No environmental data to download. All data extraction, model training, and prediction happens on Google Earth Engine.
+*   **Built-in Models**: Five modeling methods ready to use:
+    *   [**Random Forest (RF)**](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilerandomforest)
+    *   [**Gradient Boosted Trees (GBT)**](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilegradienttreeboost)
+    *   [**Maxent**](https://developers.google.com/earth-engine/apidocs/ee-classifier-amnhmaxent)
+    *   [**Support Vector Machines (SVM)**](https://developers.google.com/earth-engine/apidocs/ee-classifier-libsvm)
+    *   [**Similarity Search**](https://developers.google.com/earth-engine/apidocs/ee-reducer-mean) (dot product against the mean presence embedding)
 
 ---
 
 ## Quick Start
 
 ### 1. Format your data
-Standardize your presence/absence records. Embeddings require a year for temporal alignment.
+
+Get your presence/absence records into the expected format. A year column is required for temporal alignment with the embeddings.
 
 ```r
 library(AlphaSDM)
 
-# Standardizes coordinates to (longitude, latitude, year, present)
-# Coordinates must be provided as c(lon, lat)
 formatted_data <- format_data(
   my_raw_df, 
   coords = c("lon", "lat"), 
@@ -82,8 +82,9 @@ formatted_data <- format_data(
 )
 ```
 
-### 2. Evaluate and Benchmark
-Perform parallel evaluation at specific coordinates.
+### 2. Evaluate models
+
+Test model performance against a set of known coordinates:
 
 ```r
 metrics <- evaluate_models(
@@ -99,19 +100,25 @@ metrics <- evaluate_models(
 print(metrics$metrics$ensemble)
 ```
 
-### 3. Generate Prediction Maps
-Generate high-resolution suitability maps for a specific Area of Interest (AOI).
+### 3. Generate maps
+
+Create maps for an area of interest. You can define the AOI in two ways:
 
 ```r
-# Define an AOI (Point + Radius or sf object)
+# Option 1: A center point with a radius (in meters)
 aoi <- list(lat = 44.5, lon = -71.5, radius = 50000)
 
+# Option 2: A path to any spatial file (Shapefile, GeoJSON, GeoPackage, KML, etc.)
+aoi <- "path/to/my_study_area.shp"
+```
+
+```r
 results <- generate_map(
   data = formatted_data,
   aoi = aoi,
   scale = 10,           
   aoi_year = 2023,      
-  methods = c("rf", "ridge", "centroid"),
+  methods = c("rf", "similarity"),
   output_dir = "results/my_species"
 )
 ```
@@ -119,4 +126,5 @@ results <- generate_map(
 ---
 
 ## License and Credits
-This package leverages the **Alpha Earth Embedding** dataset provided by Google.
+
+This package uses the [**Alpha Earth Embedding**](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL) dataset provided by Google.
