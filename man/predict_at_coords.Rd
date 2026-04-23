@@ -22,7 +22,7 @@ predict_at_coords(
 
 \item{aoi_year}{Year for Alpha Earth mosaic.}
 
-\item{gee_project}{GEE Project ID.}
+\item{gee_project}{Optional override. Normally configured once via \code{\link{setup_gee}}.}
 
 \item{options}{Named list of advanced hyperparameters.}
 }

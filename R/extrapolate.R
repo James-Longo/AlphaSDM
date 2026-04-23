@@ -61,7 +61,7 @@ extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NU
 #' @param analysis_meta_paths Vector of paths to metadata JSON files.
 #' @param scale Resolution in meters.
 #' @param aoi_year Year for Alpha Earth mosaic.
-#' @param gee_project GEE Project ID.
+#' @param gee_project Optional override. Normally configured once via \code{\link{setup_gee}}.
 #' @param options Named list of advanced hyperparameters.
 #' @return A list with data (df + similarity) and metrics.
 #' @export
