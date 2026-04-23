@@ -7,7 +7,7 @@
 #' @param aoi Either a list with `lat`, `lon`, and `radius` (in meters), or a path to a polygon file.
 #' @param scale Resolution in meters for the final map. Defaults to 10.
 #' @param output_dir Directory to save results. Defaults to the current working directory.
-#' @param methods Character vector of method names. Supported: "rf", "gbt", "maxent", "svm", "ridge", "centroid".
+#' @param methods Character vector of method names. Supported: "rf", "gbt", "maxent", "svm", "similarity".
 #' @param ensemble Combine all methods into an ensemble map. Defaults to TRUE.
 #' @param aoi_year Alpha Earth Mosaic year for map generation. Defaults to current year.
 #' @param count Number of background points. Defaults to 10x presence points.
@@ -17,8 +17,6 @@
 #' @param shrinkage Learning rate for GBT.
 #' @param max_nodes Max nodes per tree.
 #' @param variables_per_split Variables per split.
-#' @param lambda_ Penalty for Ridge.
-#' @param polynomial Degree of polynomial terms for Ridge regression. 1 = linear, 2 = quadratic (default).
 #' @param gee_project Optional override. Normally configured once via \code{\link{setup_gee}}.
 #' @param python_path Optional. Path to Python executable.
 #' @param options Named list of advanced hyperparameters.
@@ -31,8 +29,7 @@
 generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          methods = NULL, ensemble = TRUE, aoi_year = NULL, count = NULL,
                          n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
-                         shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL, lambda_ = 0.0,
-                         polynomial = 2L,
+                         shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL,
                          gee_project = NULL, python_path = NULL,
                          options = list()) {
 
@@ -50,8 +47,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
       results_list[[sp]] <- generate_map(
         data[data$species == sp, ], aoi, scale, file.path(output_dir, sp),
         methods, ensemble, aoi_year, count, n_trees, min_leaf_population,
-        bag_fraction, shrinkage, max_nodes, variables_per_split, lambda_,
-        polynomial,
+        bag_fraction, shrinkage, max_nodes, variables_per_split,
         gee_project, python_path, options
       )
     }
@@ -59,7 +55,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   }
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  if (is.null(methods)) methods <- c("centroid", "ridge", "rf", "gbt", "maxent", "svm")
+  if (is.null(methods)) methods <- c("similarity", "rf", "gbt", "maxent", "svm")
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
   # 1. Prepare AOI Geometry
@@ -77,8 +73,6 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   training_params <- list(
     numberOfTrees = n_trees, minLeafPopulation = min_leaf_population,
     bagFraction = bag_fraction, shrinkage = shrinkage,
-    maxNodes = max_nodes, variablesPerSplit = variables_per_split, lambda_ = lambda_,
-    polynomial = polynomial
   )
   for (opt in names(options)) training_params[[opt]] <- options[[opt]]
 
@@ -131,8 +125,6 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
 #' @param shrinkage Learning rate for GBT.
 #' @param max_nodes Max nodes per tree.
 #' @param variables_per_split Variables per split.
-#' @param lambda_ Penalty for Ridge.
-#' @param polynomial Degree of polynomial terms for Ridge regression.
 #' @param gee_project Optional override. Normally configured once via \code{\link{setup_gee}}.
 #' @param python_path Optional. Path to Python executable.
 #' @param options Named list of advanced hyperparameters.
@@ -141,8 +133,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
 evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd(),
                             methods = NULL, aoi_year = NULL, count = NULL,
                             n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
-                            shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL, lambda_ = 0.0,
-                            polynomial = 2L,
+                            shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL,
                             gee_project = NULL, python_path = NULL,
                             options = list()) {
 
@@ -185,8 +176,7 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
       results_list[[sp]] <- evaluate_models(
         data[data$species == sp, ], sp_predict, methods, scale, file.path(output_dir, sp),
         aoi_year, count, n_trees, min_leaf_population,
-        bag_fraction, shrinkage, max_nodes, variables_per_split, lambda_,
-        polynomial,
+        bag_fraction, shrinkage, max_nodes, variables_per_split,
         gee_project, python_path, options
       )
     }
@@ -194,7 +184,7 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
   }
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  if (is.null(methods)) methods <- c("centroid", "ridge", "rf", "gbt", "maxent", "svm")
+  if (is.null(methods)) methods <- c("similarity", "rf", "gbt", "maxent", "svm")
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
   # 1. Prepare AOI Geometry for Background Generation (Bounding Box of predict_coords)
@@ -208,8 +198,7 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
   training_params <- list(
     numberOfTrees = n_trees, minLeafPopulation = min_leaf_population,
     bagFraction = bag_fraction, shrinkage = shrinkage,
-    maxNodes = max_nodes, variablesPerSplit = variables_per_split, lambda_ = lambda_,
-    polynomial = polynomial
+    maxNodes = max_nodes, variablesPerSplit = variables_per_split
   )
   for (opt in names(options)) training_params[[opt]] <- options[[opt]]
 
