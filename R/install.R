@@ -54,12 +54,12 @@ setup_gee <- function(project = NULL, force = FALSE) {
         return(invisible(FALSE))
     }
 
-    # 2. Authenticate (browser OAuth — creates persistent token)
+    # 2. Authenticate (browser OAuth - creates persistent token)
     #    Use Python API directly with auth_mode="localhost" for zero-friction:
     #    browser opens, user clicks Allow, token auto-captured via local redirect.
     if (force || !.gee_credentials_exist()) {
         message("[AlphaSDM] Authenticating with Google Earth Engine...")
-        message("  (A browser window will open — just click 'Allow')")
+        message("  (A browser window will open - just click 'Allow')")
         ee <- reticulate::import("ee")
         ee$Authenticate(auth_mode = "localhost")
     }
@@ -169,7 +169,7 @@ clear_gee_credentials <- function() {
 #' @param project Optional project ID override.
 #' @keywords internal
 ensure_gee_authenticated <- function(project = NULL) {
-    # Session cache — already initialized this R session
+    # Session cache - already initialized this R session
     if (isTRUE(getOption("AlphaSDM.gee_initialized"))) {
         return(TRUE)
     }

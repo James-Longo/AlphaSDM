@@ -4,22 +4,6 @@
 
 All heavy computation—including embedding sampling, model training, and spatial prediction—is handled **server-side on Google Earth Engine (GEE)**, ensuring maximum performance even for millions of presence points.
 
-**Google Earth Engine Access:**
-`AlphaSDM` requires access to Google Earth Engine (GEE).
-- **Free for Non-Commercial Use**: GEE is free for academic institutions, students, and nonprofit organizations for non-commercial research and educational purposes.
-- **Registration**: You must register your Google account at [earthengine.google.com](https://earthengine.google.com/signup/).
-- **Cloud Project**: You will need to create a **Google Cloud Project** and enable the **Earth Engine API**. When running `AlphaSDM` functions for the first time, use the `gee_project` argument to specify your Project ID.
-
----
-
-## Key Features
-
-*   **10m Resolution**: Native support for high-resolution 64-band Alpha Earth embeddings across the globe.
-*   **Fully Server-Side**: No local covariate downloads. Data preparation and model execution happen on GEE's distributed infrastructure.
-*   **Modeling Framework**: Support for diverse modeling approaches:
-    *   **Classification**: Random Forest (RF), Gradient Boosted Trees (GBT), Support Vector Machines (SVM), Maxent.
-    *   **Regression & Similarity**: Ridge Regression (Linear/Quadratic), Species Niche Centroid (Mean embedding dot-product).
-
 ---
 
 ## Installation
@@ -31,8 +15,52 @@ You can install `AlphaSDM` directly from GitHub:
 devtools::install_github("James-Longo/AlphaSDM")
 ```
 
-**Python Setup:**
-`AlphaSDM` automatically handles Python dependencies via the `'reticulate'` package. It will check your active Python environment and install required packages (`earthengine-api`, `pandas`, `geopandas`, etc.) if they are missing.
+---
+
+## Google Earth Engine Setup
+
+`AlphaSDM` requires a Google Earth Engine account. Setup is a one-time process:
+
+### Prerequisites
+- **GEE Account**: Register at [earthengine.google.com](https://earthengine.google.com/signup/). GEE is free for academic and non-commercial use.
+- **Google Cloud Project**: Create a project at [console.cloud.google.com](https://console.cloud.google.com/) with the **Earth Engine API** enabled. Note your Project ID (e.g., `"my-ee-project"`).
+
+### One-Time Setup
+
+```r
+library(AlphaSDM)
+
+# First run only — installs Python dependencies and authenticates
+setup_gee(project = "your-project-id")
+```
+
+On first run, `setup_gee()` will:
+1. Install a Python environment with `earthengine-api` via `rgee` (you may need to restart R after this step)
+2. Open a browser window for Google OAuth — just click **Allow**
+3. Save your project ID locally so you never have to enter it again
+
+**That's it.** All subsequent R sessions connect automatically — no further prompts or configuration needed.
+
+### Resetting Credentials
+
+To clear all saved credentials (e.g., for troubleshooting or switching accounts):
+
+```r
+clear_gee_credentials()
+
+# Then re-run setup
+setup_gee(project = "your-project-id")
+```
+
+---
+
+## Key Features
+
+*   **10m Resolution**: Native support for high-resolution 64-band Alpha Earth embeddings across the globe.
+*   **Fully Server-Side**: No local covariate downloads. Data preparation and model execution happen on GEE's distributed infrastructure.
+*   **Modeling Framework**: Support for diverse modeling approaches:
+    *   **Classification**: Random Forest (RF), Gradient Boosted Trees (GBT), Support Vector Machines (SVM), Maxent.
+    *   **Regression & Similarity**: Ridge Regression (Linear/Quadratic), Species Niche Centroid (Mean embedding dot-product).
 
 ---
 

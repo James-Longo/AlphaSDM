@@ -19,7 +19,7 @@
 #' @param variables_per_split Variables per split.
 #' @param lambda_ Penalty for Ridge.
 #' @param polynomial Degree of polynomial terms for Ridge regression. 1 = linear, 2 = quadratic (default).
-#' @param gee_project Optional. Google Cloud Project ID.
+#' @param gee_project Optional override. Normally configured once via \code{\link{setup_gee}}.
 #' @param python_path Optional. Path to Python executable.
 #' @param options Named list of advanced hyperparameters.
 #'
@@ -133,7 +133,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
 #' @param variables_per_split Variables per split.
 #' @param lambda_ Penalty for Ridge.
 #' @param polynomial Degree of polynomial terms for Ridge regression.
-#' @param gee_project Optional. Google Cloud Project ID.
+#' @param gee_project Optional override. Normally configured once via \code{\link{setup_gee}}.
 #' @param python_path Optional. Path to Python executable.
 #' @param options Named list of advanced hyperparameters.
 #'

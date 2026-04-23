@@ -60,7 +60,7 @@ If a 'species' column is present with multiple species, the function processes e
 
 \item{polynomial}{Degree of polynomial terms for Ridge regression. 1 = linear, 2 = quadratic (default).}
 
-\item{gee_project}{Optional. Google Cloud Project ID.}
+\item{gee_project}{Optional override. Normally configured once via \code{\link{setup_gee}}.}
 
 \item{python_path}{Optional. Path to Python executable.}
 
