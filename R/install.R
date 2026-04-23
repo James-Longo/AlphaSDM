@@ -55,9 +55,13 @@ setup_gee <- function(project = NULL, force = FALSE) {
     }
 
     # 2. Authenticate (browser OAuth — creates persistent token)
+    #    Use Python API directly with auth_mode="localhost" for zero-friction:
+    #    browser opens, user clicks Allow, token auto-captured via local redirect.
     if (force || !.gee_credentials_exist()) {
         message("[AlphaSDM] Authenticating with Google Earth Engine...")
-        rgee::ee_Authenticate()
+        message("  (A browser window will open — just click 'Allow')")
+        ee <- reticulate::import("ee")
+        ee$Authenticate(auth_mode = "localhost")
     }
 
     # 3. Get project ID
