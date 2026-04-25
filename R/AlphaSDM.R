@@ -245,38 +245,45 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
     upload_fc <- upload_points_to_gee(chunk_df, id_offset = i - 1)
     sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "tmp_id"))
 
-    # 2. Resilient Model Prediction (Decoupled per method)
+    # 2. Resilient Model Prediction (Single Pass for all methods)
     chunk_results <- data.frame(tmp_id = (i - 1):(end_idx - 1))
     
-    for (m in methods) {
-      m_col <- paste0("pred_", m)
-      model_obj <- models[m] # models is a list
-      scored_fc <- predict_all_models_gee(sampled_fc, model_obj)
+    # Pass the entire models list directly to exploit the single-pass architecture
+    scored_fc <- predict_all_models_gee(sampled_fc, models)
+    
+    pred_cols <- paste0("pred_", methods)
+    selectors <- as.list(c("tmp_id", pred_cols))
+    
+    max_retries <- 5L
+    model_df <- NULL
+    old_timeout <- getOption("timeout")
+    options(timeout = max(600, old_timeout))
+    
+    for (attempt in seq_len(max_retries)) {
+      res <- tryCatch({
+        url <- scored_fc$getDownloadURL(filetype = "CSV", selectors = selectors)
+        read.csv(url)
+      }, error = function(e) e)
       
-      max_retries <- 5L
-      model_df <- NULL
-      for (attempt in seq_len(max_retries)) {
-        res <- tryCatch({
-          url <- scored_fc$getDownloadURL(filetype = "CSV", selectors = as.list(c("tmp_id", m_col)))
-          read.csv(url)
-        }, error = function(e) e)
-        
-        if (is.data.frame(res)) {
-          model_df <- res
-          break
-        }
-        
-        if (attempt == max_retries) {
-          cat(sprintf("\n  ! Warning: Model %s failed for batch %d: %s\n", m, idx, conditionMessage(res)))
-        } else {
-          Sys.sleep(2^(attempt - 1))
-        }
+      if (is.data.frame(res)) {
+        model_df <- res
+        break
       }
       
-      if (!is.null(model_df)) {
-        chunk_results <- merge(chunk_results, model_df, by = "tmp_id", all.x = TRUE)
+      if (attempt == max_retries) {
+        cat(sprintf("\n  ! Warning: Batch %d failed entirely: %s\n", idx, conditionMessage(res)))
       } else {
-        chunk_results[[m_col]] <- as.numeric(NA)
+        Sys.sleep(2^(attempt - 1))
+      }
+    }
+    options(timeout = old_timeout)
+    
+    if (!is.null(model_df)) {
+      chunk_results <- merge(chunk_results, model_df, by = "tmp_id", all.x = TRUE)
+    } else {
+      # If the entire batch fails, set all predictions to NA
+      for (col in pred_cols) {
+        chunk_results[[col]] <- as.numeric(NA)
       }
     }
 
@@ -317,6 +324,16 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
 
     for (col in setdiff(selectors, "tmp_id")) {
       final_pred[idx[valid_mask], col] <- as.numeric(res_df[[col]][valid_mask])
+    }
+
+    # Notify user of failed (flat) models
+    for (m in methods) {
+      col_name <- paste0("pred_", m)
+      vals <- final_pred[[col_name]]
+      vals <- vals[!is.na(vals)]
+      if (length(vals) > 0 && isTRUE(max(vals) == min(vals))) {
+        timestamp_message(sprintf("  ! Warning: Model '%s' produced a flat (zero variance) prediction. Check sample size.", m))
+      }
     }
   } else {
     timestamp_message("Warning: Failed to process prediction coordinates (all dropped or GEE evaluation failed).")

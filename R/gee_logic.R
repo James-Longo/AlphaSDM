@@ -355,7 +355,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
     pos_fc <- sampled_fc$filter(ee$Filter$eq(LABEL_COL, 1L))
     neg_fc <- sampled_fc$filter(ee$Filter$eq(LABEL_COL, 0L))
     pos_count <- pos_fc$size()
-    balanced_fc <- pos_fc$merge(neg_fc$randomColumn()$sort("random")$limit(pos_count))
+    balanced_fc <- pos_fc$merge(neg_fc$randomColumn("random", 42L)$sort("random")$limit(pos_count))
 
     gee_method <- GEE_CLASSIFIER_METHODS[[method]]
     # Build classifier with params
