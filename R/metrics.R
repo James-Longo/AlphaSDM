@@ -72,7 +72,7 @@ calculate_classifier_metrics <- function(scores_pos, scores_neg) {
   ranks <- rank(scores_all, ties.method = "average")
   pos_ranks <- ranks[1:n_pos]
   auc_roc <- (sum(pos_ranks) - (n_pos * (n_pos + 1) / 2)) / (n_pos * n_neg)
-  
+
   # 2. AUC-PRG (Precision-Recall Gain)
   ord <- order(scores_all, decreasing = TRUE)
   sorted_labels <- all_labels[ord]
