@@ -198,14 +198,8 @@ ensure_gee_authenticated <- function(project = NULL) {
         return(TRUE)
     }
 
-    # If interactive and it failed, offer to run setup
-    if (interactive()) {
-        message("\n[AlphaSDM] GEE is not configured. Running first-time setup...")
-        setup_gee(project = project)
-        return(TRUE)
-    }
-
-    # Non-interactive: clear error message
-    stop("GEE not configured. Run AlphaSDM::setup_gee() in an interactive session first.\n",
-         "Error: ", result$message)
+    # If it failed, stop and tell the user to run setup
+    stop("GEE not configured or initialization failed.\n",
+         "Please run AlphaSDM::setup_gee(project = 'your-project-id') in an interactive session first.\n",
+         "Original error: ", result$message)
 }
