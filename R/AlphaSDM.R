@@ -46,17 +46,23 @@ generate_background_points <- function(data, aoi_year, count = NULL, aoi = NULL)
     bg_count_total <- if (is.null(count)) nrow(data) else count
     bg_counts <- list(bg_count_total)
   } else {
-    timestamp_message("--- Generating Background Points (5-Cluster Spatial Strategy) ---")
+    timestamp_message("--- Generating Background Points (Single-Box Honest Bounds) ---")
     
-    # 2a. Define Cluster regions
-    if (nrow(data) >= 5) {
-      bg_regions <- assign_spatial_folds(data, k = 5)$clusters
-    } else {
-      bg_regions <- list(st_as_sfc(st_bbox(st_as_sf(data, coords = c("longitude", "latitude"), crs = 4326))))
-    }
+    lons <- data$longitude
+    lats <- data$latitude
     
-    # 2b. Convert SF geometries to GEE Geometries
-    bg_geoms <- lapply(bg_regions, function(g) sf_as_ee(g))
+    # Single bounding box with 10% buffer
+    lon_range <- max(lons) - min(lons)
+    lat_range <- max(lats) - min(lats)
+    buffer_lon <- max(0.1, lon_range * 0.1)
+    buffer_lat <- max(0.1, lat_range * 0.1)
+    
+    bbox <- c(
+      min(lons) - buffer_lon, min(lats) - buffer_lat,
+      max(lons) + buffer_lon, max(lats) + buffer_lat
+    )
+    
+    bg_geoms <- list(ee$Geometry$Rectangle(bbox))
     bg_count_total <- if (is.null(count)) nrow(data) else count
     bg_counts <- list(bg_count_total)
   }
