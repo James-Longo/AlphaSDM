@@ -13,8 +13,8 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
   for (m in methods) {
     timestamp_message(sprintf("  Training %s...", m))
     
-    # Use method-specific params if available (from multi-tune), else global defaults
-    m_params <- if (!is.null(training_params[[m]])) training_params[[m]] else training_params
+    # Use method-specific params if available
+    m_params <- training_params[[m]]
     
     models[[m]] <- train_gee_model(sampled_fc, m, params = m_params)
   }
@@ -148,8 +148,8 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     data <- generate_background_points(data, aoi_year, count, aoi = aoi_geom)
   }
 
-  # 3. Method-Specific Optimized Defaults (Applied if not explicitly tuned)
-  training_params <- list(
+  # 3. Method-Specific Optimized Defaults
+  base_params <- list(
     numberOfTrees = n_trees, 
     minLeafPopulation = min_leaf_population,
     bagFraction = bag_fraction, 
@@ -158,20 +158,24 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     variablesPerSplit = variables_per_split
   )
 
+  # Setup method-specific params list
+  method_params <- list()
+  for (m in methods) {
+    method_params[[m]] <- base_params
+  }
+
   # Override GBT with 150 trees if using global default of 100
   if ("gbt" %in% methods && n_trees == 100L) {
-    training_params$gbt <- training_params
-    training_params$gbt$numberOfTrees <- 150L
+    method_params$gbt$numberOfTrees <- 150L
   }
   
   # Override RF with 250 trees if using global default of 100
   if ("rf" %in% methods && n_trees == 100L) {
-    training_params$rf <- training_params
-    training_params$rf$numberOfTrees <- 250L
+    method_params$rf$numberOfTrees <- 250L
   }
 
   # 4. Unified Training
-  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, training_params)
+  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params)
 
   # 5. Map Generation
   img_mosaic <- get_embedding_image(aoi_year, scale)
@@ -210,7 +214,7 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
   }
 
   # 3. Method-Specific Optimized Defaults
-  training_params <- list(
+  base_params <- list(
     numberOfTrees = n_trees, 
     minLeafPopulation = min_leaf_population,
     bagFraction = bag_fraction, 
@@ -219,20 +223,24 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
     variablesPerSplit = variables_per_split
   )
 
+  # Setup method-specific params list
+  method_params <- list()
+  for (m in methods) {
+    method_params[[m]] <- base_params
+  }
+
   # Override GBT with 150 trees if using global default of 100
   if ("gbt" %in% methods && n_trees == 100L) {
-    training_params$gbt <- training_params
-    training_params$gbt$numberOfTrees <- 150L
+    method_params$gbt$numberOfTrees <- 150L
   }
   
   # Override RF with 250 trees if using global default of 100
   if ("rf" %in% methods && n_trees == 100L) {
-    training_params$rf <- training_params
-    training_params$rf$numberOfTrees <- 250L
+    method_params$rf$numberOfTrees <- 250L
   }
 
   # 4. Unified Training
-  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, training_params)
+  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params)
 
   # 3. Prediction Pipeline
   if (!"year" %in% names(predict_coords)) {
