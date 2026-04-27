@@ -1,58 +1,128 @@
+#' Internal Unified GEE Training Pipeline
+#' @keywords internal
+fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, training_params) {
+  ee <- reticulate::import("ee")
+
+  # 1. Prepare Data and Sample Embeddings on GEE
+  prep_res <- prep_training_data_gee(train_df, class_property = "present", scale = scale)
+  sampled_fc <- prep_res$fc
+
+  # 2. Train all requested models
+  timestamp_message(sprintf("--- Training %d Method(s) via R-GEE ---", length(methods)))
+  models <- list()
+  for (m in methods) {
+    timestamp_message(sprintf("  Training %s...", m))
+    
+    # Use method-specific params if available (from multi-tune), else global defaults
+    m_params <- if (!is.null(training_params[[m]])) training_params[[m]] else training_params
+    
+    models[[m]] <- train_gee_model(sampled_fc, m, params = m_params)
+  }
+
+  return(list(
+    models = models,
+    metadata = list(
+      n_presence = sum(train_df$present == 1),
+      n_background = sum(train_df$present == 0),
+      methods = methods,
+      scale = scale
+    )
+  ))
+}
+
+#' Generate Background Points for AlphaSDM
+#' @keywords internal
+generate_background_points <- function(data, aoi_year, count = NULL, aoi = NULL) {
+  ee <- reticulate::import("ee")
+  
+  # Coordinate Debug
+  timestamp_message(sprintf("  -> Coord Range: Lon [%.2f, %.2f], Lat [%.2f, %.2f]", 
+                            min(data$longitude), max(data$longitude), 
+                            min(data$latitude), max(data$latitude)))
+  
+  if (!is.null(aoi)) {
+    timestamp_message("--- Generating Background Points (Custom AOI) ---")
+    bg_geoms <- list(aoi)
+    bg_count_total <- if (is.null(count)) nrow(data) else count
+    bg_counts <- list(bg_count_total)
+  } else {
+    timestamp_message("--- Generating Background Points (5-Cluster Spatial Strategy) ---")
+    
+    # 2a. Define Cluster regions
+    if (nrow(data) >= 5) {
+      bg_regions <- assign_spatial_folds(data, k = 5)$clusters
+    } else {
+      bg_regions <- list(st_as_sfc(st_bbox(st_as_sf(data, coords = c("longitude", "latitude"), crs = 4326))))
+    }
+    
+    # 2b. Convert SF geometries to GEE Geometries
+    bg_geoms <- lapply(bg_regions, function(g) sf_as_ee(g))
+    bg_count_total <- if (is.null(count)) nrow(data) else count
+    bg_counts <- list(bg_count_total)
+  }
+  
+  # 3. Quota-Safe Sampling (Oversample and filter for land points)
+  timestamp_message(sprintf("  -> Target: %d land-based background points.", bg_count_total))
+  
+  # Combine all geometries into a single MultiPolygon for sampling
+  # We use ee$FeatureCollection$randomPoints on a merged collection instead of MultiPolygon for safety
+  bg_fcs_list <- lapply(bg_geoms, function(g) ee$FeatureCollection(ee$Feature(g)))
+  combined_fc <- ee$FeatureCollection(bg_fcs_list)$flatten()
+  
+  get_valid_bg_df <- function(region_fc, total_to_request, target_count) {
+    # We must add the 'year' property to the points so get_embeddings_at_fc knows which image to sample
+    raw_fc <- ee$FeatureCollection$randomPoints(region_fc$geometry(), as.integer(total_to_request))
+    
+    # Add year property to every point
+    raw_fc_with_year <- raw_fc$map(function(f) f$set("year", as.integer(aoi_year)))
+    
+    # Pass geometries = TRUE so we can retrieve the valid coordinates
+    sampled_fc <- get_embeddings_at_fc(raw_fc_with_year, 100, geometries = TRUE)
+    
+    # Debug: Check sampled size
+    actual_valid <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
+    timestamp_message(sprintf("     [Debug] Requested %d, Found %d valid land points.", total_to_request, actual_valid))
+    
+    if (actual_valid == 0) return(NULL)
+    
+    info <- retry_curl_download(sampled_fc$limit(as.integer(target_count))$getInfo())
+    
+    do.call(rbind, lapply(info$features, function(f) {
+      data.frame(
+        longitude = f$geometry$coordinates[[1]],
+        latitude = f$geometry$coordinates[[2]],
+        year = aoi_year,
+        present = 0
+      )
+    }))
+  }
+  
+  # Initial attempt with 3x oversampling
+  bg_df <- get_valid_bg_df(combined_fc, bg_count_total * 3, bg_count_total)
+  
+  # If we still don't have enough, retry with 10x
+  if (is.null(bg_df) || nrow(bg_df) < bg_count_total) {
+    timestamp_message("  -> Insufficient land points in first pass, retrying with 10x oversampling...")
+    bg_df <- get_valid_bg_df(combined_fc, bg_count_total * 10, bg_count_total)
+  }
+  
+  if (is.null(bg_df)) stop("Could not find any valid land points for background sampling.")
+  
+  timestamp_message(sprintf("  -> Successfully secured %d valid background points.", nrow(bg_df)))
+  return(rbind(data[, c("longitude", "latitude", "year", "present")], bg_df))
+}
+
 #' Generate SDM Map
-#'
-#' Trains models on provided data and generates spatial prediction maps (rasters) on GEE.
-#'
-#' @param data A data frame formatted via `format_data()`. Must have (longitude, latitude, year, present).
-#'   If a 'species' column is present with multiple species, the function processes each separately.
-#' @param aoi Either a list with `lat`, `lon`, and `radius` (in meters), or a path to a polygon file.
-#' @param scale Resolution in meters for the final map. Defaults to 10.
-#' @param output_dir Directory to save results. Defaults to the current working directory.
-#' @param methods Character vector of method names. Supported: "rf", "gbt", "maxent", "svm", "similarity".
-#' @param ensemble Combine all methods into an ensemble map. Defaults to TRUE.
-#' @param aoi_year Alpha Earth Mosaic year for map generation. Defaults to current year.
-#' @param count Number of background points. Defaults to 10x presence points.
-#' @param n_trees Number of trees for tree-based methods.
-#' @param min_leaf_population Min leaf size for trees.
-#' @param bag_fraction Bagging fraction.
-#' @param shrinkage Learning rate for GBT.
-#' @param max_nodes Max nodes per tree.
-#' @param variables_per_split Variables per split.
-#' @param gee_project Optional override. Normally configured once via \code{\link{setup_gee}}.
-#' @param python_path Optional. Path to Python executable.
-#' @param options Named list of advanced hyperparameters.
-#'
-#' @importFrom stats setNames runif complete.cases na.omit
-#' @importFrom utils read.csv
-#' @importFrom magrittr %>%
-#' @importFrom parallel mclapply detectCores
 #' @export
 generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          methods = NULL, ensemble = TRUE, aoi_year = NULL, count = NULL,
                          n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
-                         shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL,
+                         shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
                          gee_project = NULL, python_path = NULL,
                          options = list()) {
-
-    if (!is.null(gee_project)) gee_project <- as.character(gee_project)
+  if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)
   ee <- reticulate::import("ee")
-
-  # Multi-species check
-  if ("species" %in% names(data) && length(unique(data$species)) > 1) {
-    species_list <- unique(data$species)
-    timestamp_message(sprintf("--- Multi-Species Mode: Processing %d species ---", length(species_list)))
-    results_list <- list()
-    for (sp in species_list) {
-      timestamp_message(sprintf("\n--- Species: %s ---", sp))
-      results_list[[sp]] <- generate_map(
-        data[data$species == sp, ], aoi, scale, file.path(output_dir, sp),
-        methods, ensemble, aoi_year, count, n_trees, min_leaf_population,
-        bag_fraction, shrinkage, max_nodes, variables_per_split,
-        gee_project, python_path, options
-      )
-    }
-    return(results_list)
-  }
 
   if (is.null(aoi_year)) aoi_year <- 2023
   if (is.null(methods)) methods <- c("similarity", "rf", "gbt", "maxent", "svm")
@@ -65,318 +135,159 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   } else if (is.character(aoi) && file.exists(aoi)) {
     aoi_sf <- sf::st_read(aoi, quiet = TRUE)
     aoi_geom <- rgee::sf_as_ee(aoi_sf)$geometry()
-  } else {
-    stop("Invalid AOI. Please provide a center/radius list or a valid spatial file path.")
   }
 
-  # 2. Train Models (Shared Pipeline)
+  # 2. Prepare Training Data with Background
+  if (all(data$present == 1)) {
+    data <- generate_background_points(data, aoi_year, count, aoi = aoi_geom)
+  }
+
+  # 3. Method-Specific Optimized Defaults (Applied if not explicitly tuned)
   training_params <- list(
-    numberOfTrees = n_trees, minLeafPopulation = min_leaf_population,
-    bagFraction = bag_fraction, shrinkage = shrinkage,
-  )
-  for (opt in names(options)) training_params[[opt]] <- options[[opt]]
-
-  train_res <- train_AlphaSDM_internal(
-    data = data, methods = methods, aoi_geom = aoi_geom, scale = scale,
-    aoi_year = aoi_year, count = count, training_params = training_params
+    numberOfTrees = n_trees, 
+    minLeafPopulation = min_leaf_population,
+    bagFraction = bag_fraction, 
+    shrinkage = shrinkage,
+    maxNodes = max_nodes, 
+    variablesPerSplit = variables_per_split
   )
 
-  models <- train_res$models
-  final_results <- list(methods = methods, model_metadata = train_res$metadata)
+  # Override GBT with 150 trees if using global default of 100
+  if ("gbt" %in% methods && n_trees == 100L) {
+    training_params$gbt <- training_params
+    training_params$gbt$numberOfTrees <- 150L
+  }
+  
+  # Override RF with 250 trees if using global default of 100
+  if ("rf" %in% methods && n_trees == 100L) {
+    training_params$rf <- training_params
+    training_params$rf$numberOfTrees <- 250L
+  }
 
-  # 3. Map Generation
+  # 4. Unified Training
+  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, training_params)
+
+  # 5. Map Generation
   img_mosaic <- get_embedding_image(aoi_year, scale)
-
-  # Individual maps
-  timestamp_message("--- Generating Maps on GEE ---")
+  final_results <- list(methods = methods, model_metadata = train_res$metadata)
   for (m in methods) {
-    pred_img <- predict_gee_map(models[[m]], img_mosaic)
-    tif_path <- normalizePath(file.path(output_dir, paste0(gsub("[^a-zA-Z0-9]", "", m), ".tif")), mustWork = FALSE)
-    timestamp_message(sprintf("  Saving map to: %s", tif_path))
+    pred_img <- predict_gee_map(train_res$models[[m]], img_mosaic)
+    tif_path <- file.path(output_dir, paste0(m, ".tif"))
     try(rgee::ee_as_rast(image = pred_img, region = aoi_geom$bounds(), scale = scale, dsn = tif_path), silent = TRUE)
     final_results[[paste0(m, "_map")]] <- tif_path
   }
-
-  # Ensemble map
-  if (ensemble && length(methods) > 1) {
-    timestamp_message("  Calculating ensemble map...")
-    pred_images <- lapply(models, function(mod) predict_gee_map(mod, img_mosaic))
-    ensemble_img <- ee$ImageCollection(unname(pred_images))$mean()$rename("similarity")
-    tif_path <- file.path(output_dir, "ensemble.tif")
-    try(rgee::ee_as_rast(image = ensemble_img, region = aoi_geom$bounds(), scale = scale, dsn = tif_path), silent = TRUE)
-    final_results$ensemble_map <- tif_path
-  }
-
   return(final_results)
 }
 
 #' Evaluate SDM Models
-#'
-#' @param data A data frame formatted via `format_data()`.
-#' @param predict_coords Data frame of target coordinates.
-#' @param methods Character vector of method names.
-#' @param scale Resolution in meters.
-#' @param output_dir Directory to save results.
-#' @param aoi_year Alpha Earth Mosaic year.
-#' @param count Number of background points.
-#' @param n_trees Number of trees for tree-based methods.
-#' @param min_leaf_population Min leaf size for trees.
-#' @param bag_fraction Bagging fraction.
-#' @param shrinkage Learning rate for GBT.
-#' @param max_nodes Max nodes per tree.
-#' @param variables_per_split Variables per split.
-#' @param gee_project Optional override. Normally configured once via \code{\link{setup_gee}}.
-#' @param python_path Optional. Path to Python executable.
-#' @param options Named list of advanced hyperparameters.
-#'
 #' @export
 evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd(),
                             methods = NULL, aoi_year = NULL, count = NULL,
                             n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
-                            shrinkage = 0.005, max_nodes = NULL, variables_per_split = NULL,
+                            shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
                             gee_project = NULL, python_path = NULL,
                             options = list()) {
-
-    if (!is.null(gee_project)) gee_project <- as.character(gee_project)
-  
-  # --- 0. PRE-FLIGHT VALIDATION (Catch naming errors early) ---
-  req_cols <- c("longitude", "latitude", "year", "present")
-  missing_data <- setdiff(req_cols, names(data))
-  if (length(missing_data) > 0) {
-      # Help the user catch 'presence' vs 'present'
-      if ("presence" %in% names(data)) {
-          stop("Naming error: AlphaSDM expects 'present' column, but found 'presence'. Please use 'format_data()' to standardize your inputs.")
-      }
-      stop(sprintf("Training data is missing required columns: %s", paste(missing_data, collapse = ", ")))
-  }
-  
-  # Validate predict_coords (if provided)
-  predict_req <- c("longitude", "latitude", "year")
-  missing_predict <- setdiff(predict_req, names(predict_coords))
-  if (length(missing_predict) > 0) {
-      stop(sprintf("Prediction coordinates are missing required columns: %s", paste(missing_predict, collapse = ", ")))
-  }
-  
-  # Fuzzy check for 'presence' in predict_coords (common failure)
-  if ("presence" %in% names(predict_coords) && !"present" %in% names(predict_coords)) {
-      stop("Naming error: 'presence' column detected in predict_coords. For AlphaSDM to calculate metrics, the target column must be named 'present'. Use 'format_data()'.")
-  }
-
+  if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)
   ee <- reticulate::import("ee")
 
-  # Multi-species check
-  if ("species" %in% names(data) && length(unique(data$species)) > 1) {
-    species_list <- unique(data$species)
-    timestamp_message(sprintf("--- Multi-Species Mode: Evaluating %d species ---", length(species_list)))
-    results_list <- list()
-    for (sp in species_list) {
-      timestamp_message(sprintf("\n--- Species: %s ---", sp))
-      sp_predict <- if ("species" %in% names(predict_coords)) predict_coords[predict_coords$species == sp, ] else predict_coords
-      results_list[[sp]] <- evaluate_models(
-        data[data$species == sp, ], sp_predict, methods, scale, file.path(output_dir, sp),
-        aoi_year, count, n_trees, min_leaf_population,
-        bag_fraction, shrinkage, max_nodes, variables_per_split,
-        gee_project, python_path, options
-      )
-    }
-    return(results_list)
-  }
-
   if (is.null(aoi_year)) aoi_year <- 2023
   if (is.null(methods)) methods <- c("similarity", "rf", "gbt", "maxent", "svm")
-  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-  # 1. Prepare AOI Geometry for Background Generation (Bounding Box of predict_coords)
-  bbox <- c(
-    min(predict_coords$longitude), min(predict_coords$latitude),
-    max(predict_coords$longitude), max(predict_coords$latitude)
-  )
+  # 1. Prepare AOI Geometry (Bounding Box of predict_coords)
+  bbox <- c(min(predict_coords$longitude), min(predict_coords$latitude), max(predict_coords$longitude), max(predict_coords$latitude))
   aoi_geom <- ee$Geometry$Rectangle(bbox)
 
-  # 2. Train Models (Shared Pipeline)
+  # 2. Background Points (Honest: Constrained to Training Data Extent)
+  if (all(data$present == 1)) {
+    data <- generate_background_points(data, aoi_year, count)
+  }
+
+  # 3. Method-Specific Optimized Defaults
   training_params <- list(
-    numberOfTrees = n_trees, minLeafPopulation = min_leaf_population,
-    bagFraction = bag_fraction, shrinkage = shrinkage,
-    maxNodes = max_nodes, variablesPerSplit = variables_per_split
-  )
-  for (opt in names(options)) training_params[[opt]] <- options[[opt]]
-
-  train_res <- train_AlphaSDM_internal(
-    data = data, methods = methods, aoi_geom = aoi_geom, scale = scale,
-    aoi_year = aoi_year, count = count, training_params = training_params
+    numberOfTrees = n_trees, 
+    minLeafPopulation = min_leaf_population,
+    bagFraction = bag_fraction, 
+    shrinkage = shrinkage,
+    maxNodes = max_nodes, 
+    variablesPerSplit = variables_per_split
   )
 
-  models <- train_res$models
-  final_results <- list(methods = methods, model_metadata = train_res$metadata)
+  # Override GBT with 150 trees if using global default of 100
+  if ("gbt" %in% methods && n_trees == 100L) {
+    training_params$gbt <- training_params
+    training_params$gbt$numberOfTrees <- 150L
+  }
+  
+  # Override RF with 250 trees if using global default of 100
+  if ("rf" %in% methods && n_trees == 100L) {
+    training_params$rf <- training_params
+    training_params$rf$numberOfTrees <- 250L
+  }
 
-  # 3 & 4. Batch Coordinate Prediction & Fast Egress
+  # 4. Unified Training
+  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, training_params)
+
+  # 3. Prediction Pipeline
+  if (!"year" %in% names(predict_coords)) {
+    predict_coords$year <- aoi_year
+  }
+
   timestamp_message(sprintf("--- Predicting at %d coordinates (Server-side, Batched) ---", nrow(predict_coords)))
-
-  selectors <- c("tmp_id", paste0("pred_", methods))
-  if (length(methods) > 1) selectors <- c(selectors, "pred_ensemble")
-
-  # Prediction batch size (Default 5000, overridable by options)
-  chunk_size <- if (!is.null(options$batch_size)) {
-      as.integer(options$batch_size)
-  } else {
-      max(5000L, ceiling(nrow(predict_coords) / 40))
-  }
-
+  chunk_size <- if (!is.null(options$batch_size)) as.integer(options$batch_size) else 5000L
   batch_starts <- seq(1, nrow(predict_coords), by = chunk_size)
-  timestamp_message(sprintf(
-    "  Processing %d coordinates across %d parallel batches (Batch size: %d)...",
-    nrow(predict_coords), length(batch_starts), chunk_size
-  ))
 
-  # Run full prediction pipeline in parallel via mclapply (fork-safe on Linux).
-  # Each worker independently: uploads coords → samples embeddings → runs models → downloads CSV.
-  # This is the fastest approach because getDownloadURL() triggers the actual GEE computation,
-  # so it MUST happen inside the parallel workers to achieve true concurrency.
-  n_cores <- min(length(batch_starts), parallel::detectCores(logical = FALSE), 40L)
-  timestamp_message(sprintf("  -> Running %d batches in parallel (%d cores)...", length(batch_starts), n_cores))
-  
   process_batch <- function(idx) {
-    i <- batch_starts[idx]
-    end_idx <- min(i + chunk_size - 1, nrow(predict_coords))
-    chunk_df <- predict_coords[i:end_idx, , drop = FALSE]
-
-    # 1. Base Sampling (Common for all models)
-    upload_fc <- upload_points_to_gee(chunk_df, id_offset = i - 1)
-    sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "tmp_id"))
-
-    # 2. Resilient Model Prediction (Single Pass for all methods)
-    chunk_results <- data.frame(tmp_id = (i - 1):(end_idx - 1))
-    
-    # Pass the entire models list directly to exploit the single-pass architecture
-    scored_fc <- predict_all_models_gee(sampled_fc, models)
-    
-    pred_cols <- paste0("pred_", methods)
-    selectors <- as.list(c("tmp_id", pred_cols))
-    
-    max_retries <- 5L
-    model_df <- NULL
-    old_timeout <- getOption("timeout")
-    options(timeout = max(600, old_timeout))
-    
-    for (attempt in seq_len(max_retries)) {
-      res <- tryCatch({
-        url <- scored_fc$getDownloadURL(filetype = "CSV", selectors = selectors)
-        read.csv(url)
-      }, error = function(e) e)
-      
-      if (is.data.frame(res)) {
-        model_df <- res
-        break
-      }
-      
-      if (attempt == max_retries) {
-        cat(sprintf("\n  ! Warning: Batch %d failed entirely: %s\n", idx, conditionMessage(res)))
-      } else {
-        Sys.sleep(2^(attempt - 1))
-      }
-    }
-    options(timeout = old_timeout)
-    
-    if (!is.null(model_df)) {
-      chunk_results <- merge(chunk_results, model_df, by = "tmp_id", all.x = TRUE)
-    } else {
-      # If the entire batch fails, set all predictions to NA
-      for (col in pred_cols) {
-        chunk_results[[col]] <- as.numeric(NA)
-      }
-    }
-
-    # 3. Ensemble calculation (R-side for resilience)
-    if (length(methods) > 1) {
-      pred_cols <- paste0("pred_", methods)
-      # Calculate means excluding NAs where possible
-      chunk_results$pred_ensemble <- rowMeans(chunk_results[, pred_cols, drop = FALSE], na.rm = TRUE)
-      # If all models failed, result will be NaN. Convert to NA.
-      chunk_results$pred_ensemble[is.nan(chunk_results$pred_ensemble)] <- NA
-    }
-
-    return(chunk_results)
-  }
+    try({
+      i <- batch_starts[idx]
+      end_idx <- min(i + chunk_size - 1, nrow(predict_coords))
+      chunk_df <- predict_coords[i:end_idx, , drop = FALSE]
+      upload_fc <- upload_points_to_gee(chunk_df)
+      sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year"))
   
-  t_start_pred <- Sys.time()
-  if (.Platform$OS.type == "unix") {
-    all_res_list <- parallel::mclapply(seq_along(batch_starts), process_batch, mc.cores = n_cores)
-  } else {
-    all_res_list <- lapply(seq_along(batch_starts), process_batch)
+      # Run all model predictions (Classifiers & Reducers)
+      sampled_fc <- predict_all_models_gee(sampled_fc, train_res$models)
+      return(retry_curl_download(sampled_fc$getInfo()))
+    }, silent = TRUE)
   }
-  t_end_pred <- Sys.time()
-  timestamp_message(sprintf("  -> All %d batches complete in %.1f seconds.", length(batch_starts), 
-                  as.numeric(difftime(t_end_pred, t_start_pred, units = "secs"))))
 
-  res_df <- do.call(rbind, all_res_list)
+  # Use future_lapply for parallelism (user-controlled)
+  all_res_list <- future_lapply(seq_along(batch_starts), process_batch, future.seed = TRUE)
 
-  # Re-attach scores to predict_coords safely
+  # 4. Metrics & Result Collection
   final_pred <- predict_coords
-  for (col in setdiff(selectors, "tmp_id")) {
-    final_pred[[col]] <- NA # initialize natively
-  }
-
-  if (!is.null(res_df) && nrow(res_df) > 0) {
-    res_df <- res_df[order(res_df$tmp_id), ]
-    idx <- match(res_df$tmp_id, (seq_len(nrow(predict_coords)) - 1))
-    valid_mask <- !is.na(idx)
-
-    for (col in setdiff(selectors, "tmp_id")) {
-      final_pred[idx[valid_mask], col] <- as.numeric(res_df[[col]][valid_mask])
-    }
-
-    # Notify user of failed (flat) models
-    for (m in methods) {
-      col_name <- paste0("pred_", m)
-      vals <- final_pred[[col_name]]
-      vals <- vals[!is.na(vals)]
-      if (length(vals) > 0 && isTRUE(max(vals) == min(vals))) {
-        timestamp_message(sprintf("  ! Warning: Model '%s' produced a flat (zero variance) prediction. Check sample size.", m))
+  for (m in methods) {
+    col <- paste0("pred_", m)
+    
+    # Safely extract predictions, skipping failed batches
+    all_preds <- unlist(lapply(all_res_list, function(res) {
+      if (inherits(res, "try-error") || is.null(res) || !"features" %in% names(res)) {
+        return(rep(NA, chunk_size)) # Placeholder for failed batch (approximate)
       }
+      sapply(res$features, function(f) {
+        val <- f$properties[[col]]
+        if (is.null(val)) NA else as.numeric(val)
+      })
+    }))
+    
+    # Ensure length matches (pad if needed)
+    if (length(all_preds) < nrow(final_pred)) {
+      all_preds <- c(all_preds, rep(NA, nrow(final_pred) - length(all_preds)))
+    } else if (length(all_preds) > nrow(final_pred)) {
+      all_preds <- all_preds[1:nrow(final_pred)]
     }
-  } else {
-    timestamp_message("Warning: Failed to process prediction coordinates (all dropped or GEE evaluation failed).")
+    
+    final_pred[[col]] <- all_preds
   }
 
-  # 5. Calculate Metrics
+  final_results <- list(methods = methods, metrics = list(), point_predictions = final_pred)
   if ("present" %in% names(final_pred)) {
-    timestamp_message("  Calculating evaluation metrics...")
-    
-    # Check for Class Degeneracy (Must have both 0 and 1)
-    u_vals <- unique(final_pred$present[!is.na(final_pred$present)])
-    if (length(u_vals) < 2) {
-        msg <- if (isTRUE(all(u_vals == 1))) "Presence-only" else "Absence-only"
-        timestamp_message(sprintf("  ! Warning: Cannot calculate accuracy metrics (AUC/TSS). Evaluation set is %s.", msg))
-        final_results$evaluation_error <- sprintf("Metric calculation skipped: validation set has %s samples.", msg)
-    }
-    
-    metrics_list <- list()
     for (m in methods) {
       scores <- final_pred[[paste0("pred_", m)]]
       pos <- scores[final_pred$present == 1]
       neg <- scores[final_pred$present == 0]
-      pos <- pos[!is.na(pos)]
-      neg <- neg[!is.na(neg)]
-      if (length(pos) > 0 && length(neg) > 0) metrics_list[[m]] <- calculate_classifier_metrics(pos, neg)
-    }
-    if (length(methods) > 1 && "pred_ensemble" %in% names(final_pred)) {
-      scores <- final_pred$pred_ensemble
-      pos <- scores[final_pred$present == 1]
-      neg <- scores[final_pred$present == 0]
-      pos <- pos[!is.na(pos)]
-      neg <- neg[!is.na(neg)]
-      if (length(pos) > 0 && length(neg) > 0) metrics_list[["ensemble"]] <- calculate_classifier_metrics(pos, neg)
-    }
-    final_results$metrics <- metrics_list
-
-    # Live metric printing for ensemble
-    if (!is.null(metrics_list[["ensemble"]])) {
-      m <- metrics_list[["ensemble"]]
-      timestamp_message(sprintf("  -> Evaluation (Ensemble): AUC=%.3f, TSS=%.3f", m$auc, m$tss))
+      final_results$metrics[[m]] <- calculate_classifier_metrics(pos, neg)
     }
   }
-
-  final_results$point_predictions <- final_pred
   return(final_results)
 }

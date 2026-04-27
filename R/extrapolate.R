@@ -130,7 +130,6 @@ predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = 
     }
     
     batch_starts <- seq(1, nrow(df), by = chunk_size)
-    n_cores <- min(length(batch_starts), parallel::detectCores(logical = FALSE), 40L)
     
     message(sprintf("  Downloading results across %d parallel batches...", length(batch_starts)))
     
@@ -153,11 +152,7 @@ predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = 
         data.frame()
     }
     
-    all_res_list <- if (.Platform$OS.type == "unix") {
-        parallel::mclapply(seq_along(batch_starts), process_batch, mc.cores = n_cores)
-    } else {
-        lapply(seq_along(batch_starts), process_batch)
-    }
+    all_res_list <- future_lapply(seq_along(batch_starts), process_batch, future.seed = TRUE)
     
     res_df <- do.call(rbind, all_res_list)
     

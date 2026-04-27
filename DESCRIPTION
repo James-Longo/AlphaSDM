@@ -8,7 +8,8 @@ License: MIT + file LICENSE
 Encoding: UTF-8
 RoxygenNote: 7.3.3
 Imports: 
-    parallel,
+    future,
+    future.apply,
     reticulate,
     rgee,
     jsonlite,
