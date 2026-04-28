@@ -294,14 +294,17 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
     final_pred[[col]] <- all_preds
   }
 
-  final_results <- list(methods = methods, metrics = list(), point_predictions = final_pred)
-  if ("present" %in% names(final_pred)) {
-    for (m in methods) {
+    # 4.1 Calculate Ensemble (Mean of all models)
+    pred_cols <- paste0("pred_", methods)
+    final_pred$pred_ensemble <- rowMeans(final_pred[, pred_cols, drop = FALSE], na.rm = TRUE)
+    
+    # 4.2 Metrics Collection
+    final_results <- list(methods = c(methods, "ensemble"), metrics = list(), point_predictions = final_pred)
+    for (m in c(methods, "ensemble")) {
       scores <- final_pred[[paste0("pred_", m)]]
       pos <- scores[final_pred$present == 1]
       neg <- scores[final_pred$present == 0]
       final_results$metrics[[m]] <- calculate_classifier_metrics(pos, neg)
     }
-  }
   return(final_results)
 }
