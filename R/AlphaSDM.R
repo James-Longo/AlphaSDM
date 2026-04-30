@@ -278,16 +278,29 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
   
   pb_pred <- sdm_progress_start("Prediction", total = length(batch_starts))
 
+  # Columns we need back: only prediction scores, not the 64 embedding dimensions
+  pred_cols_to_fetch <- paste0("pred_", methods)
+
   process_batch <- function(idx) {
     try({
       i <- batch_starts[idx]
       end_idx <- min(i + chunk_size - 1, nrow(predict_coords))
       chunk_df <- predict_coords[i:end_idx, , drop = FALSE]
+      
+      # Tag each feature with its row index so we can reassemble after download
+      chunk_df$row_idx <- seq(i, end_idx)
+      
       upload_fc <- upload_points_to_gee(chunk_df)
-      sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year"))
+      sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "row_idx"))
   
-      # Run all model predictions (Classifiers & Reducers)
+      # Run all model predictions (Classifiers & Reducers) server-side
       sampled_fc <- predict_all_models_gee(sampled_fc, train_res$models)
+      
+      # Drop the 64 embedding dimensions before transfer — only fetch prediction scores
+      # and the row index. This is the primary bottleneck fix: ~12x smaller payload.
+      fetch_cols <- as.list(c(pred_cols_to_fetch, "row_idx"))
+      sampled_fc <- sampled_fc$select(fetch_cols)
+      
       return(retry_curl_download(sampled_fc$getInfo()))
     }, silent = TRUE)
   }
@@ -297,29 +310,23 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
   sdm_progress_done(pb_pred)
 
   # 4. Metrics & Result Collection
+  # Initialize all prediction columns with NA, then fill by row index
   final_pred <- predict_coords
   for (m in methods) {
-    col <- paste0("pred_", m)
-    
-    # Safely extract predictions, skipping failed batches
-    all_preds <- unlist(lapply(all_res_list, function(res) {
-      if (inherits(res, "try-error") || is.null(res) || !"features" %in% names(res)) {
-        return(rep(NA, chunk_size)) # Placeholder for failed batch (approximate)
-      }
-      sapply(res$features, function(f) {
+    final_pred[[paste0("pred_", m)]] <- NA_real_
+  }
+
+  for (res in all_res_list) {
+    if (inherits(res, "try-error") || is.null(res) || !"features" %in% names(res)) next
+    for (f in res$features) {
+      row_idx <- as.integer(f$properties[["row_idx"]])
+      if (is.null(row_idx) || is.na(row_idx)) next
+      for (m in methods) {
+        col <- paste0("pred_", m)
         val <- f$properties[[col]]
-        if (is.null(val)) NA else as.numeric(val)
-      })
-    }))
-    
-    # Ensure length matches (pad if needed)
-    if (length(all_preds) < nrow(final_pred)) {
-      all_preds <- c(all_preds, rep(NA, nrow(final_pred) - length(all_preds)))
-    } else if (length(all_preds) > nrow(final_pred)) {
-      all_preds <- all_preds[1:nrow(final_pred)]
+        if (!is.null(val)) final_pred[row_idx, col] <- as.numeric(val)
+      }
     }
-    
-    final_pred[[col]] <- all_preds
   }
 
     # 4.1 Calculate Ensemble (Mean of all models)

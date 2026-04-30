@@ -139,7 +139,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        sdm_warn(sprintf("%d row%s removed — outside Alpha Earth coverage window (2017–2025)",
+        sdm_warn(sprintf("%d row%s removed \u2014 outside Alpha Earth temporal coverage (2017\u20132025)",
                          rows_before - rows_after,
                          if ((rows_before - rows_after) == 1) "" else "s"))
     }
@@ -150,18 +150,23 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        sdm_warn(sprintf("%d row%s removed — contained missing values",
+        sdm_warn(sprintf("%d row%s removed \u2014 contains missing (NA) values",
                          rows_before - rows_after,
                          if ((rows_before - rows_after) == 1) "" else "s"))
     }
 
-    # 14. Remove duplicate rows
+    # 14. Remove duplicate rows (Prioritize presence: if coords/year collide, take max(present))
     rows_before <- nrow(result)
-    result <- unique(result)
+    
+    # Sort descending by present so the first row per group is always the max
+    key_cols <- setdiff(names(result), "present")
+    result <- result[order(-result$present), ]
+    result <- result[!duplicated(result[, key_cols, drop = FALSE]), ]
+    result <- result[order(as.numeric(rownames(result))), ]
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        sdm_warn(sprintf("%d duplicate row%s removed",
+        sdm_warn(sprintf("%d row%s removed \u2014 duplicate or conflicting records (presence prioritized)",
                          rows_before - rows_after,
                          if ((rows_before - rows_after) == 1) "" else "s"))
     }
