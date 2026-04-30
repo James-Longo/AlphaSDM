@@ -23,6 +23,28 @@
     file.exists(file.path(Sys.getenv("HOME"), ".config", "earthengine", "credentials"))
 }
 
+#' Suppress Python DeprecationWarnings from the GEE client library
+#'
+#' GEE's deprecation.py actively defeats warnings.filterwarnings() by calling
+#' _UnfilterDeprecationWarnings() during ee.Initialize(). The only reliable fix
+#' is to monkey-patch _IssueAssetDeprecationWarning to a no-op before Initialize
+#' runs. These are server-side catalog notices about deprecated GEE assets that
+#' are entirely irrelevant to AlphaSDM's embedding pipeline.
+#' @keywords internal
+.suppress_gee_deprecation_warnings <- function() {
+    tryCatch(
+        reticulate::py_run_string(paste0(
+            "try:\n",
+            "    import ee.deprecation as _ee_dep\n",
+            "    _ee_dep._IssueAssetDeprecationWarning = lambda asset: None\n",
+            "    _ee_dep.InitializeDeprecatedAssets = lambda: None\n",
+            "except Exception:\n",
+            "    pass"
+        )),
+        error = function(e) NULL
+    )
+}
+
 # ---- Exported Functions ----
 
 #' Set Up Google Earth Engine for AlphaSDM
@@ -45,12 +67,10 @@ setup_gee <- function(project = NULL, force = FALSE) {
     #    Creates a virtualenv, installs earthengine-api + numpy,
     #    and writes EARTHENGINE_PYTHON / EARTHENGINE_ENV to ~/.Renviron
     if (force || Sys.getenv("EARTHENGINE_PYTHON") == "") {
-        message("[AlphaSDM] Setting up Python environment via rgee...")
+        sdm_section("Installing Python environment")
         rgee::ee_install(py_env = "rgee", confirm = FALSE)
-        # ee_install writes to .Renviron, but reticulate can't switch
-        # Python mid-session. User must restart R, then re-run setup_gee().
-        message("\n[AlphaSDM] Python environment installed!")
-        message("[AlphaSDM] Please RESTART your R session, then run: AlphaSDM::setup_gee()")
+        sdm_done("Python environment installed")
+        sdm_warn("Please restart your R session, then run: AlphaSDM::setup_gee()")
         return(invisible(FALSE))
     }
 
@@ -58,8 +78,8 @@ setup_gee <- function(project = NULL, force = FALSE) {
     #    Use Python API directly with auth_mode="localhost" for zero-friction:
     #    browser opens, user clicks Allow, token auto-captured via local redirect.
     if (force || !.gee_credentials_exist()) {
-        message("[AlphaSDM] Authenticating with Google Earth Engine...")
-        message("  (A browser window will open - just click 'Allow')")
+        sdm_section("Authenticating with Google Earth Engine")
+        sdm_info("A browser window will open — click 'Allow' to grant access")
         ee <- reticulate::import("ee")
         ee$Authenticate(auth_mode = "localhost")
     }
@@ -79,7 +99,7 @@ setup_gee <- function(project = NULL, force = FALSE) {
     project <- trimws(project)
 
     # 4. Verify the connection works
-    message("[AlphaSDM] Verifying GEE connection...")
+    sdm_section("Verifying GEE connection")
     tryCatch({
         rgee::ee_Initialize(project = project, drive = FALSE, gcs = FALSE, quiet = TRUE)
     }, warning = function(w) {
@@ -122,7 +142,7 @@ setup_gee <- function(project = NULL, force = FALSE) {
     .save_project(project)
     options(AlphaSDM.gee_initialized = TRUE)
 
-    message(sprintf("[AlphaSDM] Setup complete! Project '%s' saved.", project))
+    sdm_done(sprintf("Setup complete! Project '%s' saved for future sessions.", project))
     invisible(TRUE)
 }
 
@@ -142,20 +162,20 @@ clear_gee_credentials <- function() {
     ee_cfg <- file.path(Sys.getenv("HOME"), ".config", "earthengine")
     if (dir.exists(ee_cfg)) {
         unlink(ee_cfg, recursive = TRUE)
-        message("[AlphaSDM] Removed: ", ee_cfg)
+        sdm_done(sprintf("Removed: %s", ee_cfg))
     }
 
     # Clear our saved config
     config_file <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json")
     if (file.exists(config_file)) {
         unlink(config_file)
-        message("[AlphaSDM] Removed: ", config_file)
+        sdm_done(sprintf("Removed: %s", config_file))
     }
 
     # Clear session cache
     options(AlphaSDM.gee_initialized = NULL)
 
-    message("[AlphaSDM] All GEE credentials cleared. Run setup_gee() to reconfigure.")
+    sdm_done("All GEE credentials cleared. Run setup_gee() to reconfigure.")
     invisible(TRUE)
 }
 
@@ -187,6 +207,10 @@ ensure_gee_authenticated <- function(project = NULL) {
     }
     if (project == "") project <- NULL
 
+    # Suppress GEE Python DeprecationWarnings BEFORE initializing — the GEE
+    # client fires these during ee_Initialize itself (server-side catalog audit).
+    .suppress_gee_deprecation_warnings()
+
     # Try to initialize (rgee handles expired token retry internally)
     result <- tryCatch({
         rgee::ee_Initialize(project = project, drive = FALSE, gcs = FALSE, quiet = TRUE)
@@ -195,6 +219,10 @@ ensure_gee_authenticated <- function(project = NULL) {
 
     if (isTRUE(result)) {
         options(AlphaSDM.gee_initialized = TRUE)
+        # Re-apply AFTER Initialize: GEE's deprecation.py calls _UnfilterDeprecationWarnings()
+        # internally which inserts a 'default' filter for 'ee.deprecation', overriding our
+        # pre-init filter. Re-applying here prepends a new 'ignore' that takes precedence.
+        .suppress_gee_deprecation_warnings()
         return(TRUE)
     }
 

@@ -11,7 +11,12 @@
 #' @param species Optional. A character string specifying the species name column.
 #' @return A standardized data frame ready for `AlphaSDM()` with lowercase column names.
 #' @export
-format_data <- function(data, coords, year, presence = NULL, species = NULL) {
+format_data <- function(data, coords, year, presence = NULL, species = NULL, label = NULL) {
+    if (!isTRUE(.alphasdm_env$standardization_active)) {
+        sdm_section("Data Standardization")
+        .alphasdm_env$standardization_active <- TRUE
+    }
+    
     if (!is.data.frame(data)) {
         stop("Input 'data' must be a data frame.")
     }
@@ -24,6 +29,11 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL) {
     missing_cols <- setdiff(coords, names(data))
     if (length(missing_cols) > 0) {
         stop(paste("Coordinate columns not found in data:", paste(missing_cols, collapse = ", ")))
+    }
+    
+    show_info <- !isTRUE(.alphasdm_env$standardization_info_printed)
+    if (show_info) {
+        sdm_info(sprintf("Validating coordinates: %s, %s", coords[1], coords[2]), indent = 1L)
     }
 
     # 2. Year Validation
@@ -98,14 +108,16 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL) {
             result$year <- val
         }
     }
+    if (show_info) {
+        sdm_info(sprintf("Standardizing time/dates using column: %s", year), indent = 1L)
+    }
 
     # 8. Add presence column (lowercase "present")
     if (!is.null(presence)) {
         result$present <- as.numeric(data[[presence]])
     } else {
-        timestamp_message("\n--- Missing 'presence' column: Assuming Presence-Only Data ---")
-        timestamp_message("  -> Treating all provided coordinates as presences (1).")
-        timestamp_message("  -> The downstream pipeline will automatically generate background pseudo-absences.\n")
+        sdm_warn("No 'presence' column supplied — treating all records as presence-only")
+        sdm_info("Background pseudo-absences will be generated automatically", indent = 1L)
         result$present <- 1
     }
 
@@ -118,12 +130,18 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL) {
     # Prediction and training always happen server-side on GEE.
 
     # 12. Filter to years with Alpha Earth data (2017+)
+    if (show_info) {
+        sdm_info("Filtering for Alpha Earth coverage (2017\u20132025)", indent = 1L)
+        .alphasdm_env$standardization_info_printed <- TRUE
+    }
     rows_before <- nrow(result)
     result <- result[result$year >= 2017 & result$year <= 2025, ]
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        timestamp_message(sprintf("Removed %d rows outside Alpha Earth coverage (2017-2025).", rows_before - rows_after))
+        sdm_warn(sprintf("%d row%s removed — outside Alpha Earth coverage window (2017–2025)",
+                         rows_before - rows_after,
+                         if ((rows_before - rows_after) == 1) "" else "s"))
     }
 
     # 13. Remove rows with NA values
@@ -132,7 +150,9 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL) {
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        timestamp_message(sprintf("Removed %d rows with missing values.", rows_before - rows_after))
+        sdm_warn(sprintf("%d row%s removed — contained missing values",
+                         rows_before - rows_after,
+                         if ((rows_before - rows_after) == 1) "" else "s"))
     }
 
     # 14. Remove duplicate rows
@@ -141,12 +161,15 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL) {
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        timestamp_message(sprintf("Removed %d duplicate rows.", rows_before - rows_after))
+        sdm_warn(sprintf("%d duplicate row%s removed",
+                         rows_before - rows_after,
+                         if ((rows_before - rows_after) == 1) "" else "s"))
     }
 
     # List final columns
     cols_desc <- paste(names(result), collapse = ", ")
-    timestamp_message(sprintf("Data formatted: %d rows, %d columns (%s)", nrow(result), ncol(result), cols_desc))
+    prefix <- if (!is.null(label)) paste0(label, " data") else "Data"
+    sdm_done(sprintf("%s ready: %d rows × %d columns (%s)", prefix, nrow(result), ncol(result), cols_desc))
 
     return(result)
 }

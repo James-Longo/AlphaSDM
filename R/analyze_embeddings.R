@@ -18,14 +18,14 @@ analyze_embeddings <- function(df, method, gee_project = NULL, cv = FALSE, scale
   sampled_fc <- prep$fc
 
   # 3. Training
-  message(sprintf("Training %s model...", method))
+  sdm_info(sprintf("Training %s model ...", toupper(method)))
   model_res <- train_gee_model(sampled_fc, method, class_property = "present")
 
   # 4. Score on GEE (EXCLUDING raw embedding download)
   mean_emb <- model_res$weights
   dot_products <- NULL
   if (!model_res$is_classifier) {
-    message("Calculating scores on GEE...")
+    sdm_info("Calculating similarity scores on GEE ...")
     scored_fc <- predict_points_gee(sampled_fc, model_res)
     
     # Retrieve only the score property

@@ -8,16 +8,20 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
   sampled_fc <- prep_res$fc
 
   # 2. Train all requested models
-  timestamp_message(sprintf("--- Training %d Method(s) via R-GEE ---", length(methods)))
+  sdm_section(sprintf("Training %d model%s on Google Earth Engine",
+                      length(methods), if (length(methods) == 1) "" else "s"))
+  pb <- sdm_progress_start("Model training", total = length(methods))
   models <- list()
   for (m in methods) {
-    timestamp_message(sprintf("  Training %s...", m))
+    sdm_info(sprintf("Training %s ...", toupper(m)), indent = 1L)
     
     # Use method-specific params if available
     m_params <- training_params[[m]]
     
     models[[m]] <- train_gee_model(sampled_fc, m, params = m_params)
+    pb <- sdm_progress_update(pb)
   }
+  sdm_progress_done(pb)
 
   return(list(
     models = models,
@@ -35,18 +39,18 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
 generate_background_points <- function(data, aoi_year, count = NULL, aoi = NULL) {
   ee <- reticulate::import("ee")
   
-  # Coordinate Debug
-  timestamp_message(sprintf("  -> Coord Range: Lon [%.2f, %.2f], Lat [%.2f, %.2f]", 
-                            min(data$longitude), max(data$longitude), 
-                            min(data$latitude), max(data$latitude)))
-  
   if (!is.null(aoi)) {
-    timestamp_message("--- Generating Background Points (Custom AOI) ---")
+    sdm_section("Generating background pseudo-absences (custom AOI)")
+    pb_bg <- sdm_progress_start("Generating background")
     bg_geoms <- list(aoi)
     bg_count_total <- if (is.null(count)) nrow(data) else count
     bg_counts <- list(bg_count_total)
   } else {
-    timestamp_message("--- Generating Background Points (Single-Box Honest Bounds) ---")
+    sdm_section("Generating background pseudo-absences")
+    pb_bg <- sdm_progress_start("Generating background")
+    sdm_info(sprintf("Coordinate extent — Lon [%.2f, %.2f]  Lat [%.2f, %.2f]",
+                     min(data$longitude), max(data$longitude),
+                     min(data$latitude),  max(data$latitude)))
     
     lons <- data$longitude
     lats <- data$latitude
@@ -67,8 +71,7 @@ generate_background_points <- function(data, aoi_year, count = NULL, aoi = NULL)
     bg_counts <- list(bg_count_total)
   }
   
-  # 3. Quota-Safe Sampling (Oversample and filter for land points)
-  timestamp_message(sprintf("  -> Target: %d land-based background points.", bg_count_total))
+  sdm_info(sprintf("Target: %d land-based background points", bg_count_total))
   
   # Combine all geometries into a single MultiPolygon for sampling
   # We use ee$FeatureCollection$randomPoints on a merged collection instead of MultiPolygon for safety
@@ -87,7 +90,6 @@ generate_background_points <- function(data, aoi_year, count = NULL, aoi = NULL)
     
     # Debug: Check sampled size
     actual_valid <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
-    timestamp_message(sprintf("     [Debug] Requested %d, Found %d valid land points.", total_to_request, actual_valid))
     
     if (actual_valid == 0) return(NULL)
     
@@ -108,13 +110,14 @@ generate_background_points <- function(data, aoi_year, count = NULL, aoi = NULL)
   
   # If we still don't have enough, retry with 10x
   if (is.null(bg_df) || nrow(bg_df) < bg_count_total) {
-    timestamp_message("  -> Insufficient land points in first pass, retrying with 10x oversampling...")
+    sdm_warn("Fewer land points than requested — retrying with wider sampling area", indent = 1L)
     bg_df <- get_valid_bg_df(combined_fc, bg_count_total * 10, bg_count_total)
   }
   
   if (is.null(bg_df)) stop("Could not find any valid land points for background sampling.")
   
-  timestamp_message(sprintf("  -> Successfully secured %d valid background points.", nrow(bg_df)))
+  sdm_done(sprintf("%d background points secured", nrow(bg_df)))
+  if (exists("pb_bg")) sdm_progress_done(pb_bg)
   return(rbind(data[, c("longitude", "latitude", "year", "present")], bg_df))
 }
 
@@ -128,6 +131,8 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          options = list()) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)
+  t_total_start <- proc.time()[["elapsed"]]
+
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
@@ -180,12 +185,26 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   # 5. Map Generation
   img_mosaic <- get_embedding_image(aoi_year, scale)
   final_results <- list(methods = methods, model_metadata = train_res$metadata)
+  pb_map <- sdm_progress_start("Map generation", total = length(methods))
   for (m in methods) {
+    sdm_info(sprintf("Exporting %s ...", toupper(m)), indent = 1L)
     pred_img <- predict_gee_map(train_res$models[[m]], img_mosaic)
     tif_path <- file.path(output_dir, paste0(m, ".tif"))
     try(rgee::ee_as_rast(image = pred_img, region = aoi_geom$bounds(), scale = scale, dsn = tif_path), silent = TRUE)
     final_results[[paste0(m, "_map")]] <- tif_path
+    pb_map <- sdm_progress_update(pb_map)
   }
+  sdm_progress_done(pb_map)
+  
+  t_total_end <- proc.time()[["elapsed"]]
+  sdm_section("Species processing finished")
+  sdm_done(sprintf("Total elapsed time [%.1fs]", t_total_end - t_total_start))
+  cat("\n")
+  
+  # Reset standardization trackers for next run
+  .alphasdm_env$standardization_active <- FALSE
+  .alphasdm_env$standardization_info_printed <- FALSE
+  
   return(final_results)
 }
 
@@ -199,6 +218,8 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
                             options = list()) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)
+  t_total_start <- proc.time()[["elapsed"]]
+
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
@@ -247,9 +268,15 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
     predict_coords$year <- aoi_year
   }
 
-  timestamp_message(sprintf("--- Predicting at %d coordinates (Server-side, Batched) ---", nrow(predict_coords)))
+  sdm_section(sprintf("Predicting at %d coordinates (server-side, batched)", nrow(predict_coords)))
   chunk_size <- if (!is.null(options$batch_size)) as.integer(options$batch_size) else 5000L
   batch_starts <- seq(1, nrow(predict_coords), by = chunk_size)
+  
+  if (length(batch_starts) > 1) {
+    sdm_info(sprintf("%d batches of up to %d points each", length(batch_starts), chunk_size))
+  }
+  
+  pb_pred <- sdm_progress_start("Prediction", total = length(batch_starts))
 
   process_batch <- function(idx) {
     try({
@@ -267,6 +294,7 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
 
   # Use future_lapply for parallelism (user-controlled)
   all_res_list <- future_lapply(seq_along(batch_starts), process_batch, future.seed = TRUE)
+  sdm_progress_done(pb_pred)
 
   # 4. Metrics & Result Collection
   final_pred <- predict_coords
@@ -306,5 +334,15 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
       neg <- scores[final_pred$present == 0]
       final_results$metrics[[m]] <- calculate_classifier_metrics(pos, neg)
     }
+    
+  t_total_end <- proc.time()[["elapsed"]]
+  sdm_section("Species evaluation finished")
+  sdm_done(sprintf("Total elapsed time [%.1fs]", t_total_end - t_total_start))
+  cat("\n")
+  
+  # Reset standardization trackers for next run
+  .alphasdm_env$standardization_active <- FALSE
+  .alphasdm_env$standardization_info_printed <- FALSE
+  
   return(final_results)
 }

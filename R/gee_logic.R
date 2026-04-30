@@ -14,7 +14,8 @@ retry_curl_download <- function(expr, max_retries = 5, initial_delay = 1) {
 
     if (is_retryable && i < max_retries) {
       delay <- initial_delay * (2^(i - 1)) + runif(1, 0, 1)
-      timestamp_message(sprintf("  GEE rate limit/timeout hit. Retrying in %.2f seconds (Attempt %d/%d)...", delay, i, max_retries))
+      sdm_warn(sprintf("GEE rate limit or timeout — retrying in %.0fs (attempt %d of %d)",
+                       delay, i, max_retries), indent = 1L)
       Sys.sleep(delay)
     } else {
       stop(res)
@@ -111,8 +112,9 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
   if (nrow(df_clean) == 0) stop("No valid training data remaining after dropping NAs.")
 
   # 2. Upload to GEE
-  timestamp_message("\n--- Uploading User Data ---")
-  timestamp_message(sprintf("  -> Transferring %d provided coordinates to GEE...", nrow(df_clean)))
+  sdm_section("Uploading training data to Google Earth Engine")
+  pb_up <- sdm_progress_start("Uploading and sampling")
+  sdm_info(sprintf("Transferring %d coordinates ...", nrow(df_clean)))
 
   # Use the specialized uploader for training data
   upload_fc <- upload_points_to_gee(df_clean)
@@ -125,9 +127,10 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
   final_count <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
   dropped <- nrow(df_clean) - final_count
   if (dropped > 0) {
-    timestamp_message(sprintf("  -> Discarded %d presence points due to missing embeddings (e.g., over water).", dropped))
+    sdm_warn(sprintf("%d point%s discarded (no satellite coverage, e.g. over water)",
+                     dropped, if (dropped == 1) "" else "s"), indent = 1L)
   }
-  timestamp_message(sprintf("  -> Final valid presence points: %d", final_count))
+  sdm_progress_done(pb_up)
 
   return(list(
     fc = sampled_fc,

@@ -49,8 +49,9 @@ extrapolate <- function(df, analysis_meta_path, output_dir = getwd(), scale = NU
   m_clean <- gsub("[^a-zA-Z0-9]", "", meta$method)
   tif_path <- file.path(output_dir, paste0(m_clean, "_extrapolation.tif"))
   
-  message("Exporting extrapolation map to ", tif_path, "...")
+  sdm_info(sprintf("Exporting extrapolation map → %s", basename(tif_path)))
   try(rgee::ee_as_rast(image = prediction, region = aoi_geom, scale = scale, dsn = tif_path), silent = TRUE)
+  sdm_done(sprintf("Map exported to: %s", tif_path))
 
   return(list(map_path = tif_path, method = meta$method))
 }
@@ -74,7 +75,7 @@ predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = 
   if (is.null(aoi_year)) stop("Parameter 'aoi_year' must be provided.")
   
   # 2. Upload and Score on GEE
-  message("Predicting at coordinates (Server-side)...")
+  sdm_section("Predicting at coordinates (server-side)")
   
   # 1. Upload points and sample embeddings (stays on GEE)
   upload_fc <- upload_points_to_gee(df)
@@ -85,7 +86,9 @@ predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = 
     scored_fc <- sampled_fc
     
     # 3. Score for each model
-    message(sprintf("  Scoring %d model(s)...", length(analysis_meta_paths)))
+    sdm_info(sprintf("Scoring with %d model%s",
+                     length(analysis_meta_paths),
+                     if (length(analysis_meta_paths) == 1) "" else "s"))
     models_to_score <- list()
     for (i in seq_along(analysis_meta_paths)) {
         item <- analysis_meta_paths[[i]]
@@ -131,7 +134,9 @@ predict_at_coords <- function(df, analysis_meta_paths, scale = NULL, aoi_year = 
     
     batch_starts <- seq(1, nrow(df), by = chunk_size)
     
-    message(sprintf("  Downloading results across %d parallel batches...", length(batch_starts)))
+    sdm_info(sprintf("Downloading results across %d parallel batch%s ...",
+                     length(batch_starts),
+                     if (length(batch_starts) == 1) "" else "es"))
     
     process_batch <- function(idx) {
         # Re-import ee inside parallel worker to avoid closure/fork issues
