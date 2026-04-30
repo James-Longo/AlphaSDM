@@ -141,6 +141,7 @@ setup_gee <- function(project = NULL, force = FALSE) {
     # 5. Persist project ID for future sessions
     .save_project(project)
     options(AlphaSDM.gee_initialized = TRUE)
+    .suppress_gee_deprecation_warnings()
 
     sdm_done(sprintf("Setup complete! Project '%s' saved for future sessions.", project))
     invisible(TRUE)
@@ -209,6 +210,8 @@ ensure_gee_authenticated <- function(project = NULL) {
 
     # Suppress GEE Python DeprecationWarnings BEFORE initializing — the GEE
     # client fires these during ee_Initialize itself (server-side catalog audit).
+    # EARTHENGINE_PYTHON in .Renviron ensures rgee uses the correct virtualenv;
+    # we do not override use_python() here to avoid re-initialization conflicts.
     .suppress_gee_deprecation_warnings()
 
     # Try to initialize (rgee handles expired token retry internally)
