@@ -41,17 +41,25 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
       geometries = FALSE
     )$map(function(f) f$set("year", as.integer(aoi_year), "present", 0L))
 
-    # RF gets a 1:1 background stratified in embedding space via k-means.
-    # Clustering the full background into n_pres clusters ensures the subset
-    # spans the full diversity of background conditions rather than a random slice.
-    n_bg_rf <- min(n_pres, bg_count)
     emb_cols_r <- as.list(sprintf("A%02d", 0:63))
+
+    stratify_bg <- function(bg_fc, n_clusters, bg_total) {
+      bg_fc$
+        cluster(ee$Clusterer$wekaKMeans(as.integer(n_clusters))$train(bg_fc, emb_cols_r), "_cluster")$
+        randomColumn("_rand")$
+        sort("_rand")$
+        distinct(list("_cluster"))
+    }
+
+    # RF: 1:1 ratio, stratified in embedding space
+    n_bg_rf <- min(n_pres, bg_count)
     sdm_info(sprintf("Stratifying RF background: %d clusters from %d points ...", n_bg_rf, bg_count), indent = 1L)
-    bg_rf <- bg_sampled$
-      cluster(ee$Clusterer$wekaKMeans(as.integer(n_bg_rf))$train(bg_sampled, emb_cols_r), "_cluster")$
-      randomColumn("_rand")$
-      sort("_rand")$
-      distinct(list("_cluster"))
+    bg_rf <- stratify_bg(bg_sampled, n_bg_rf, bg_count)
+
+    # GBT: 3:1 ratio, random downsample — k-means not worth the compute at this ratio
+    n_bg_gbt <- min(3L * n_pres, bg_count)
+    sdm_info(sprintf("Downsampling GBT background: %d from %d points ...", n_bg_gbt, bg_count), indent = 1L)
+    bg_gbt <- bg_sampled$randomColumn("_rand")$sort("_rand")$limit(as.integer(n_bg_gbt))
 
     sampled_fc   <- pres_sampled$merge(bg_sampled)
     n_background <- bg_count
@@ -85,6 +93,8 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
       pres_sampled
     } else if (m == "rf") {
       pres_sampled$merge(bg_rf)
+    } else if (m == "gbt") {
+      pres_sampled$merge(bg_gbt)
     } else {
       sampled_fc
     }
