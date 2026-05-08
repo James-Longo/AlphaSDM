@@ -80,24 +80,53 @@ get_embeddings_at_fc <- function(fc, scale, properties = NULL, geometries = FALS
 #' @param df Data frame with longitude, latitude, and optional present column.
 #' @return ee$FeatureCollection
 upload_points_to_gee <- function(df) {
-  ee <- reticulate::import("ee")
-  
-  # Prepare features with properties dynamically
-  features <- lapply(seq_len(nrow(df)), function(i) {
-    props <- as.list(df[i, , drop = FALSE])
-    # ee$Feature expects a list of primitives (scalars)
-    props_clean <- lapply(props, function(x) {
-      val <- if (is.numeric(x)) as.numeric(x) else if (is.integer(x)) as.integer(x) else x
-      if (length(val) > 0) val[1] else NULL
-    })
-    
-    ee$Feature(
-      ee$Geometry$Point(c(as.numeric(props$longitude), as.numeric(props$latitude))),
-      props_clean
+  ee       <- reticulate::import("ee")
+  json_mod <- reticulate::import("json")
+
+  coord_cols <- c("longitude", "latitude")
+  prop_cols  <- setdiff(names(df), coord_cols)
+
+  features <- vector("list", nrow(df))
+  for (i in seq_len(nrow(df))) {
+    props <- setNames(
+      lapply(prop_cols, function(col) {
+        v <- df[[col]][[i]]
+        if (is.integer(v)) as.integer(v) else if (is.numeric(v)) as.numeric(v) else v
+      }),
+      prop_cols
     )
-  })
-  
-  return(ee$FeatureCollection(features))
+    features[[i]] <- list(
+      type       = "Feature",
+      geometry   = list(type = "Point", coordinates = list(df$longitude[[i]], df$latitude[[i]])),
+      properties = props
+    )
+  }
+
+  geojson_py <- json_mod$loads(
+    as.character(jsonlite::toJSON(list(type = "FeatureCollection", features = features),
+                                  auto_unbox = TRUE, digits = 10))
+  )
+  return(ee$FeatureCollection(geojson_py))
+}
+
+#' Generate Background Points Server-Side
+#'
+#' Generates pseudo-absence points entirely on GEE. Samples only band A00
+#' for land validation — never downloads background coordinates to R.
+#' Returns a GEE FeatureCollection (geometry + year + present=0).
+#' @keywords internal
+generate_background_fc_gee <- function(bbox, aoi_year, count, aoi_geom = NULL) {
+  ee     <- reticulate::import("ee")
+  region <- if (!is.null(aoi_geom)) aoi_geom else ee$Geometry$Rectangle(bbox)
+
+  sdm_info(sprintf("Target: %d background points (server-side, no pre-check)", count), indent = 1L)
+
+  # No A00 pre-check needed — get_embeddings_at_fc already filters notNull("A00"),
+  # so ocean/invalid points are dropped during the main 64-band embedding sampling.
+  # This collapses two sampleRegions calls into one.
+  raw_fc <- ee$FeatureCollection$randomPoints(region, as.integer(count * 3L))
+  bg_fc  <- raw_fc$map(function(f) f$set("year", as.integer(aoi_year), "present", 0L))
+  return(bg_fc$limit(as.integer(count)))
 }
 
 #' Prepare Training Data for GEE
@@ -121,7 +150,8 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
 
   # 3. Sample embeddings
   sample_props <- c("year", class_property)
-  sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = sample_props)
+  known_years <- as.list(unique(as.integer(df_clean$year)))
+  sampled_fc  <- get_embeddings_at_fc(upload_fc, scale, properties = sample_props, years = known_years)
 
   # Log valid points remaining
   final_count <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
@@ -171,12 +201,6 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
 
   # 2. Training
   if (is_classifier) {
-    # Class balancing (1:1)
-    pos_fc <- sampled_fc$filter(ee$Filter$eq(LABEL_COL, 1L))
-    neg_fc <- sampled_fc$filter(ee$Filter$eq(LABEL_COL, 0L))
-    pos_count <- pos_fc$size()
-    balanced_fc <- pos_fc$merge(neg_fc$randomColumn("random", 42L)$sort("random")$limit(pos_count))
-
     gee_method <- GEE_CLASSIFIER_METHODS[[method]]
     clf_factory <- ee$Classifier[[gee_method]]
 
@@ -195,6 +219,12 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
         shrinkage = params$shrinkage,
         maxNodes = if (!is.null(params$maxNodes)) as.integer(params$maxNodes) else NULL
       )
+    } else if (gee_method == "libsvm") {
+      core_params <- c("numberOfTrees", "minLeafPopulation", "bagFraction", "shrinkage", "maxNodes", "variablesPerSplit", "lambda_", "polynomial", "batch_size")
+      filtered_params <- params[setdiff(names(params), core_params)]
+      # Default to linear kernel — RBF is O(n²) and times out on large training sets;
+      # linear is sufficient for embedding spaces and scales with O(n×d).
+      if (is.null(filtered_params$kernelType)) filtered_params$kernelType <- "LINEAR"
     } else {
       core_params <- c("numberOfTrees", "minLeafPopulation", "bagFraction", "shrinkage", "maxNodes", "variablesPerSplit", "lambda_", "polynomial", "batch_size")
       filtered_params <- params[setdiff(names(params), core_params)]
@@ -205,20 +235,15 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
     clf <- clf$setOutputMode("PROBABILITY")
 
     trained_model <- clf$train(
-      features = balanced_fc,
+      features = sampled_fc,
       classProperty = LABEL_COL,
       inputProperties = emb_cols
     )
 
-    explanation <- tryCatch(retry_curl_download(trained_model$explain()$getInfo()), error = function(e) list())
-
     return(list(
-      trained = trained_model,
+      trained       = trained_model,
       is_classifier = TRUE,
-      method = method,
-      n_samples_total = as.integer(sampled_fc$size()$getInfo()),
-      n_samples_balanced = as.integer(balanced_fc$size()$getInfo()),
-      gee_explain = explanation
+      method        = method
     ))
   } else {
     # Reducer logic (Simplified Centroid)
@@ -230,11 +255,10 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
     weights <- as.numeric(res$mean)
     
     return(list(
-      weights = weights,
-      intercept = 0.0,
+      weights       = weights,
+      intercept     = 0.0,
       is_classifier = FALSE,
-      method = method,
-      n_samples = as.numeric(sampled_fc$size()$getInfo())
+      method        = method
     ))
   }
 }

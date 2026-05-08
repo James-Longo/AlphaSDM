@@ -1,125 +1,98 @@
 #' Internal Unified GEE Training Pipeline
 #' @keywords internal
-fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, training_params) {
+fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, training_params, count = NULL) {
   ee <- reticulate::import("ee")
 
-  # 1. Prepare Data and Sample Embeddings on GEE
-  prep_res <- prep_training_data_gee(train_df, class_property = "present", scale = scale)
-  sampled_fc <- prep_res$fc
+  # 1. Upload + background generation (background stays on GEE if presence-only)
+  sdm_section("Uploading training data to Google Earth Engine")
+  pb_up <- sdm_progress_start("Uploading and sampling")
 
-  # 2. Train all requested models
+  if (all(train_df$present == 1)) {
+    pres_df  <- train_df[, c("longitude", "latitude", "year", "present")]
+    n_pres   <- nrow(pres_df)
+    bg_count <- if (is.null(count)) n_pres else as.integer(count)
+
+    lons <- pres_df$longitude; lats <- pres_df$latitude
+    sdm_info(sprintf("Coordinate extent — Lon [%.2f, %.2f]  Lat [%.2f, %.2f]",
+                     min(lons), max(lons), min(lats), max(lats)), indent = 1L)
+    sdm_info(sprintf("Transferring %d presence coordinates ...", n_pres), indent = 1L)
+
+    all_years   <- as.list(unique(c(as.integer(pres_df$year), as.integer(aoi_year))))
+    presence_fc <- upload_points_to_gee(pres_df)
+
+    # Sample presence embeddings independently (small, no large-FC getInfo() risk)
+    pres_sampled <- get_embeddings_at_fc(presence_fc, scale,
+                                         properties = c("year", "present"),
+                                         years      = all_years)
+
+    # Sample background directly from the embedding image — avoids sampleRegions on large FCs
+    sdm_info(sprintf("Sampling %d background points from image ...", bg_count), indent = 1L)
+    region <- if (!is.null(aoi_geom)) aoi_geom else {
+      lon_buf <- max(0.1, (max(lons) - min(lons)) * 0.1)
+      lat_buf <- max(0.1, (max(lats) - min(lats)) * 0.1)
+      ee$Geometry$Rectangle(c(min(lons)-lon_buf, min(lats)-lat_buf, max(lons)+lon_buf, max(lats)+lat_buf))
+    }
+    img        <- get_embedding_image(aoi_year, scale)
+    bg_sampled <- img$sample(
+      region     = region,
+      scale      = as.integer(scale),
+      numPixels  = as.integer(bg_count),
+      seed       = 42L,
+      geometries = FALSE
+    )$map(function(f) f$set("year", as.integer(aoi_year), "present", 0L))
+
+    sampled_fc   <- pres_sampled$merge(bg_sampled)
+    n_background <- bg_count
+  } else {
+    upload_df    <- train_df[, c("longitude", "latitude", "year", "present")]
+    sdm_info(sprintf("Transferring %d coordinates ...", nrow(upload_df)), indent = 1L)
+
+    upload_fc    <- upload_points_to_gee(upload_df)
+    sampled_fc   <- get_embeddings_at_fc(upload_fc, scale,
+                                         properties = c("year", "present"),
+                                         years      = as.list(unique(as.integer(upload_df$year))))
+    pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
+    n_pres       <- sum(train_df$present == 1)
+    n_background <- sum(train_df$present == 0)
+  }
+
+  sdm_progress_done(pb_up)
+
+  # 2. Train all models, forcing each classifier to evaluate immediately (chunked GEE training).
+  # GEE classifiers are lazy: clf$train() only builds a computation graph.
+  # By calling getInfo() on each classifier right after training, we materialize them
+  # one at a time — one getInfo() per model keeps each call within GEE's timeout.
+  # Similarity is already eager (reduceColumns$getInfo() fires inside train_gee_model).
   sdm_section(sprintf("Training %d model%s on Google Earth Engine",
                       length(methods), if (length(methods) == 1) "" else "s"))
   pb <- sdm_progress_start("Model training", total = length(methods))
   models <- list()
   for (m in methods) {
-    sdm_info(sprintf("Training %s ...", toupper(m)), indent = 1L)
-    
-    # Use method-specific params if available
-    m_params <- training_params[[m]]
-    
-    models[[m]] <- train_gee_model(sampled_fc, m, params = m_params)
+    sdm_info(sprintf("Fitting %s ...", toupper(m)), indent = 1L)
+    fc_for_method <- if (m == "similarity") pres_sampled else sampled_fc
+    models[[m]]   <- train_gee_model(fc_for_method, m, params = training_params[[m]])
+
+    if (models[[m]]$is_classifier) {
+      invisible(retry_curl_download(
+        pres_sampled$limit(1L)$classify(models[[m]]$trained)$getInfo()
+      ))
+    }
+
     pb <- sdm_progress_update(pb)
   }
   sdm_progress_done(pb)
 
   return(list(
-    models = models,
+    models   = models,
     metadata = list(
-      n_presence = sum(train_df$present == 1),
-      n_background = sum(train_df$present == 0),
-      methods = methods,
-      scale = scale
+      n_presence   = n_pres,
+      n_background = n_background,
+      methods      = methods,
+      scale        = scale
     )
   ))
 }
 
-#' Generate Background Points for AlphaSDM
-#' @keywords internal
-generate_background_points <- function(data, aoi_year, count = NULL, aoi = NULL) {
-  ee <- reticulate::import("ee")
-  
-  if (!is.null(aoi)) {
-    sdm_section("Generating background pseudo-absences (custom AOI)")
-    pb_bg <- sdm_progress_start("Generating background")
-    bg_geoms <- list(aoi)
-    bg_count_total <- if (is.null(count)) nrow(data) else count
-    bg_counts <- list(bg_count_total)
-  } else {
-    sdm_section("Generating background pseudo-absences")
-    pb_bg <- sdm_progress_start("Generating background")
-    sdm_info(sprintf("Coordinate extent — Lon [%.2f, %.2f]  Lat [%.2f, %.2f]",
-                     min(data$longitude), max(data$longitude),
-                     min(data$latitude),  max(data$latitude)))
-    
-    lons <- data$longitude
-    lats <- data$latitude
-    
-    # Single bounding box with 10% buffer
-    lon_range <- max(lons) - min(lons)
-    lat_range <- max(lats) - min(lats)
-    buffer_lon <- max(0.1, lon_range * 0.1)
-    buffer_lat <- max(0.1, lat_range * 0.1)
-    
-    bbox <- c(
-      min(lons) - buffer_lon, min(lats) - buffer_lat,
-      max(lons) + buffer_lon, max(lats) + buffer_lat
-    )
-    
-    bg_geoms <- list(ee$Geometry$Rectangle(bbox))
-    bg_count_total <- if (is.null(count)) nrow(data) else count
-    bg_counts <- list(bg_count_total)
-  }
-  
-  sdm_info(sprintf("Target: %d land-based background points", bg_count_total))
-  
-  # Combine all geometries into a single MultiPolygon for sampling
-  # We use ee$FeatureCollection$randomPoints on a merged collection instead of MultiPolygon for safety
-  bg_fcs_list <- lapply(bg_geoms, function(g) ee$FeatureCollection(ee$Feature(g)))
-  combined_fc <- ee$FeatureCollection(bg_fcs_list)$flatten()
-  
-  get_valid_bg_df <- function(region_fc, total_to_request, target_count) {
-    # We must add the 'year' property to the points so get_embeddings_at_fc knows which image to sample
-    raw_fc <- ee$FeatureCollection$randomPoints(region_fc$geometry(), as.integer(total_to_request))
-    
-    # Add year property to every point
-    raw_fc_with_year <- raw_fc$map(function(f) f$set("year", as.integer(aoi_year)))
-    
-    # Pass geometries = TRUE so we can retrieve the valid coordinates
-    sampled_fc <- get_embeddings_at_fc(raw_fc_with_year, 100, geometries = TRUE)
-    
-    # Debug: Check sampled size
-    actual_valid <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
-    
-    if (actual_valid == 0) return(NULL)
-    
-    info <- retry_curl_download(sampled_fc$limit(as.integer(target_count))$getInfo())
-    
-    do.call(rbind, lapply(info$features, function(f) {
-      data.frame(
-        longitude = f$geometry$coordinates[[1]],
-        latitude = f$geometry$coordinates[[2]],
-        year = aoi_year,
-        present = 0
-      )
-    }))
-  }
-  
-  # Initial attempt with 3x oversampling
-  bg_df <- get_valid_bg_df(combined_fc, bg_count_total * 3, bg_count_total)
-  
-  # If we still don't have enough, retry with 10x
-  if (is.null(bg_df) || nrow(bg_df) < bg_count_total) {
-    sdm_warn("Fewer land points than requested — retrying with wider sampling area", indent = 1L)
-    bg_df <- get_valid_bg_df(combined_fc, bg_count_total * 10, bg_count_total)
-  }
-  
-  if (is.null(bg_df)) stop("Could not find any valid land points for background sampling.")
-  
-  sdm_done(sprintf("%d background points secured", nrow(bg_df)))
-  if (exists("pb_bg")) sdm_progress_done(pb_bg)
-  return(rbind(data[, c("longitude", "latitude", "year", "present")], bg_df))
-}
 
 #' Generate SDM Map
 #' @export
@@ -136,7 +109,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  if (is.null(methods)) methods <- c("similarity", "rf", "gbt", "maxent", "svm")
+  if (is.null(methods)) methods <- c("similarity", "rf", "gbt", "maxent")
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
   # 1. Prepare AOI Geometry
@@ -148,12 +121,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     aoi_geom <- rgee::sf_as_ee(aoi_sf)$geometry()
   }
 
-  # 2. Prepare Training Data with Background
-  if (all(data$present == 1)) {
-    data <- generate_background_points(data, aoi_year, count, aoi = aoi_geom)
-  }
-
-  # 3. Method-Specific Optimized Defaults
+  # 2. Method-Specific Optimized Defaults
   base_params <- list(
     numberOfTrees = n_trees, 
     minLeafPopulation = min_leaf_population,
@@ -180,7 +148,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   }
 
   # 4. Unified Training
-  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params)
+  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count)
 
   # 5. Map Generation
   img_mosaic <- get_embedding_image(aoi_year, scale)
@@ -208,12 +176,69 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   return(final_results)
 }
 
+#' Internal: score a coordinate data frame against trained models (image-first, server-side)
+#'
+#' Classifies the embedding image once per model, stacks into a multi-band prediction image,
+#' then batch-samples that image at eval coords. This avoids re-embedding eval points through
+#' 64 bands and re-triggering classifier training on every batch.
+#' @keywords internal
+predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi_year) {
+  ee <- reticulate::import("ee")
+  if (!"year" %in% names(predict_df)) predict_df$year <- aoi_year
+
+  # Build multi-band prediction image once — classifier training evaluated here by GEE,
+  # then cached for all subsequent sampleRegions batches.
+  pred_imgs  <- lapply(methods, function(m) predict_gee_map(models[[m]], img)$rename(paste0("pred_", m)))
+  pred_stack <- Reduce(function(a, b) a$addBands(b), pred_imgs)
+
+  pred_cols <- paste0("pred_", methods)
+  for (col in pred_cols) predict_df[[col]] <- NA_real_
+  predict_df$.row_idx <- seq_len(nrow(predict_df))
+
+  chunk_size   <- 5000L
+  n_rows       <- nrow(predict_df)
+  batch_starts <- seq(1L, n_rows, by = chunk_size)
+
+  for (i in batch_starts) {
+    end_idx <- min(i + chunk_size - 1L, n_rows)
+    chunk   <- predict_df[i:end_idx, c("longitude", "latitude", "year", ".row_idx"), drop = FALSE]
+    names(chunk)[names(chunk) == ".row_idx"] <- "row_idx"
+
+    eval_fc    <- upload_points_to_gee(chunk)
+    sampled_fc <- pred_stack$sampleRegions(
+      collection = eval_fc,
+      properties = as.list("row_idx"),
+      scale      = as.integer(scale),
+      tileScale  = 16L,
+      geometries = FALSE
+    )
+
+    res <- try(retry_curl_download(sampled_fc$getInfo()), silent = TRUE)
+    if (inherits(res, "try-error") || is.null(res) || !"features" %in% names(res)) next
+
+    for (f in res$features) {
+      ridx <- as.integer(f$properties[["row_idx"]])
+      if (is.null(ridx) || is.na(ridx)) next
+      for (m in methods) {
+        col <- paste0("pred_", m)
+        val <- f$properties[[col]]
+        if (!is.null(val)) predict_df[ridx, col] <- as.numeric(val)
+      }
+    }
+  }
+
+  predict_df$.row_idx <- NULL
+  return(predict_df)
+}
+
+
 #' Evaluate SDM Models
 #' @export
-evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd(),
+evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir = getwd(),
                             methods = NULL, aoi_year = NULL, count = NULL,
                             n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
                             shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
+                            cv_folds = 5L, weighted_ensemble = FALSE,
                             gee_project = NULL, python_path = NULL,
                             options = list()) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
@@ -223,133 +248,164 @@ evaluate_models <- function(data, predict_coords, scale = 10, output_dir = getwd
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  if (is.null(methods)) methods <- c("similarity", "rf", "gbt", "maxent", "svm")
+  if (is.null(methods)) methods <- c("similarity", "rf", "gbt", "maxent")
 
-  # 1. Prepare AOI Geometry (Bounding Box of predict_coords)
-  bbox <- c(min(predict_coords$longitude), min(predict_coords$latitude), max(predict_coords$longitude), max(predict_coords$latitude))
+  # --- Parameter validation ---
+  cv_folds <- as.integer(cv_folds)
+  if (weighted_ensemble && cv_folds == 0L) {
+    cv_folds <- 5L
+    sdm_warn("weighted_ensemble = TRUE requires cross-validation; cv_folds overridden to 5.")
+  }
+  if (is.null(predict_coords) && cv_folds == 0L) {
+    stop("Either predict_coords or cv_folds > 0 must be provided.")
+  }
+
+  # --- Method-Specific Optimized Defaults ---
+  base_params <- list(
+    numberOfTrees = n_trees, minLeafPopulation = min_leaf_population,
+    bagFraction = bag_fraction, shrinkage = shrinkage,
+    maxNodes = max_nodes, variablesPerSplit = variables_per_split
+  )
+  method_params <- setNames(lapply(methods, function(m) base_params), methods)
+  if ("gbt" %in% methods && n_trees == 100L) method_params$gbt$numberOfTrees <- 150L
+  if ("rf"  %in% methods && n_trees == 100L) method_params$rf$numberOfTrees  <- 250L
+
+  # --- AOI geometry (bounding box of prediction target or training data) ---
+  ref_df   <- if (!is.null(predict_coords)) predict_coords else data
+  bbox     <- c(min(ref_df$longitude), min(ref_df$latitude),
+                max(ref_df$longitude), max(ref_df$latitude))
   aoi_geom <- ee$Geometry$Rectangle(bbox)
 
-  # 2. Background Points (Honest: Constrained to Training Data Extent)
-  if (all(data$present == 1)) {
-    data <- generate_background_points(data, aoi_year, count)
-  }
+  # Embedding image — lazy GEE object, shared across training and prediction.
+  img <- get_embedding_image(aoi_year, scale)
 
-  # 3. Method-Specific Optimized Defaults
-  base_params <- list(
-    numberOfTrees = n_trees, 
-    minLeafPopulation = min_leaf_population,
-    bagFraction = bag_fraction, 
-    shrinkage = shrinkage,
-    maxNodes = max_nodes, 
-    variablesPerSplit = variables_per_split
-  )
+  # --- Cross-validation ---
+  cv_metrics       <- NULL
+  ensemble_weights <- NULL
 
-  # Setup method-specific params list
-  method_params <- list()
-  for (m in methods) {
-    method_params[[m]] <- base_params
-  }
+  if (cv_folds > 0L) {
+    sdm_section(sprintf("Cross-validation (%d spatial folds)", cv_folds))
 
-  # Override GBT with 150 trees if using global default of 100
-  if ("gbt" %in% methods && n_trees == 100L) {
-    method_params$gbt$numberOfTrees <- 150L
-  }
-  
-  # Override RF with 250 trees if using global default of 100
-  if ("rf" %in% methods && n_trees == 100L) {
-    method_params$rf$numberOfTrees <- 250L
-  }
+    pres_df <- data[data$present == 1, , drop = FALSE]
+    n_pres  <- nrow(pres_df)
 
-  # 4. Unified Training
-  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params)
+    if (cv_folds > n_pres) {
+      stop(sprintf(
+        "cv_folds (%d) exceeds the number of presence points (%d). Reduce cv_folds or provide more training data.",
+        cv_folds, n_pres
+      ))
+    }
 
-  # 3. Prediction Pipeline
-  if (!"year" %in% names(predict_coords)) {
-    predict_coords$year <- aoi_year
-  }
+    km              <- stats::kmeans(pres_df[, c("longitude", "latitude")], centers = cv_folds, nstart = 5L)
+    pres_df$cv_fold <- km$cluster
 
-  sdm_section(sprintf("Predicting at %d coordinates (server-side, batched)", nrow(predict_coords)))
-  chunk_size <- if (!is.null(options$batch_size)) as.integer(options$batch_size) else 5000L
-  batch_starts <- seq(1, nrow(predict_coords), by = chunk_size)
-  
-  if (length(batch_starts) > 1) {
-    sdm_info(sprintf("%d batches of up to %d points each", length(batch_starts), chunk_size))
-  }
-  
-  pb_pred <- sdm_progress_start("Prediction", total = length(batch_starts))
+    # Generate validation background on GEE, download coordinates once before the CV loop
+    val_bg_n  <- if (is.null(count)) n_pres else as.integer(count)
+    bg_fc_gee <- generate_background_fc_gee(bbox, aoi_year, val_bg_n)
+    bg_info   <- retry_curl_download(bg_fc_gee$getInfo())
+    val_bg_df <- do.call(rbind, lapply(bg_info$features, function(f) {
+      data.frame(longitude = f$geometry$coordinates[[1]],
+                 latitude  = f$geometry$coordinates[[2]],
+                 year      = aoi_year)
+    }))
 
-  # Columns we need back: only prediction scores, not the 64 embedding dimensions
-  pred_cols_to_fetch <- paste0("pred_", methods)
+    cv_fold_aucs <- matrix(NA_real_, nrow = cv_folds, ncol = length(methods),
+                           dimnames = list(NULL, methods))
 
-  process_batch <- function(idx) {
-    try({
-      i <- batch_starts[idx]
-      end_idx <- min(i + chunk_size - 1, nrow(predict_coords))
-      chunk_df <- predict_coords[i:end_idx, , drop = FALSE]
-      
-      # Tag each feature with its row index so we can reassemble after download
-      chunk_df$row_idx <- seq(i, end_idx)
-      
-      upload_fc <- upload_points_to_gee(chunk_df)
-      sampled_fc <- get_embeddings_at_fc(upload_fc, scale, properties = c("year", "row_idx"))
-  
-      # Run all model predictions (Classifiers & Reducers) server-side
-      sampled_fc <- predict_all_models_gee(sampled_fc, train_res$models)
-      
-      # Drop the 64 embedding dimensions before transfer — only fetch prediction scores
-      # and the row index. This is the primary bottleneck fix: ~12x smaller payload.
-      fetch_cols <- as.list(c(pred_cols_to_fetch, "row_idx"))
-      sampled_fc <- sampled_fc$select(fetch_cols)
-      
-      return(retry_curl_download(sampled_fc$getInfo()))
-    }, silent = TRUE)
-  }
+    for (k in seq_len(cv_folds)) {
+      sdm_info(sprintf("Fold %d / %d", k, cv_folds), indent = 1L)
 
-  # Use future_lapply for parallelism (user-controlled)
-  all_res_list <- future_lapply(seq_along(batch_starts), process_batch, future.seed = TRUE)
-  sdm_progress_done(pb_pred)
+      train_k <- pres_df[pres_df$cv_fold != k, c("longitude", "latitude", "year", "present"), drop = FALSE]
+      test_k  <- pres_df[pres_df$cv_fold == k, c("longitude", "latitude", "year"),             drop = FALSE]
 
-  # 4. Metrics & Result Collection
-  # Initialize all prediction columns with NA, then fill by row index
-  final_pred <- predict_coords
-  for (m in methods) {
-    final_pred[[paste0("pred_", m)]] <- NA_real_
-  }
+      res_k        <- fit_gee_models(train_k, methods, aoi_geom, scale, aoi_year, method_params, count = count)
+      pres_scored  <- predict_scores_internal(test_k,    res_k$models, methods, img, scale, aoi_year)
+      bg_scored    <- predict_scores_internal(val_bg_df, res_k$models, methods, img, scale, aoi_year)
 
-  for (res in all_res_list) {
-    if (inherits(res, "try-error") || is.null(res) || !"features" %in% names(res)) next
-    for (f in res$features) {
-      row_idx <- as.integer(f$properties[["row_idx"]])
-      if (is.null(row_idx) || is.na(row_idx)) next
       for (m in methods) {
-        col <- paste0("pred_", m)
-        val <- f$properties[[col]]
-        if (!is.null(val)) final_pred[row_idx, col] <- as.numeric(val)
+        pos <- pres_scored[[paste0("pred_", m)]]; pos <- pos[!is.na(pos)]
+        neg <- bg_scored[[paste0("pred_", m)]];   neg <- neg[!is.na(neg)]
+        if (length(pos) > 0 && length(neg) > 0)
+          cv_fold_aucs[k, m] <- calculate_classifier_metrics(pos, neg)$auc_roc
       }
+    }
+
+    cv_aucs    <- colMeans(cv_fold_aucs, na.rm = TRUE)
+    cv_metrics <- as.list(cv_aucs)
+    sdm_info(paste("CV AUC —", paste(sprintf("%s:%.3f", names(cv_aucs), cv_aucs), collapse = "  ")))
+
+    if (weighted_ensemble) {
+      raw_wts <- pmax(cv_aucs - 0.5, 0)
+      if (sum(raw_wts) == 0) {
+        sdm_warn("All CV AUCs <= 0.5; falling back to equal weights")
+        ensemble_weights <- setNames(rep(1 / length(methods), length(methods)), methods)
+      } else {
+        ensemble_weights <- raw_wts / sum(raw_wts)
+      }
+      sdm_info(paste("Ensemble weights —", paste(sprintf("%s:%.3f", names(ensemble_weights), ensemble_weights), collapse = "  ")))
     }
   }
 
-    # 4.1 Calculate Ensemble (Mean of all models)
-    pred_cols <- paste0("pred_", methods)
+  # --- Final model trained on all data ---
+  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count)
+
+  # --- Pure CV mode: return without predict_coords ---
+  if (is.null(predict_coords)) {
+    t_total_end <- proc.time()[["elapsed"]]
+    sdm_section("Species evaluation finished")
+    sdm_done(sprintf("Total elapsed time [%.1fs]", t_total_end - t_total_start))
+    cat("\n")
+    .alphasdm_env$standardization_active <- FALSE
+    .alphasdm_env$standardization_info_printed <- FALSE
+    return(list(
+      methods          = c(methods, "ensemble"),
+      model_metadata   = train_res$metadata,
+      cv_metrics       = cv_metrics,
+      ensemble_weights = ensemble_weights
+    ))
+  }
+
+  # --- Prediction ---
+  sdm_section(sprintf("Predicting at %d coordinates (image-first, server-side)", nrow(predict_coords)))
+  pb_pred    <- sdm_progress_start("Prediction")
+  final_pred <- predict_scores_internal(predict_coords, train_res$models, methods, img, scale, aoi_year)
+  sdm_progress_done(pb_pred)
+
+  # --- Ensemble ---
+  pred_cols <- paste0("pred_", methods)
+  if (weighted_ensemble && !is.null(ensemble_weights)) {
+    wts <- ensemble_weights[methods]
+    final_pred$pred_ensemble <- as.numeric(as.matrix(final_pred[, pred_cols, drop = FALSE]) %*% wts)
+  } else {
     final_pred$pred_ensemble <- rowMeans(final_pred[, pred_cols, drop = FALSE], na.rm = TRUE)
-    
-    # 4.2 Metrics Collection
-    final_results <- list(methods = c(methods, "ensemble"), metrics = list(), point_predictions = final_pred)
+  }
+
+  # --- Metrics ---
+  final_results <- list(
+    methods           = c(methods, "ensemble"),
+    metrics           = list(),
+    point_predictions = final_pred,
+    model_metadata    = train_res$metadata,
+    cv_metrics        = cv_metrics,
+    ensemble_weights  = ensemble_weights
+  )
+
+  if ("present" %in% names(final_pred)) {
     for (m in c(methods, "ensemble")) {
       scores <- final_pred[[paste0("pred_", m)]]
       pos <- scores[final_pred$present == 1]
       neg <- scores[final_pred$present == 0]
       final_results$metrics[[m]] <- calculate_classifier_metrics(pos, neg)
     }
-    
+  }
+
   t_total_end <- proc.time()[["elapsed"]]
   sdm_section("Species evaluation finished")
   sdm_done(sprintf("Total elapsed time [%.1fs]", t_total_end - t_total_start))
   cat("\n")
-  
-  # Reset standardization trackers for next run
+
   .alphasdm_env$standardization_active <- FALSE
   .alphasdm_env$standardization_info_printed <- FALSE
-  
+
   return(final_results)
 }
