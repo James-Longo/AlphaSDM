@@ -322,6 +322,14 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
       pres_scored  <- predict_scores_internal(test_k,    res_k$models, methods, img, scale, aoi_year)
       bg_scored    <- predict_scores_internal(val_bg_df, res_k$models, methods, img, scale, aoi_year)
 
+      na_pres_cv <- is.na(pres_scored[[paste0("pred_", methods[1])]])
+      na_bg_cv   <- is.na(bg_scored[[paste0("pred_",  methods[1])]])
+      if (any(na_pres_cv) || any(na_bg_cv)) {
+        sdm_warn(sprintf(
+          "CV fold %d: %d presence and %d background points dropped — no satellite coverage.",
+          k, sum(na_pres_cv), sum(na_bg_cv)
+        ), indent = 2L)
+      }
       for (m in methods) {
         pos <- pres_scored[[paste0("pred_", m)]]; pos <- pos[!is.na(pos)]
         neg <- bg_scored[[paste0("pred_", m)]];   neg <- neg[!is.na(neg)]
@@ -391,6 +399,26 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   )
 
   if ("present" %in% names(final_pred)) {
+    # Warn about eval points dropped due to missing satellite coverage.
+    # All models share the same image mask, so NA in any one model means NA in all.
+    na_mask <- is.na(final_pred[[paste0("pred_", methods[1])]])
+    if (any(na_mask)) {
+      na_pres <- sum(na_mask & final_pred$present == 1)
+      na_bg   <- sum(na_mask & final_pred$present == 0)
+      sdm_warn(sprintf(
+        "%d eval point%s dropped — no satellite coverage at prediction time (%d presence, %d background).",
+        sum(na_mask), if (sum(na_mask) == 1) "" else "s", na_pres, na_bg
+      ), indent = 1L)
+      dropped_coords <- final_pred[na_mask, c("longitude", "latitude", "present"), drop = FALSE]
+      dropped_coords$class <- ifelse(dropped_coords$present == 1, "presence", "background")
+      for (j in seq_len(nrow(dropped_coords))) {
+        sdm_info(sprintf("  Dropped %s: lon=%.4f, lat=%.4f",
+                         dropped_coords$class[j],
+                         dropped_coords$longitude[j],
+                         dropped_coords$latitude[j]), indent = 2L)
+      }
+    }
+
     for (m in c(methods, "ensemble")) {
       scores <- final_pred[[paste0("pred_", m)]]
       pos <- scores[final_pred$present == 1]
