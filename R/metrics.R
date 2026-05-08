@@ -6,6 +6,8 @@
 #' @param n_bins Number of bins for evaluation
 #' @export
 calculate_cbi <- function(pos_scores, all_scores, window_width = 0.1, n_bins = 100) {
+  pos_scores <- pos_scores[!is.na(pos_scores)]
+  all_scores <- all_scores[!is.na(all_scores)]
   if (length(pos_scores) == 0) return(0.0)
   
   min_score <- min(all_scores, na.rm = TRUE)
@@ -50,6 +52,8 @@ calculate_cbi <- function(pos_scores, all_scores, window_width = 0.1, n_bins = 1
 #' @param scores_neg Scores for background/absence points
 #' @export
 calculate_classifier_metrics <- function(scores_pos, scores_neg) {
+  scores_pos <- scores_pos[!is.na(scores_pos)]
+  scores_neg <- scores_neg[!is.na(scores_neg)]
   scores_all <- c(scores_pos, scores_neg)
   cbi <- calculate_cbi(scores_pos, scores_all)
   
