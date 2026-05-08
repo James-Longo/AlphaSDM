@@ -41,6 +41,18 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
       geometries = FALSE
     )$map(function(f) f$set("year", as.integer(aoi_year), "present", 0L))
 
+    # RF gets a 1:1 background stratified in embedding space via k-means.
+    # Clustering the full background into n_pres clusters ensures the subset
+    # spans the full diversity of background conditions rather than a random slice.
+    n_bg_rf <- min(n_pres, bg_count)
+    emb_cols_r <- as.list(sprintf("A%02d", 0:63))
+    sdm_info(sprintf("Stratifying RF background: %d clusters from %d points ...", n_bg_rf, bg_count), indent = 1L)
+    bg_rf <- bg_sampled$
+      cluster(ee$Clusterer$wekaKMeans(as.integer(n_bg_rf))$train(bg_sampled, emb_cols_r), "_cluster")$
+      randomColumn("_rand")$
+      sort("_rand")$
+      distinct(list("_cluster"))
+
     sampled_fc   <- pres_sampled$merge(bg_sampled)
     n_background <- bg_count
   } else {
@@ -69,7 +81,13 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
   models <- list()
   for (m in methods) {
     sdm_info(sprintf("Fitting %s ...", toupper(m)), indent = 1L)
-    fc_for_method <- if (m == "similarity") pres_sampled else sampled_fc
+    fc_for_method <- if (m == "similarity") {
+      pres_sampled
+    } else if (m == "rf") {
+      pres_sampled$merge(bg_rf)
+    } else {
+      sampled_fc
+    }
     models[[m]]   <- train_gee_model(fc_for_method, m, params = training_params[[m]])
 
     if (models[[m]]$is_classifier) {
