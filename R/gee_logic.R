@@ -70,43 +70,125 @@ get_embeddings_at_fc_raw <- function(fc, scale, properties = NULL, geometries = 
   return(ee$FeatureCollection(sampled_fcs)$flatten())
 }
 
+#' Download Background Embeddings via Independent-Chunk sampleRegions + computeFeatures
+#'
+#' Generates background points in independent small batches (different seeds),
+#' sampling embeddings for each via ee.data.computeFeatures() pagination.
+#' Each batch is a fresh, isolated server-side expression — no large FC to count
+#' or slice, no accumulated lazy graph. Repeats until n valid points collected.
+#' Returns an R data frame with longitude, latitude, and A00-A63 columns.
+#' @keywords internal
+get_embeddings_as_df <- function(region, img, n, scale, seed = 42L,
+                                 chunk_size = 5000L, page_size = 500L) {
+  ee      <- reticulate::import("ee")
+  ee_data <- reticulate::import("ee.data")
+  emb_cols <- sprintf("A%02d", 0:63)
+
+  all_dfs   <- list()
+  total     <- 0L
+  s         <- as.integer(seed)
+  max_iters <- ceiling(n / chunk_size) * 5L  # generous safety limit
+
+  for (iter in seq_len(max_iters)) {
+    if (total >= n) break
+
+    chunk_pts <- ee$FeatureCollection$randomPoints(
+      region, as.integer(chunk_size), seed = s
+    )
+    s <- s + 1L
+
+    expr <- img$sampleRegions(
+      collection = chunk_pts,
+      scale      = as.integer(scale),
+      tileScale  = 16L,
+      geometries = TRUE
+    )
+
+    tok <- NULL
+    repeat {
+      params <- list(expression = expr, pageSize = as.integer(page_size))
+      if (!is.null(tok) && nchar(tok) > 0L) params$pageToken <- tok
+
+      r <- retry_curl_download(ee_data$computeFeatures(params))
+
+      feats <- r[["features"]]
+      if (!is.null(feats) && length(feats) > 0L) {
+        mat <- do.call(rbind, lapply(feats, function(f) {
+          coords <- f$geometry$coordinates
+          if (is.null(coords)) return(NULL)
+          vals <- lapply(emb_cols, function(e) f$properties[[e]])
+          if (any(vapply(vals, is.null, logical(1L)))) return(NULL)
+          c(as.numeric(coords[[1L]]), as.numeric(coords[[2L]]), as.numeric(vals))
+        }))
+        if (!is.null(mat) && nrow(mat) > 0L) {
+          df           <- as.data.frame(mat, stringsAsFactors = FALSE)
+          colnames(df) <- c("longitude", "latitude", emb_cols)
+          df           <- df[!is.na(df$A00), , drop = FALSE]
+          total        <- total + nrow(df)
+          all_dfs      <- c(all_dfs, list(df))
+        }
+      }
+
+      tok <- r[["nextPageToken"]]
+      if (is.null(tok) || nchar(tok) == 0L) break
+      if (total >= n) break
+    }
+  }
+
+  if (length(all_dfs) == 0L) return(data.frame())
+  result <- do.call(rbind, all_dfs)
+  result[seq_len(min(n, nrow(result))), , drop = FALSE]
+}
+
 get_embeddings_at_fc <- function(fc, scale, properties = NULL, geometries = FALSE, years = NULL) {
   ee <- reticulate::import("ee")
   raw <- get_embeddings_at_fc_raw(fc, scale, properties, geometries, years)
   return(raw$filter(ee$Filter$notNull(as.list("A00"))))
 }
 
-#' Upload Points to GEE efficiently
-#' @param df Data frame with longitude, latitude, and optional present column.
+#' Upload Points to GEE efficiently, chunking large DFs to stay under 10 MB
+#' @param df Data frame with longitude, latitude, and optional columns.
+#' @param chunk_size Max rows per GeoJSON payload (default 5000 ≈ 4 MB).
 #' @return ee$FeatureCollection
-upload_points_to_gee <- function(df) {
+upload_points_to_gee <- function(df, chunk_size = 5000L) {
   ee       <- reticulate::import("ee")
   json_mod <- reticulate::import("json")
 
-  coord_cols <- c("longitude", "latitude")
-  prop_cols  <- setdiff(names(df), coord_cols)
-
-  features <- vector("list", nrow(df))
-  for (i in seq_len(nrow(df))) {
-    props <- setNames(
-      lapply(prop_cols, function(col) {
-        v <- df[[col]][[i]]
-        if (is.integer(v)) as.integer(v) else if (is.numeric(v)) as.numeric(v) else v
-      }),
-      prop_cols
+  upload_chunk <- function(chunk_df) {
+    coord_cols <- c("longitude", "latitude")
+    prop_cols  <- setdiff(names(chunk_df), coord_cols)
+    features   <- vector("list", nrow(chunk_df))
+    for (i in seq_len(nrow(chunk_df))) {
+      props <- setNames(
+        lapply(prop_cols, function(col) {
+          v <- chunk_df[[col]][[i]]
+          if (is.integer(v)) as.integer(v) else if (is.numeric(v)) as.numeric(v) else v
+        }),
+        prop_cols
+      )
+      features[[i]] <- list(
+        type       = "Feature",
+        geometry   = list(type = "Point",
+                          coordinates = list(chunk_df$longitude[[i]], chunk_df$latitude[[i]])),
+        properties = props
+      )
+    }
+    geojson_py <- json_mod$loads(
+      as.character(jsonlite::toJSON(list(type = "FeatureCollection", features = features),
+                                    auto_unbox = TRUE, digits = 10))
     )
-    features[[i]] <- list(
-      type       = "Feature",
-      geometry   = list(type = "Point", coordinates = list(df$longitude[[i]], df$latitude[[i]])),
-      properties = props
-    )
+    ee$FeatureCollection(geojson_py)
   }
 
-  geojson_py <- json_mod$loads(
-    as.character(jsonlite::toJSON(list(type = "FeatureCollection", features = features),
-                                  auto_unbox = TRUE, digits = 10))
-  )
-  return(ee$FeatureCollection(geojson_py))
+  if (nrow(df) <= chunk_size) return(upload_chunk(df))
+
+  starts <- seq(1L, nrow(df), by = chunk_size)
+  fc     <- upload_chunk(df[starts[[1L]]:min(starts[[1L]] + chunk_size - 1L, nrow(df)), ])
+  for (s in starts[-1L]) {
+    chunk_fc <- upload_chunk(df[s:min(s + chunk_size - 1L, nrow(df)), ])
+    fc       <- fc$merge(chunk_fc)
+  }
+  fc
 }
 
 #' Generate Background Points Server-Side
@@ -153,13 +235,25 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
   known_years <- as.list(unique(as.integer(df_clean$year)))
   sampled_fc  <- get_embeddings_at_fc(upload_fc, scale, properties = sample_props, years = known_years)
 
-  # Log valid points remaining
-  final_count <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
-  dropped <- nrow(df_clean) - final_count
-  if (dropped > 0) {
+  # Log valid points remaining (coverage filter)
+  after_coverage <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
+  dropped_coverage <- nrow(df_clean) - after_coverage
+  if (dropped_coverage > 0) {
     sdm_warn(sprintf("%d point%s discarded (no satellite coverage, e.g. over water)",
-                     dropped, if (dropped == 1) "" else "s"), indent = 1L)
+                     dropped_coverage, if (dropped_coverage == 1) "" else "s"), indent = 1L)
   }
+
+  # Deduplicate on embedding vectors — nearby points in the same pixel return
+  # identical embeddings and add no new information to the classifier.
+  emb_cols_r <- as.list(sprintf("A%02d", 0:63))
+  sampled_fc  <- sampled_fc$distinct(emb_cols_r)
+  final_count <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
+  dropped_emb <- after_coverage - final_count
+  if (dropped_emb > 0) {
+    sdm_info(sprintf("%d point%s removed (duplicate embedding — same pixel or identical landscape)",
+                     dropped_emb, if (dropped_emb == 1) "" else "s"), indent = 1L)
+  }
+
   sdm_progress_done(pb_up)
 
   return(list(

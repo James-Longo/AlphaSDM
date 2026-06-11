@@ -156,13 +156,18 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
     }
 
     # 14. Remove duplicate rows (Prioritize presence: if coords/year collide, take max(present))
+    #
+    # The presence-first sort is also the pipeline's row-order contract: GEE's libsvm
+    # assigns its positive class from the FIRST label it sees in the training data, and
+    # predict_gee_map's SVM flip assumes presence (1) is positive. Emitting presences
+    # first here keeps that invariant at the data boundary, so no downstream stage needs
+    # to re-sort. (order() is stable, so original order is preserved within each class.)
     rows_before <- nrow(result)
-    
-    # Sort descending by present so the first row per group is always the max
+
     key_cols <- setdiff(names(result), "present")
     result <- result[order(-result$present), ]
     result <- result[!duplicated(result[, key_cols, drop = FALSE]), ]
-    result <- result[order(as.numeric(rownames(result))), ]
+    rownames(result) <- NULL
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {

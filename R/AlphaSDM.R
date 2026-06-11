@@ -20,49 +20,28 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     all_years   <- as.list(unique(c(as.integer(pres_df$year), as.integer(aoi_year))))
     presence_fc <- upload_points_to_gee(pres_df)
 
-    # Sample presence embeddings independently (small, no large-FC getInfo() risk)
     pres_sampled <- get_embeddings_at_fc(presence_fc, scale,
                                          properties = c("year", "present"),
                                          years      = all_years)
 
-    # Sample background directly from the embedding image — avoids sampleRegions on large FCs
-    sdm_info(sprintf("Sampling %d background points from image ...", bg_count), indent = 1L)
-    region <- if (!is.null(aoi_geom)) aoi_geom else {
-      lon_buf <- max(0.1, (max(lons) - min(lons)) * 0.1)
-      lat_buf <- max(0.1, (max(lats) - min(lats)) * 0.1)
-      ee$Geometry$Rectangle(c(min(lons)-lon_buf, min(lats)-lat_buf, max(lons)+lon_buf, max(lats)+lat_buf))
-    }
-    img        <- get_embedding_image(aoi_year, scale)
-    bg_sampled <- img$sample(
-      region     = region,
-      scale      = as.integer(scale),
-      numPixels  = as.integer(bg_count),
-      seed       = 42L,
-      geometries = FALSE
-    )$map(function(f) f$set("year", as.integer(aoi_year), "present", 0L))
+    # Background: server-side randomPoints — computation graph stays small regardless
+    # of n, avoiding the 10 MB payload limit from embedding re-upload.
+    lon_buf   <- max(0.1, (max(lons) - min(lons)) * 0.1)
+    lat_buf   <- max(0.1, (max(lats) - min(lats)) * 0.1)
+    bbox_flat <- c(min(lons)-lon_buf, min(lats)-lat_buf, max(lons)+lon_buf, max(lats)+lat_buf)
 
-    emb_cols_r <- as.list(sprintf("A%02d", 0:63))
+    n_bg <- min(n_pres, bg_count)
+    sdm_info(sprintf("Sampling %d background points (server-side) ...", n_bg), indent = 1L)
+    bg_fc <- generate_background_fc_gee(bbox_flat, aoi_year, n_bg, aoi_geom = aoi_geom)
 
-    stratify_bg <- function(bg_fc, n_clusters, bg_total) {
-      bg_fc$
-        cluster(ee$Clusterer$wekaKMeans(as.integer(n_clusters))$train(bg_fc, emb_cols_r), "_cluster")$
-        randomColumn("_rand")$
-        sort("_rand")$
-        distinct(list("_cluster"))
-    }
+    bg_props   <- c("year", "present")
+    bg_sampled <- get_embeddings_at_fc(bg_fc, scale,
+                                       properties = bg_props, years = list(as.integer(aoi_year)))
 
-    # RF: 1:1 ratio, stratified in embedding space
-    n_bg_rf <- min(n_pres, bg_count)
-    sdm_info(sprintf("Stratifying RF background: %d clusters from %d points ...", n_bg_rf, bg_count), indent = 1L)
-    bg_rf <- stratify_bg(bg_sampled, n_bg_rf, bg_count)
-
-    # GBT: 3:1 ratio, random downsample — k-means not worth the compute at this ratio
-    n_bg_gbt <- min(3L * n_pres, bg_count)
-    sdm_info(sprintf("Downsampling GBT background: %d from %d points ...", n_bg_gbt, bg_count), indent = 1L)
-    bg_gbt <- bg_sampled$randomColumn("_rand")$sort("_rand")$limit(as.integer(n_bg_gbt))
-
-    sampled_fc   <- pres_sampled$merge(bg_sampled)
-    n_background <- bg_count
+    bg_rf      <- bg_sampled
+    bg_gbt     <- bg_sampled
+    sampled_fc <- pres_sampled$merge(bg_sampled)
+    n_background <- n_bg
   } else {
     upload_df    <- train_df[, c("longitude", "latitude", "year", "present")]
     sdm_info(sprintf("Transferring %d coordinates ...", nrow(upload_df)), indent = 1L)
@@ -72,6 +51,10 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
                                          properties = c("year", "present"),
                                          years      = as.list(unique(as.integer(upload_df$year))))
     pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
+    # When real absences are supplied, RF/GBT use them as background (merged back
+    # with presences below) — mirrors the presence-only branch's bg_rf/bg_gbt.
+    bg_rf        <- sampled_fc$filter(ee$Filter$eq("present", 0L))
+    bg_gbt       <- bg_rf
     n_pres       <- sum(train_df$present == 1)
     n_background <- sum(train_df$present == 0)
   }
