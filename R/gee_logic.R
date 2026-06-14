@@ -264,12 +264,124 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
 }
 
 #' GEE Classifier Methods Registry
+#'
+#' Every supervised classifier exposed by `ee.Classifier` that can be trained
+#' from labelled points is registered here. Each entry records how to build the
+#' classifier and how to read its output back as a presence-suitability score
+#' (higher = more suitable):
+#'   fn        : the `ee.Classifier` factory name
+#'   output    : value passed to `setOutputMode()`
+#'   score     : band / property produced by `classify()` to read
+#'   transform : how to convert the raw `score` into presence-suitability
+#'     - "none"        score is already P(presence) (the SMILE probability of class 1)
+#'     - "invert"      use `1 - score` (libsvm reports the probability of the
+#'                     FIRST class it saw in training; see format_data row-order contract)
+#'     - "mindist_raw" `score` is a RAW distance array `[d_absence, d_presence]`;
+#'                     use `d_absence - d_presence` so closer-to-presence ranks higher
+#'                     (minimumDistance has no PROBABILITY output mode)
+#'
+#' Notes from benchmarking on float Alpha Earth embeddings:
+#'   - smileNaiveBayes assumes positive-integer feature vectors and DISCARDS
+#'     negative inputs, so it collapses to ~0.5 on embeddings (kept for
+#'     completeness; not recommended).
 GEE_CLASSIFIER_METHODS <- list(
-  rf = "smileRandomForest",
-  gbt = "smileGradientTreeBoost",
-  maxent = "amnhMaxent",
-  svm = "libsvm"
+  rf         = list(fn = "smileRandomForest",      output = "PROBABILITY", score = "classification", transform = "none"),
+  gbt        = list(fn = "smileGradientTreeBoost", output = "PROBABILITY", score = "classification", transform = "none"),
+  maxent     = list(fn = "amnhMaxent",             output = "PROBABILITY", score = "probability",    transform = "none"),
+  # NOTE: the svm output mode/transform below is the CLASSIFICATION-SVM fallback
+  # (C_SVC / NU_SVC). When svmType is a regression SVM (the EPSILON_SVR default, or
+  # NU_SVR), resolve_clf_spec() switches this to REGRESSION + transform "none" so the
+  # regressed 0/1 score is read directly. See build_gee_clf_params() for the defaults.
+  svm        = list(fn = "libsvm",                 output = "PROBABILITY", score = "classification", transform = "invert"),
+  cart       = list(fn = "smileCart",              output = "PROBABILITY", score = "classification", transform = "none"),
+  knn        = list(fn = "smileKNN",               output = "PROBABILITY", score = "classification", transform = "none"),
+  naivebayes = list(fn = "smileNaiveBayes",        output = "PROBABILITY", score = "classification", transform = "none"),
+  mindist    = list(fn = "minimumDistance",        output = "RAW",         score = "classification", transform = "mindist_raw")
 )
+
+#' Build constructor arguments for a GEE classifier
+#'
+#' Picks only the arguments each `ee.Classifier` factory accepts out of the
+#' shared parameter list, coercing integer-typed arguments and dropping NULLs.
+#' @keywords internal
+build_gee_clf_params <- function(method, params) {
+  int_or_null <- function(x) if (!is.null(x)) as.integer(x) else NULL
+  # RF/GBT-oriented defaults that must not leak into other constructors.
+  tree_core <- c("numberOfTrees", "minLeafPopulation", "bagFraction", "shrinkage",
+                 "maxNodes", "variablesPerSplit", "lambda_", "polynomial", "batch_size")
+
+  p <- switch(method,
+    rf = list(
+      numberOfTrees     = int_or_null(params$numberOfTrees),
+      variablesPerSplit = int_or_null(params$variablesPerSplit),
+      minLeafPopulation = int_or_null(params$minLeafPopulation),
+      bagFraction       = params$bagFraction,
+      maxNodes          = int_or_null(params$maxNodes)
+    ),
+    gbt = list(
+      numberOfTrees = int_or_null(params$numberOfTrees),
+      shrinkage     = params$shrinkage,
+      maxNodes      = int_or_null(params$maxNodes)
+    ),
+    cart = list(
+      maxNodes          = int_or_null(params$maxNodes),
+      minLeafPopulation = int_or_null(params$minLeafPopulation)
+    ),
+    knn = list(
+      k            = int_or_null(if (!is.null(params$k)) params$k else 5L),
+      searchMethod = params$searchMethod,
+      metric       = params$metric
+    ),
+    naivebayes = list(
+      lambda = params$lambda
+    ),
+    mindist = list(
+      metric   = params$metric,
+      kNearest = int_or_null(params$kNearest)
+    ),
+    svm = {
+      sp <- params[setdiff(names(params), tree_core)]
+      # Benchmarked defaults (FD, 5 taxa, spatial CV): an EPSILON_SVR with
+      # an RBF kernel (cost 10, gamma 0.05) is the robust general winner — it beats
+      # the old C_SVC/LINEAR default by ~0.05 AUC because regressing the 0/1 label
+      # yields a smoother, better-ranking suitability score. RBF is O(n^2); for very
+      # large training sets pass kernelType = "LINEAR" to scale O(n x d).
+      if (is.null(sp$svmType))    sp$svmType    <- "EPSILON_SVR"
+      if (is.null(sp$kernelType)) sp$kernelType <- "RBF"
+      if (is.null(sp$cost))       sp$cost       <- 10
+      if (is.null(sp$gamma))      sp$gamma      <- 0.05
+      # gamma is only meaningful for POLY/RBF/SIGMOID; libsvm errors if it is sent
+      # with a LINEAR kernel, so drop it there.
+      if (identical(sp$kernelType, "LINEAR")) sp$gamma <- NULL
+      sp
+    },
+    maxent = params[setdiff(names(params), tree_core)],
+    stop("Unsupported classifier method: ", method)
+  )
+  p[!vapply(p, is.null, logical(1))]
+}
+
+#' Resolve the output-mode / score / transform spec for a trained classifier
+#'
+#' Most classifiers use a static spec from `GEE_CLASSIFIER_METHODS`. `svm` is the
+#' exception: libsvm can be a probabilistic classifier (C_SVC / NU_SVC) or a
+#' regression (EPSILON_SVR / NU_SVR), and these are read back differently. A
+#' regression SVM emits a single REGRESSION value that approximates the 0/1 label
+#' (higher = more suitable), so it is read directly (transform "none") rather than
+#' via the C_SVC `1 - p` probability flip.
+#' @keywords internal
+resolve_clf_spec <- function(method, filtered_params) {
+  spec <- GEE_CLASSIFIER_METHODS[[method]]
+  if (method == "svm") {
+    svm_type <- if (!is.null(filtered_params$svmType)) filtered_params$svmType else "EPSILON_SVR"
+    if (svm_type %in% c("EPSILON_SVR", "NU_SVR")) {
+      spec$output    <- "REGRESSION"
+      spec$score     <- "classification"
+      spec$transform <- "none"
+    }
+  }
+  spec
+}
 
 #' GEE Reducer Methods Registry
 GEE_REDUCER_METHODS <- list(
@@ -277,7 +389,14 @@ GEE_REDUCER_METHODS <- list(
 )
 
 #' Train GEE Model
-train_gee_model <- function(sampled_fc, method, params = list(), class_property = "present") {
+#'
+#' @param persist When TRUE and the method is a persistable tree classifier
+#'   (`PERSISTABLE_CLASSIFIERS`), the trained model is exported to a temporary GEE
+#'   asset and reloaded — the workaround for "Computed value is too large" on large
+#'   random forests. The returned list then carries the `asset_id` to clean up.
+#' @param project GEE project id for the temporary asset folder.
+train_gee_model <- function(sampled_fc, method, params = list(), class_property = "present",
+                            persist = FALSE, project = NULL) {
   ee <- reticulate::import("ee")
   emb_cols <- sprintf("A%02d", 0:63)
 
@@ -295,38 +414,12 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
 
   # 2. Training
   if (is_classifier) {
-    gee_method <- GEE_CLASSIFIER_METHODS[[method]]
-    clf_factory <- ee$Classifier[[gee_method]]
+    clf_factory <- ee$Classifier[[GEE_CLASSIFIER_METHODS[[method]]$fn]]
 
-    filtered_params <- list()
-    if (gee_method == "smileRandomForest") {
-      filtered_params <- list(
-        numberOfTrees = as.integer(params$numberOfTrees),
-        variablesPerSplit = if (!is.null(params$variablesPerSplit)) as.integer(params$variablesPerSplit) else NULL,
-        minLeafPopulation = if (!is.null(params$minLeafPopulation)) as.integer(params$minLeafPopulation) else NULL,
-        bagFraction = params$bagFraction,
-        maxNodes = if (!is.null(params$maxNodes)) as.integer(params$maxNodes) else NULL
-      )
-    } else if (gee_method == "smileGradientTreeBoost") {
-      filtered_params <- list(
-        numberOfTrees = as.integer(params$numberOfTrees),
-        shrinkage = params$shrinkage,
-        maxNodes = if (!is.null(params$maxNodes)) as.integer(params$maxNodes) else NULL
-      )
-    } else if (gee_method == "libsvm") {
-      core_params <- c("numberOfTrees", "minLeafPopulation", "bagFraction", "shrinkage", "maxNodes", "variablesPerSplit", "lambda_", "polynomial", "batch_size")
-      filtered_params <- params[setdiff(names(params), core_params)]
-      # Default to linear kernel — RBF is O(n²) and times out on large training sets;
-      # linear is sufficient for embedding spaces and scales with O(n×d).
-      if (is.null(filtered_params$kernelType)) filtered_params$kernelType <- "LINEAR"
-    } else {
-      core_params <- c("numberOfTrees", "minLeafPopulation", "bagFraction", "shrinkage", "maxNodes", "variablesPerSplit", "lambda_", "polynomial", "batch_size")
-      filtered_params <- params[setdiff(names(params), core_params)]
-    }
-
-    filtered_params <- filtered_params[!sapply(filtered_params, is.null)]
+    filtered_params <- build_gee_clf_params(method, params)
+    spec <- resolve_clf_spec(method, filtered_params)
     clf <- do.call(clf_factory, filtered_params)
-    clf <- clf$setOutputMode("PROBABILITY")
+    clf <- clf$setOutputMode(spec$output)
 
     trained_model <- clf$train(
       features = sampled_fc,
@@ -334,10 +427,30 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
       inputProperties = emb_cols
     )
 
+    # Optionally persist large tree models to an asset (avoids "Computed value is
+    # too large" when classifying inline). Only the supported tree types qualify.
+    # A reloaded classifier supports CLASSIFICATION/REGRESSION but NOT PROBABILITY, so
+    # we persist in REGRESSION mode: an RF regressing the 0/1 label yields a continuous
+    # suitability score (~P(presence)), which SDM ranking/AUC needs. The spec is
+    # rewritten so predict reads it as a regression score.
+    asset_id <- NULL
+    if (persist && method %in% PERSISTABLE_CLASSIFIERS) {
+      # Train a FRESH regressor (you cannot re-mode a classification-trained forest),
+      # export+reload it, and read it as a regression suitability score (~P(presence)).
+      reg_clf <- do.call(clf_factory, filtered_params)$setOutputMode("REGRESSION")$train(
+        features = sampled_fc, classProperty = LABEL_COL, inputProperties = emb_cols)
+      pc <- ee_persist_classifier(reg_clf, project = project)
+      trained_model <- pc$classifier
+      spec <- list(fn = spec$fn, output = "REGRESSION", score = "classification", transform = "none")
+      asset_id <- pc$asset_id
+    }
+
     return(list(
       trained       = trained_model,
       is_classifier = TRUE,
-      method        = method
+      method        = method,
+      spec          = spec,
+      asset_id      = asset_id
     ))
   } else {
     # Reducer logic (Simplified Centroid)
@@ -367,11 +480,19 @@ predict_gee_map <- function(model_res, img) {
   emb_cols <- sprintf("A%02d", 0:63)
 
   if (model_res$is_classifier) {
-    score_col <- if (model_res$method == "maxent") "probability" else "classification"
-    prediction <- img$classify(model_res$trained)$select(score_col)
+    spec       <- if (!is.null(model_res$spec)) model_res$spec else GEE_CLASSIFIER_METHODS[[model_res$method]]
+    classified <- img$classify(model_res$trained)
 
-    if (model_res$method == "svm") {
-      prediction <- ee$Image(1.0)$subtract(prediction)
+    if (spec$transform == "mindist_raw") {
+      # RAW output is an array band [d_absence, d_presence]; presence-suitability
+      # is "closer to the presence centre", i.e. d_absence - d_presence.
+      flat <- classified$select(spec$score)$arrayFlatten(list(list("d_absence", "d_presence")))
+      prediction <- flat$select("d_absence")$subtract(flat$select("d_presence"))
+    } else {
+      prediction <- classified$select(spec$score)
+      if (spec$transform == "invert") {
+        prediction <- ee$Image(1.0)$subtract(prediction)
+      }
     }
 
     return(prediction$rename("similarity"))
@@ -401,12 +522,18 @@ predict_all_models_gee <- function(fc, models_list) {
 
   # 1. Chain Classifiers
   for (m in classifiers) {
-    model_res <- models_list[[m]]
-    score_col <- if (model_res$method == "maxent") "probability" else "classification"
-    scored_fc <- scored_fc$classify(model_res$trained)
-    
+    model_res  <- models_list[[m]]
+    spec       <- if (!is.null(model_res$spec)) model_res$spec else GEE_CLASSIFIER_METHODS[[model_res$method]]
+    score_col  <- spec$score
     target_col <- paste0("pred_", m)
-    if (model_res$method == "svm") {
+    scored_fc  <- scored_fc$classify(model_res$trained)
+
+    if (spec$transform == "mindist_raw") {
+      scored_fc <- scored_fc$map(function(f) {
+        arr <- ee$Array(f$get(score_col))
+        f$set(target_col, arr$get(list(0L))$subtract(arr$get(list(1L))))
+      })
+    } else if (spec$transform == "invert") {
       scored_fc <- scored_fc$map(function(f) f$set(target_col, ee$Number(1.0)$subtract(f$get(score_col))))
     } else {
       scored_fc <- scored_fc$map(function(f) f$set(target_col, f$get(score_col)))

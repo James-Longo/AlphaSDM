@@ -80,6 +80,7 @@ calculate_classifier_metrics <- function(scores_pos, scores_neg) {
   # 2. AUC-PRG (Precision-Recall Gain)
   ord <- order(scores_all, decreasing = TRUE)
   sorted_labels <- all_labels[ord]
+  sorted_scores <- scores_all[ord]
   
   tp <- cumsum(sorted_labels)
   fp <- cumsum(1 - sorted_labels)
@@ -106,8 +107,13 @@ calculate_classifier_metrics <- function(scores_pos, scores_neg) {
   }
   
   # 3. TSS and Balanced Accuracy
-  sens <- tp / n_pos
-  spec <- (n_neg - fp) / n_neg
+  # Tie-safe: a valid threshold groups ALL points sharing a score together, so
+  # only evaluate sens/spec at boundaries where the next (descending) score
+  # differs. Without this, tied/constant scores spuriously hit TSS=1 because the
+  # presences (listed first in scores_all) are counted before the tied absences.
+  keep <- c(sorted_scores[-length(sorted_scores)] != sorted_scores[-1], TRUE)
+  sens <- tp[keep] / n_pos
+  spec <- (n_neg - fp[keep]) / n_neg
   tss <- max(sens + spec - 1)
   ba <- max((sens + spec) / 2)
   

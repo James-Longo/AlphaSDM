@@ -1,7 +1,21 @@
 #' Internal Unified GEE Training Pipeline
 #' @keywords internal
-fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, training_params, count = NULL) {
+fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, training_params, count = NULL,
+                           bg_ratio = NULL, persist_classifier = FALSE, project = NULL) {
   ee <- reticulate::import("ee")
+
+  # Optional class balancing: downsample an absence/background FeatureCollection to
+  # a target absence:presence ratio, entirely server-side (no embeddings egressed).
+  # On imbalanced SDM data this is the main lever that moves TSS for the tree
+  # methods (rf/gbt). Only downsamples — never upsamples — so a ratio looser than
+  # the data already is leaves the pool untouched.
+  balance_bg <- function(bg_fc, n_pos, n_neg) {
+    if (is.null(bg_ratio) || n_pos <= 0L || n_neg <= 0L) return(bg_fc)
+    target <- ceiling(as.numeric(bg_ratio) * n_pos)
+    if (target >= n_neg) return(bg_fc)
+    frac <- target / n_neg
+    bg_fc$randomColumn("__bgsel", 42L)$filter(ee$Filter$lt("__bgsel", frac))
+  }
 
   # 1. Upload + background generation (background stays on GEE if presence-only)
   sdm_section("Uploading training data to Google Earth Engine")
@@ -38,8 +52,8 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     bg_sampled <- get_embeddings_at_fc(bg_fc, scale,
                                        properties = bg_props, years = list(as.integer(aoi_year)))
 
-    bg_rf      <- bg_sampled
-    bg_gbt     <- bg_sampled
+    bg_rf      <- balance_bg(bg_sampled, n_pres, n_bg)
+    bg_gbt     <- bg_rf
     sampled_fc <- pres_sampled$merge(bg_sampled)
     n_background <- n_bg
   } else {
@@ -53,10 +67,10 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
     # When real absences are supplied, RF/GBT use them as background (merged back
     # with presences below) — mirrors the presence-only branch's bg_rf/bg_gbt.
-    bg_rf        <- sampled_fc$filter(ee$Filter$eq("present", 0L))
-    bg_gbt       <- bg_rf
     n_pres       <- sum(train_df$present == 1)
     n_background <- sum(train_df$present == 0)
+    bg_rf        <- balance_bg(sampled_fc$filter(ee$Filter$eq("present", 0L)), n_pres, n_background)
+    bg_gbt       <- bg_rf
   }
 
   sdm_progress_done(pb_up)
@@ -81,7 +95,8 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     } else {
       sampled_fc
     }
-    models[[m]]   <- train_gee_model(fc_for_method, m, params = training_params[[m]])
+    models[[m]]   <- train_gee_model(fc_for_method, m, params = training_params[[m]],
+                                     persist = persist_classifier, project = project)
 
     if (models[[m]]$is_classifier) {
       invisible(retry_curl_download(
@@ -96,21 +111,34 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
   return(list(
     models   = models,
     metadata = list(
-      n_presence   = n_pres,
-      n_background = n_background,
-      methods      = methods,
-      scale        = scale
+      n_presence       = n_pres,
+      n_background     = n_background,
+      methods          = methods,
+      scale            = scale,
+      # temporary classifier assets created by persist_classifier (NULL if none),
+      # to be removed with cleanup_classifier_assets() once prediction is done.
+      classifier_assets = Filter(Negate(is.null), lapply(models, function(x) x$asset_id))
     )
   ))
+}
+
+#' Delete temporary classifier assets created by persist_classifier
+#' @keywords internal
+cleanup_classifier_assets <- function(train_res) {
+  assets <- train_res$metadata$classifier_assets
+  if (length(assets) > 0) for (a in assets) ee_delete_asset_quietly(a)
+  invisible(NULL)
 }
 
 
 #' Generate SDM Map
 #' @export
 generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
-                         methods = NULL, ensemble = TRUE, aoi_year = NULL, count = NULL,
+                         methods = NULL, ensemble = TRUE, aoi_year = NULL, count = NULL, bg_ratio = NULL,
                          n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
                          shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
+                         svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
+                         persist_classifier = FALSE,
                          gee_project = NULL, python_path = NULL,
                          options = list()) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
@@ -158,8 +186,17 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     method_params$rf$numberOfTrees <- 250L
   }
 
+  # SVM tuning: benchmarked ε-SVR + RBF defaults (overridable per call)
+  if ("svm" %in% methods) {
+    method_params$svm$svmType    <- svm_type
+    method_params$svm$kernelType <- svm_kernel
+    method_params$svm$cost       <- svm_cost
+    method_params$svm$gamma      <- svm_gamma
+  }
+
   # 4. Unified Training
-  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count)
+  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
+  on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp classifier assets on exit
 
   # 5. Map Generation
   img_mosaic <- get_embedding_image(aoi_year, scale)
@@ -193,7 +230,8 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
 #' then batch-samples that image at eval coords. This avoids re-embedding eval points through
 #' 64 bands and re-triggering classifier training on every batch.
 #' @keywords internal
-predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi_year) {
+predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi_year,
+                                    async = FALSE, project = NULL) {
   ee <- reticulate::import("ee")
   if (!"year" %in% names(predict_df)) predict_df$year <- aoi_year
 
@@ -206,6 +244,36 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
   for (col in pred_cols) predict_df[[col]] <- NA_real_
   predict_df$.row_idx <- seq_len(nrow(predict_df))
 
+  fill_from_features <- function(features) {
+    for (f in features) {
+      ridx <- as.integer(f$properties[["row_idx"]])
+      if (is.null(ridx) || is.na(ridx)) next
+      for (m in methods) {
+        val <- f$properties[[paste0("pred_", m)]]
+        if (!is.null(val)) predict_df[ridx, paste0("pred_", m)] <<- as.numeric(val)
+      }
+    }
+  }
+
+  # --- Async path: one batch export of the whole scored collection -------------
+  # Materialises training + sampling server-side (no synchronous compute limit),
+  # then reads the result back in pages. Embeddings never leave GEE.
+  if (async) {
+    chunk <- predict_df[, c("longitude", "latitude", "year", ".row_idx"), drop = FALSE]
+    names(chunk)[names(chunk) == ".row_idx"] <- "row_idx"
+    eval_fc    <- upload_points_to_gee(chunk)
+    # geometries = TRUE: Export.table.toAsset rejects null-geometry features.
+    sampled_fc <- pred_stack$sampleRegions(
+      collection = eval_fc, properties = as.list("row_idx"),
+      scale = as.integer(scale), tileScale = 16L, geometries = TRUE
+    )
+    info <- ee_table_to_info_async(sampled_fc$select(as.list(c("row_idx", pred_cols))), project)
+    fill_from_features(info$features)
+    predict_df$.row_idx <- NULL
+    return(predict_df)
+  }
+
+  # --- Synchronous path (default): chunked getInfo -----------------------------
   chunk_size   <- 5000L
   n_rows       <- nrow(predict_df)
   batch_starts <- seq(1L, n_rows, by = chunk_size)
@@ -224,18 +292,16 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
       geometries = FALSE
     )
 
-    res <- try(retry_curl_download(sampled_fc$getInfo()), silent = TRUE)
-    if (inherits(res, "try-error") || is.null(res) || !"features" %in% names(res)) next
-
-    for (f in res$features) {
-      ridx <- as.integer(f$properties[["row_idx"]])
-      if (is.null(ridx) || is.na(ridx)) next
-      for (m in methods) {
-        col <- paste0("pred_", m)
-        val <- f$properties[[col]]
-        if (!is.null(val)) predict_df[ridx, col] <- as.numeric(val)
-      }
+    res <- tryCatch(retry_curl_download(sampled_fc$getInfo()), error = function(e) e)
+    if (inherits(res, "error")) {
+      # A genuine compute timeout means the job is too big for synchronous scoring —
+      # fail loudly and point the user at the async path rather than silently
+      # returning NA scores (which would corrupt downstream metrics).
+      if (is_gee_timeout(res)) stop(async_timeout_message(res, where = "scoring"))
+      next  # other transient errors: skip this chunk (legacy behaviour)
     }
+    if (is.null(res) || !"features" %in% names(res)) next
+    fill_from_features(res$features)
   }
 
   predict_df$.row_idx <- NULL
@@ -246,10 +312,12 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
 #' Evaluate SDM Models
 #' @export
 evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir = getwd(),
-                            methods = NULL, aoi_year = NULL, count = NULL,
+                            methods = NULL, aoi_year = NULL, count = NULL, bg_ratio = NULL,
                             n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
                             shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
-                            cv_folds = 5L, weighted_ensemble = FALSE,
+                            svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
+                            cv_folds = 5L, weighted_ensemble = FALSE, async = FALSE,
+                            persist_classifier = FALSE,
                             gee_project = NULL, python_path = NULL,
                             options = list()) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
@@ -280,6 +348,12 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   method_params <- setNames(lapply(methods, function(m) base_params), methods)
   if ("gbt" %in% methods && n_trees == 100L) method_params$gbt$numberOfTrees <- 150L
   if ("rf"  %in% methods && n_trees == 100L) method_params$rf$numberOfTrees  <- 250L
+  if ("svm" %in% methods) {
+    method_params$svm$svmType    <- svm_type
+    method_params$svm$kernelType <- svm_kernel
+    method_params$svm$cost       <- svm_cost
+    method_params$svm$gamma      <- svm_gamma
+  }
 
   # --- AOI geometry (bounding box of prediction target or training data) ---
   ref_df   <- if (!is.null(predict_coords)) predict_coords else data
@@ -329,9 +403,10 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
       train_k <- pres_df[pres_df$cv_fold != k, c("longitude", "latitude", "year", "present"), drop = FALSE]
       test_k  <- pres_df[pres_df$cv_fold == k, c("longitude", "latitude", "year"),             drop = FALSE]
 
-      res_k        <- fit_gee_models(train_k, methods, aoi_geom, scale, aoi_year, method_params, count = count)
-      pres_scored  <- predict_scores_internal(test_k,    res_k$models, methods, img, scale, aoi_year)
-      bg_scored    <- predict_scores_internal(val_bg_df, res_k$models, methods, img, scale, aoi_year)
+      res_k        <- fit_gee_models(train_k, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
+      pres_scored  <- predict_scores_internal(test_k,    res_k$models, methods, img, scale, aoi_year, async = async, project = gee_project)
+      bg_scored    <- predict_scores_internal(val_bg_df, res_k$models, methods, img, scale, aoi_year, async = async, project = gee_project)
+      cleanup_classifier_assets(res_k)   # per-fold temp classifier assets
 
       na_pres_cv <- is.na(pres_scored[[paste0("pred_", methods[1])]])
       na_bg_cv   <- is.na(bg_scored[[paste0("pred_",  methods[1])]])
@@ -366,7 +441,8 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   }
 
   # --- Final model trained on all data ---
-  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count)
+  train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
+  on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp assets on any exit
 
   # --- Pure CV mode: return without predict_coords ---
   if (is.null(predict_coords)) {
@@ -387,7 +463,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   # --- Prediction ---
   sdm_section(sprintf("Predicting at %d coordinates (image-first, server-side)", nrow(predict_coords)))
   pb_pred    <- sdm_progress_start("Prediction")
-  final_pred <- predict_scores_internal(predict_coords, train_res$models, methods, img, scale, aoi_year)
+  final_pred <- predict_scores_internal(predict_coords, train_res$models, methods, img, scale, aoi_year, async = async, project = gee_project)
   sdm_progress_done(pb_pred)
 
   # --- Ensemble ---
