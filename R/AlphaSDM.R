@@ -185,6 +185,10 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   if ("rf" %in% methods && n_trees == 100L) {
     method_params$rf$numberOfTrees <- 250L
   }
+  # RF benefits from DEEP trees; the shared default maxNodes=6 / minLeaf=5 are near-stumps
+  # (benchmarked +0.02-0.05 AUC from unlimited depth). RF-specific so gbt/cart stay shallow.
+  if ("rf" %in% methods && max_nodes == 6L)            method_params$rf$maxNodes <- NULL
+  if ("rf" %in% methods && min_leaf_population == 5L)  method_params$rf$minLeafPopulation <- 1L
 
   # SVM tuning: benchmarked ε-SVR + RBF defaults (overridable per call)
   if ("svm" %in% methods) {
@@ -348,6 +352,9 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   method_params <- setNames(lapply(methods, function(m) base_params), methods)
   if ("gbt" %in% methods && n_trees == 100L) method_params$gbt$numberOfTrees <- 150L
   if ("rf"  %in% methods && n_trees == 100L) method_params$rf$numberOfTrees  <- 250L
+  # RF benefits from deep trees (default maxNodes=6/minLeaf=5 are near-stumps); rf-specific.
+  if ("rf"  %in% methods && max_nodes == 6L)           method_params$rf$maxNodes <- NULL
+  if ("rf"  %in% methods && min_leaf_population == 5L) method_params$rf$minLeafPopulation <- 1L
   if ("svm" %in% methods) {
     method_params$svm$svmType    <- svm_type
     method_params$svm$kernelType <- svm_kernel
