@@ -559,6 +559,47 @@ predict_all_models_gee <- function(fc, models_list) {
   return(scored_fc)
 }
 
+#' Assign spatial cross-validation folds (blockCV blocks or k-means clusters)
+#'
+#' blockCV (Valavi et al. 2018) tiles the study area into square blocks (sized to a
+#' fraction of the extent, or `block_size` metres) and distributes them among folds,
+#' controlling spatial autocorrelation WITHOUT the harsh contiguous-region
+#' extrapolation that k-means clustering of coordinates produces (k-means makes each
+#' fold one geographic chunk, the most pessimistic spatial CV). Falls back to k-means
+#' if `blockCV`/`sf` are unavailable or fail.
+#' @keywords internal
+assign_cv_folds <- function(df, k, method = c("block", "kmeans"), block_size = NULL) {
+  method <- match.arg(method)
+  if (method == "block") {
+    if (requireNamespace("blockCV", quietly = TRUE) && requireNamespace("sf", quietly = TRUE)) {
+      folds <- tryCatch(blockcv_folds(df, k, block_size), error = function(e) {
+        sdm_warn(sprintf("blockCV folds failed (%s); using k-means.", conditionMessage(e))); NULL })
+      if (!is.null(folds) && !anyNA(folds) && length(unique(folds)) > 1) return(as.integer(folds))
+    } else {
+      sdm_warn("Package 'blockCV' not installed; using k-means spatial folds.")
+    }
+  }
+  as.integer(stats::kmeans(df[, c("longitude", "latitude")], centers = k, nstart = 5L)$cluster)
+}
+
+#' blockCV spatial-block fold assignment
+#' @keywords internal
+blockcv_folds <- function(df, k, block_size = NULL) {
+  sfp <- sf::st_as_sf(df, coords = c("longitude", "latitude"), crs = 4326)
+  ctr <- sf::st_coordinates(sf::st_centroid(sf::st_union(sfp)))
+  utm <- (if (ctr[2] >= 0) 32600L else 32700L) + as.integer(floor((ctr[1] + 180) / 6)) + 1L
+  sfp <- sf::st_transform(sfp, utm)                       # metric CRS for square blocks
+  if (is.null(block_size)) {
+    bb  <- sf::st_bbox(sfp)
+    ext <- max(bb[["xmax"]] - bb[["xmin"]], bb[["ymax"]] - bb[["ymin"]])
+    block_size <- ext / (2 * sqrt(k) + 1)                 # several blocks per fold
+  }
+  sb <- blockCV::cv_spatial(x = sfp, k = as.integer(k), size = block_size,
+                            selection = "random", iteration = 50L,
+                            progress = FALSE, plot = FALSE, report = FALSE)
+  as.integer(sb$folds_ids)
+}
+
 #' Assign Spatial Folds
 assign_spatial_folds <- function(df, n_folds = 10) {
   ee <- reticulate::import("ee")

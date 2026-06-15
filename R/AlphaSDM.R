@@ -320,7 +320,8 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
                             n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
                             shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
                             svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
-                            cv_folds = 5L, weighted_ensemble = FALSE, async = FALSE,
+                            cv_folds = 5L, cv_method = "block", block_size = NULL,
+                            weighted_ensemble = FALSE, async = FALSE,
                             persist_classifier = FALSE,
                             gee_project = NULL, python_path = NULL,
                             options = list()) {
@@ -388,8 +389,11 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
       ))
     }
 
-    km              <- stats::kmeans(pres_df[, c("longitude", "latitude")], centers = cv_folds, nstart = 5L)
-    pres_df$cv_fold <- km$cluster
+    # Spatial folds: blockCV blocks by default (controls spatial autocorrelation
+    # better than contiguous k-means clusters); falls back to k-means if unavailable.
+    pres_df$cv_fold <- assign_cv_folds(pres_df, cv_folds, method = cv_method, block_size = block_size)
+    sdm_info(sprintf("Spatial folds: %s (%d folds)",
+                     if (cv_method == "block") "blockCV blocks" else "k-means clusters", cv_folds), indent = 1L)
 
     # Generate validation background on GEE, download coordinates once before the CV loop
     val_bg_n  <- if (is.null(count)) n_pres else as.integer(count)
