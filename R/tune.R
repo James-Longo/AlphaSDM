@@ -52,6 +52,11 @@ default_tuning_grids <- function(methods) {
     list(maxent_tuning_params(1, "auto")),
     do.call(c, lapply(c("LQ", "LQH", "LQHP"),
                       function(fc) lapply(c(0.5, 1, 2, 4), function(b) maxent_tuning_params(b, fc)))))
+  if ("knn"  %in% methods) g$knn  <- .cfg_grid(k = c(5L, 15L, 30L, 50L))
+  if ("cart" %in% methods) g$cart <- .cfg_grid(maxNodes = list(NULL, 50L), minLeafPopulation = c(1L, 5L))
+  if ("mindist" %in% methods) g$mindist <- .cfg_grid(metric = c("euclidean", "cosine"))
+  # naivebayes is intentionally omitted: GEE smileNaiveBayes discards negative inputs,
+  # so it collapses to ~0.5 on the [-1,1] Alpha Earth embeddings.
   g
 }
 
@@ -62,9 +67,14 @@ score_test_fc <- function(model_res, te_fc, id = "rid") {
   spec <- if (!is.null(model_res$spec)) model_res$spec else GEE_CLASSIFIER_METHODS[[model_res$method]]
   info <- retry_curl_download(
     te_fc$classify(model_res$trained)$select(list(id, spec$score))$getInfo())
-  sc <- setNames(
-    vapply(info$features, function(f) as.numeric(f$properties[[spec$score]]), numeric(1)),
-    vapply(info$features, function(f) as.character(as.integer(f$properties[[id]])), character(1)))
+  ids <- vapply(info$features, function(f) as.character(as.integer(f$properties[[id]])), character(1))
+  read1 <- if (identical(spec$transform, "mindist_raw")) {
+    # minimumDistance RAW: score is array [d_absence, d_presence] -> suitability = d_abs - d_pres
+    function(f) { v <- f$properties[[spec$score]]; as.numeric(v[[1]]) - as.numeric(v[[2]]) }
+  } else {
+    function(f) as.numeric(f$properties[[spec$score]])
+  }
+  sc <- setNames(vapply(info$features, read1, numeric(1)), ids)
   if (identical(spec$transform, "invert")) sc <- 1 - sc
   sc
 }
@@ -77,7 +87,8 @@ score_test_fc <- function(model_res, te_fc, id = "rid") {
 #' are extracted once and reused across the whole grid.
 #'
 #' @param data Data frame with `longitude`, `latitude`, `present` (0/1), optional `year`.
-#' @param methods Methods to tune (subset of svm, rf, gbt, maxent).
+#' @param methods Methods to tune (subset of svm, rf, gbt, maxent, knn, cart, mindist).
+#'   smileNaiveBayes and the presence-only `similarity` reducer are excluded.
 #' @param grids Optional named list of per-method configuration lists; default grids
 #'   are used for any method not supplied (see `default_tuning_grids`).
 #' @param cv_folds,cv_method,block_size Spatial CV settings (blockCV by default).
@@ -87,7 +98,7 @@ score_test_fc <- function(model_res, te_fc, id = "rid") {
 #' @return A list with `results` (ranked data frame of method/config/auc/tss),
 #'   `best_per_method`, `best` (overall), and `oof` (pooled OOF scores per config).
 #' @export
-tune_models <- function(data, methods = c("svm", "rf", "gbt", "maxent"), grids = NULL,
+tune_models <- function(data, methods = c("svm", "rf", "gbt", "maxent", "knn", "cart", "mindist"), grids = NULL,
                         cv_folds = 5L, cv_method = "block", block_size = NULL,
                         scale = 10, aoi_year = NULL, metric = c("auc", "tss"),
                         gee_project = NULL, python_path = NULL) {
