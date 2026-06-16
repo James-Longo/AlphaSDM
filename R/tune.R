@@ -124,8 +124,9 @@ score_similarity_fc <- function(model_res, te_fc, id = "rid") {
 #'   inside every configuration's `getInfo` (much slower for multi-config sweeps). The
 #'   asset is removed when the call finishes.
 #' @param gee_project,python_path GEE setup.
-#' @return A list with `results` (ranked data frame of method/config/auc/tss),
-#'   `best_per_method`, `best` (overall), and `oof` (pooled OOF scores per config).
+#' @return A list with `results` (ranked data frame of method/config/auc/tss, including a
+#'   performance-weighted `ensemble` of the best config per method), `best_per_method`,
+#'   `best` (overall, which may be the ensemble), and `oof` (pooled OOF scores per config).
 #' @export
 tune_models <- function(data, methods = c("svm", "rf", "gbt", "maxent", "knn", "cart", "mindist", "similarity"), grids = NULL,
                         cv_folds = 5L, cv_method = "block", block_size = NULL,
@@ -214,6 +215,31 @@ tune_models <- function(data, methods = c("svm", "rf", "gbt", "maxent", "knn", "
     kk <- if (metric == "auc") df$auc else df$tss
     if (all(is.na(kk))) df[1, ] else df[which.max(kk), ]
   }))
+
+  # Performance-WEIGHTED ensemble of the best configuration per method: rank-normalise
+  # each method's OOF and combine with weights proportional to its skill above chance
+  # (metric - baseline), so weak/near-random methods contribute little. Added as a
+  # candidate so it competes with the single configs for "best".
+  rids   <- as.character(data$rid)
+  bpm_ok <- best_per_method[!is.na(best_per_method$auc), , drop = FALSE]
+  if (nrow(bpm_ok) >= 2) {
+    keys <- paste(bpm_ok$method, bpm_ok$config)
+    rkn  <- function(x) { r <- rank(x, na.last = "keep"); (r - min(r, na.rm = TRUE)) / (max(r, na.rm = TRUE) - min(r, na.rm = TRUE)) }
+    R    <- vapply(keys, function(k) rkn(oof_store[[k]][rids]), numeric(length(rids)))
+    base <- if (metric == "auc") 0.5 else 0
+    w    <- pmax((if (metric == "auc") bpm_ok$auc else bpm_ok$tss) - base, 0)
+    if (sum(w) > 0) {
+      ens <- setNames(apply(R, 1, function(row) {
+        ok <- !is.na(row); if (!any(ok)) NA_real_ else sum(row[ok] * w[ok]) / sum(w[ok]) }), rids)
+      tr_e <- truth[rids]; ok2 <- !is.na(ens) & !is.na(tr_e)
+      em   <- calculate_classifier_metrics(ens[ok2 & tr_e == 1], ens[ok2 & tr_e == 0])
+      results <- rbind(results, data.frame(method = "ensemble", config = "weighted(best-per-method)",
+        auc = em$auc_roc, tss = em$tss, n = sum(ok2), stringsAsFactors = FALSE))
+      oof_store[["ensemble weighted(best-per-method)"]] <- ens
+      keyv    <- if (metric == "auc") results$auc else results$tss
+      results <- results[order(-keyv), ]
+    }
+  }
   best <- results[1, ]
 
   sdm_section("Tuning complete")
