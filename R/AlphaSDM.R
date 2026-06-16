@@ -138,6 +138,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
                          shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
                          svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
+                         maxent_beta = 1, maxent_features = "auto",
                          persist_classifier = FALSE,
                          gee_project = NULL, python_path = NULL,
                          options = list()) {
@@ -197,6 +198,9 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     method_params$svm$cost       <- svm_cost
     method_params$svm$gamma      <- svm_gamma
   }
+  # MaxEnt tuning (ENMeval-style): regularization multiplier + feature classes
+  if ("maxent" %in% methods)
+    method_params$maxent <- modifyList(method_params$maxent, maxent_tuning_params(maxent_beta, maxent_features))
 
   # 4. Unified Training
   train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
@@ -320,6 +324,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
                             n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
                             shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
                             svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
+                            maxent_beta = 1, maxent_features = "auto",
                             cv_folds = 5L, cv_method = "block", block_size = NULL,
                             weighted_ensemble = FALSE, async = FALSE,
                             persist_classifier = FALSE,
@@ -362,6 +367,9 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
     method_params$svm$cost       <- svm_cost
     method_params$svm$gamma      <- svm_gamma
   }
+  # MaxEnt tuning (ENMeval-style): regularization multiplier + feature classes
+  if ("maxent" %in% methods)
+    method_params$maxent <- modifyList(method_params$maxent, maxent_tuning_params(maxent_beta, maxent_features))
 
   # --- AOI geometry (bounding box of prediction target or training data) ---
   ref_df   <- if (!is.null(predict_coords)) predict_coords else data

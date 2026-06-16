@@ -361,6 +361,26 @@ build_gee_clf_params <- function(method, params) {
   p[!vapply(p, is.null, logical(1))]
 }
 
+#' Build amnhMaxent tuning params from a regularization multiplier + feature classes
+#'
+#' The two ENMeval-style maxent levers (Muscarella 2014, Radosavljevic & Anderson 2014):
+#' `beta` is the regularization multiplier (higher = simpler/smoother) and `features`
+#' is a feature-class string — "auto" keeps GEE's sample-size-based autoFeature, else a
+#' combination of L/Q/H/P/T (e.g. "LQH") turns autoFeature off and toggles those classes.
+#' @keywords internal
+maxent_tuning_params <- function(beta = 1, features = "auto") {
+  mp <- list(betaMultiplier = beta)
+  if (!is.null(features) && !identical(features, "auto")) {
+    mp$autoFeature <- FALSE
+    mp$linear      <- TRUE
+    mp$quadratic   <- grepl("Q", features, ignore.case = TRUE)
+    mp$hinge       <- grepl("H", features, ignore.case = TRUE)
+    mp$product     <- grepl("P", features, ignore.case = TRUE)
+    mp$threshold   <- grepl("T", features, ignore.case = TRUE)
+  }
+  mp
+}
+
 #' Resolve the output-mode / score / transform spec for a trained classifier
 #'
 #' Most classifiers use a static spec from `GEE_CLASSIFIER_METHODS`. `svm` is the
