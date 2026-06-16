@@ -403,6 +403,26 @@ resolve_clf_spec <- function(method, filtered_params) {
   spec
 }
 
+#' Re-resolve a classifier spec for an explicit output-mode override (mode tuning)
+#'
+#' Given a target output mode, returns the spec with the correct score band and the
+#' transform needed to read a presence-suitability score from it:
+#'   PROBABILITY/REGRESSION/CLASSIFICATION -> read the scalar directly ("none"),
+#'     except libsvm C_SVC PROBABILITY which keeps its `1 - p` invert;
+#'   MULTIPROBABILITY -> read the last array element (P of the highest = presence class);
+#'   RAW (minimumDistance) -> the `d_absence - d_presence` array transform.
+#' @keywords internal
+override_output_mode <- function(method, spec, output) {
+  spec$output <- output
+  spec$score  <- if (method == "maxent") "probability" else "classification"
+  spec$transform <- if (output == "MULTIPROBABILITY") "multiprob_last"
+    else if (output == "RAW" && method == "mindist") "mindist_raw"
+    else if (output == "PROBABILITY" && method == "svm" &&
+             identical(spec$transform, "invert")) "invert"
+    else "none"
+  spec
+}
+
 #' GEE Reducer Methods Registry
 GEE_REDUCER_METHODS <- list(
   similarity = list(reducer = "mean", encoding = "presence")
@@ -436,8 +456,13 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
   if (is_classifier) {
     clf_factory <- ee$Classifier[[GEE_CLASSIFIER_METHODS[[method]]$fn]]
 
+    # An `output` param tunes the GEE output mode; strip it before constructing the
+    # classifier (it is set via setOutputMode, not a constructor argument).
+    output_override <- params[["output"]]; params[["output"]] <- NULL
+
     filtered_params <- build_gee_clf_params(method, params)
     spec <- resolve_clf_spec(method, filtered_params)
+    if (!is.null(output_override)) spec <- override_output_mode(method, spec, output_override)
     clf <- do.call(clf_factory, filtered_params)
     clf <- clf$setOutputMode(spec$output)
 

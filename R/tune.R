@@ -55,6 +55,13 @@ default_tuning_grids <- function(methods) {
   if ("knn"  %in% methods) g$knn  <- .cfg_grid(k = c(5L, 15L, 30L, 50L))
   if ("cart" %in% methods) g$cart <- .cfg_grid(maxNodes = list(NULL, 50L), minLeafPopulation = c(1L, 5L))
   if ("mindist" %in% methods) g$mindist <- .cfg_grid(metric = c("euclidean", "cosine"))
+  if ("similarity" %in% methods) g$similarity <- list(list())   # niche centroid (no hyperparameters)
+  # Output-mode checks: the registry's default mode is continuous (good for AUC), but
+  # let the sweep confirm it where an alternative is plausible (rf/gbt PROBABILITY vs
+  # REGRESSION, C_SVC PROBABILITY+invert vs MULTIPROBABILITY).
+  if ("rf"  %in% methods) g$rf  <- c(g$rf,  .cfg_grid(numberOfTrees = 500L, minLeafPopulation = 1L, output = "REGRESSION"))
+  if ("gbt" %in% methods) g$gbt <- c(g$gbt, .cfg_grid(numberOfTrees = 150L, shrinkage = 0.05, output = "REGRESSION"))
+  if ("svm" %in% methods) g$svm <- c(g$svm, .cfg_grid(svmType = "C_SVC", kernelType = "RBF", cost = 100, gamma = 0.5, output = "MULTIPROBABILITY"))
   # naivebayes is intentionally omitted: GEE smileNaiveBayes discards negative inputs,
   # so it collapses to ~0.5 on the [-1,1] Alpha Earth embeddings.
   g
@@ -71,12 +78,30 @@ score_test_fc <- function(model_res, te_fc, id = "rid") {
   read1 <- if (identical(spec$transform, "mindist_raw")) {
     # minimumDistance RAW: score is array [d_absence, d_presence] -> suitability = d_abs - d_pres
     function(f) { v <- f$properties[[spec$score]]; as.numeric(v[[1]]) - as.numeric(v[[2]]) }
+  } else if (identical(spec$transform, "multiprob_last")) {
+    # MULTIPROBABILITY: score is an array of per-class probs; presence is the last element
+    function(f) { v <- f$properties[[spec$score]]; as.numeric(v[[length(v)]]) }
   } else {
     function(f) as.numeric(f$properties[[spec$score]])
   }
   sc <- setNames(vapply(info$features, read1, numeric(1)), ids)
   if (identical(spec$transform, "invert")) sc <- 1 - sc
   sc
+}
+
+#' Score a test FeatureCollection with a trained reducer (similarity = centroid dot-product)
+#' @keywords internal
+score_similarity_fc <- function(model_res, te_fc, id = "rid") {
+  ee <- reticulate::import("ee")
+  emb_cols <- sprintf("A%02d", 0:63)
+  centroid <- ee$Array(as.list(model_res$weights))
+  scored <- te_fc$map(function(f) {
+    pt <- ee$Array(f$toArray(emb_cols))
+    f$set("simscore", pt$multiply(centroid)$reduce(ee$Reducer$sum(), list(0L))$get(list(0L)))
+  })
+  info <- retry_curl_download(scored$select(list(id, "simscore"))$getInfo())
+  setNames(vapply(info$features, function(f) as.numeric(f$properties$simscore), numeric(1)),
+           vapply(info$features, function(f) as.character(as.integer(f$properties[[id]])), character(1)))
 }
 
 #' Sweep methods and hyperparameters and select the best by spatial cross-validation
@@ -98,7 +123,7 @@ score_test_fc <- function(model_res, te_fc, id = "rid") {
 #' @return A list with `results` (ranked data frame of method/config/auc/tss),
 #'   `best_per_method`, `best` (overall), and `oof` (pooled OOF scores per config).
 #' @export
-tune_models <- function(data, methods = c("svm", "rf", "gbt", "maxent", "knn", "cart", "mindist"), grids = NULL,
+tune_models <- function(data, methods = c("svm", "rf", "gbt", "maxent", "knn", "cart", "mindist", "similarity"), grids = NULL,
                         cv_folds = 5L, cv_method = "block", block_size = NULL,
                         scale = 10, aoi_year = NULL, metric = c("auc", "tss"),
                         gee_project = NULL, python_path = NULL) {
@@ -140,8 +165,10 @@ tune_models <- function(data, methods = c("svm", "rf", "gbt", "maxent", "knn", "
     for (k in seq_len(cv_folds)) {
       tr <- fc$filter(ee$Filter$neq("fold", k))$sort("present", FALSE)  # presence-first (C_SVC invert)
       te <- fc$filter(ee$Filter$eq("fold", k))
-      sc <- tryCatch(score_test_fc(train_gee_model(tr, m, params = cfg, class_property = "present"), te),
-                     error = function(e) NULL)
+      sc <- tryCatch({
+        mr <- train_gee_model(tr, m, params = cfg, class_property = "present")
+        if (isTRUE(mr$is_classifier)) score_test_fc(mr, te) else score_similarity_fc(mr, te)
+      }, error = function(e) NULL)
       if (is.null(sc)) { ok <- FALSE; break }
       oof[names(sc)] <- sc
     }
