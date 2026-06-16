@@ -119,6 +119,10 @@ score_similarity_fc <- function(model_res, te_fc, id = "rid") {
 #' @param cv_folds,cv_method,block_size Spatial CV settings (blockCV by default).
 #' @param scale,aoi_year Embedding sampling scale and year.
 #' @param metric Ranking metric, "auc" or "tss".
+#' @param materialize If TRUE (default), sample the embeddings ONCE to a temporary GEE
+#'   asset and reuse them across the whole grid. Otherwise the embeddings are re-sampled
+#'   inside every configuration's `getInfo` (much slower for multi-config sweeps). The
+#'   asset is removed when the call finishes.
 #' @param gee_project,python_path GEE setup.
 #' @return A list with `results` (ranked data frame of method/config/auc/tss),
 #'   `best_per_method`, `best` (overall), and `oof` (pooled OOF scores per config).
@@ -126,6 +130,7 @@ score_similarity_fc <- function(model_res, te_fc, id = "rid") {
 tune_models <- function(data, methods = c("svm", "rf", "gbt", "maxent", "knn", "cart", "mindist", "similarity"), grids = NULL,
                         cv_folds = 5L, cv_method = "block", block_size = NULL,
                         scale = 10, aoi_year = NULL, metric = c("auc", "tss"),
+                        materialize = TRUE,
                         gee_project = NULL, python_path = NULL) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)
@@ -145,11 +150,27 @@ tune_models <- function(data, methods = c("svm", "rf", "gbt", "maxent", "knn", "
   data$fold <- assign_cv_folds(data, cv_folds, method = cv_method, block_size = block_size)
   data$rid  <- seq_len(nrow(data))
 
-  sdm_section("Sampling embeddings for tuning (once, reused across the grid)")
-  fc <- get_embeddings_at_fc(
-    upload_points_to_gee(data[, c("longitude", "latitude", "year", "present", "fold", "rid")]),
-    scale, properties = c("year", "present", "fold", "rid"),
-    years = as.list(sort(unique(as.integer(data$year)))))
+  props <- c("year", "present", "fold", "rid")
+  years <- as.list(sort(unique(as.integer(data$year))))
+  pts   <- data[, c("longitude", "latitude", props)]
+
+  # Materialise embeddings ONCE so each configuration reads pre-computed features
+  # instead of re-running the 64-band sampleRegions (the sweep's real bottleneck).
+  assets_to_clean <- character(0)
+  on.exit(for (a in assets_to_clean) ee_delete_asset_quietly(a), add = TRUE)
+  fc <- NULL
+  if (materialize) {
+    sdm_section("Materialising embeddings to a GEE asset (sampled once, reused across the grid)")
+    res <- tryCatch(
+      sample_embeddings_to_asset(pts, scale, properties = props, years = years, project = gee_project),
+      error = function(e) { sdm_warn(sprintf("Materialisation failed (%s); re-sampling per configuration.",
+                                             conditionMessage(e))); NULL })
+    if (!is.null(res)) { fc <- res$fc; assets_to_clean <- res$asset_ids }
+  }
+  if (is.null(fc)) {
+    sdm_section("Sampling embeddings (lazy; re-sampled per configuration)")
+    fc <- get_embeddings_at_fc(upload_points_to_gee(pts), scale, properties = props, years = years)
+  }
   truth <- setNames(data$present, as.character(data$rid))
 
   n_cfg <- sum(vapply(methods, function(m) length(grids[[m]]), integer(1)))
