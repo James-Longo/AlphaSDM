@@ -5,7 +5,7 @@
 \alias{GEE_REDUCER_METHODS}
 \title{GEE Reducer Methods Registry}
 \format{
-An object of class \code{list} of length 2.
+An object of class \code{list} of length 1.
 }
 \usage{
 GEE_REDUCER_METHODS
@@ -13,4 +13,4 @@ GEE_REDUCER_METHODS
 \description{
 GEE Reducer Methods Registry
 }
-\keyword{internal}
+\keyword{datasets}

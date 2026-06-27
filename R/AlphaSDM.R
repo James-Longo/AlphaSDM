@@ -131,7 +131,39 @@ cleanup_classifier_assets <- function(train_res) {
 }
 
 
-#' Generate SDM Map
+#' Generate an SDM suitability map
+#'
+#' Trains the model ensemble on Google Earth Engine and exports a continuous
+#' habitat-suitability raster over an area of interest, one GeoTIFF per model plus
+#' the ensemble. Export is Drive-free (tiled `getDownloadURL`).
+#'
+#' @param data Data frame of training records with `longitude`, `latitude`, `year`
+#'   and a `present` column (1 = presence; include 0 rows to supply real absences).
+#' @param aoi Area of interest: a pre-built `ee.Geometry`, a list with `lon`/`lat`/`radius`,
+#'   or a path to a vector file readable by [sf::st_read()].
+#' @param scale Output resolution in metres (default 10).
+#' @param output_dir Directory to write the GeoTIFF(s) to.
+#' @param methods Character vector of models to ensemble. Defaults to
+#'   `c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`, `cart`, `mindist`.
+#' @param ensemble Logical; also export the ensemble mean map (default `TRUE`).
+#' @param aoi_year Year of the Alpha Earth mosaic to sample (default 2023).
+#' @param count Number of background points to generate for presence-only data.
+#' @param bg_ratio Optional absence:presence ratio for the rf/gbt background. Overrides
+#'   `balance_trees` when set.
+#' @param balance_trees Logical (default `TRUE`). When `TRUE`, rf/gbt train on a
+#'   balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
+#'   the trees all background points.
+#' @param n_trees,min_leaf_population,bag_fraction,shrinkage,max_nodes,variables_per_split
+#'   Tree-model (rf/gbt) hyperparameters.
+#' @param svm_type,svm_kernel,svm_cost,svm_gamma libsvm hyperparameters (default
+#'   EPSILON_SVR / RBF / cost 10 / gamma 0.05).
+#' @param maxent_beta,maxent_features MaxEnt regularisation multiplier and feature classes.
+#' @param persist_classifier Logical; persist trained classifiers as temporary GEE assets.
+#' @param gee_project Optional Earth Engine project override (normally set via [setup_gee()]).
+#' @param python_path Optional path to the Python/Earth Engine environment.
+#' @param options Named list of advanced options.
+#' @return A named list of output file paths, with one `<method>_map` entry per
+#'   model (and the ensemble) pointing to the exported GeoTIFF.
 #' @export
 generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          methods = NULL, ensemble = TRUE, aoi_year = NULL, count = NULL, bg_ratio = NULL,
@@ -331,7 +363,50 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
 }
 
 
-#' Evaluate SDM Models
+#' Evaluate SDM models on Alpha Earth embeddings
+#'
+#' Trains the model ensemble on Google Earth Engine and either cross-validates it
+#' and/or scores an independent set of coordinates. Training data may be
+#' presence-only (background is generated automatically) or presence/absence
+#' (the supplied absences are used directly).
+#'
+#' @param data Data frame of training records with `longitude`, `latitude`, `year`
+#'   and a `present` column (1 = presence; include 0 rows to supply real absences).
+#' @param predict_coords Optional data frame of coordinates to score. Include a
+#'   `present` column to compute evaluation metrics on it.
+#' @param scale Embedding resolution in metres (default 10, the native resolution).
+#' @param output_dir Directory for any written outputs.
+#' @param methods Character vector of models to ensemble. Defaults to the validated
+#'   tier `c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`,
+#'   `cart`, `mindist`.
+#' @param aoi_year Year of the Alpha Earth mosaic to sample (default 2023).
+#' @param count Number of background points to generate for presence-only data.
+#' @param bg_ratio Optional absence:presence ratio; downsamples the rf/gbt background
+#'   to `bg_ratio * n_presence`. Overrides `balance_trees` when set.
+#' @param balance_trees Logical (default `TRUE`). When `TRUE`, rf/gbt train on a
+#'   balanced 1:1 background while svm/maxent use the full background; set `FALSE`
+#'   to train the trees on all background points too.
+#' @param n_trees,min_leaf_population,bag_fraction,shrinkage,max_nodes,variables_per_split
+#'   Tree-model (rf/gbt) hyperparameters.
+#' @param svm_type,svm_kernel,svm_cost,svm_gamma libsvm hyperparameters (default
+#'   EPSILON_SVR / RBF / cost 10 / gamma 0.05).
+#' @param maxent_beta,maxent_features MaxEnt regularisation multiplier and feature
+#'   classes (`"auto"` or a combination of L/Q/H/P/T).
+#' @param cv_folds Number of spatial cross-validation folds (0 to skip CV).
+#' @param cv_method Fold assignment: `"block"` (spatial blocks), `"kmeans"`
+#'   (coordinate clusters), or `"random"` (non-spatial k-fold).
+#' @param block_size Optional block size (metres) for `cv_method = "block"`.
+#' @param weighted_ensemble Logical; if `TRUE`, weight the ensemble by CV AUC
+#'   (requires `cv_folds > 0`). Default `FALSE` (equal weights).
+#' @param async Logical; use asynchronous GEE export for large prediction sets.
+#' @param persist_classifier Logical; persist trained classifiers as temporary GEE assets.
+#' @param gee_project Optional Earth Engine project override (normally set via [setup_gee()]).
+#' @param python_path Optional path to the Python/Earth Engine environment.
+#' @param options Named list of advanced options.
+#' @return A list containing `methods`, `model_metadata`, `cv_metrics` and
+#'   `ensemble_weights`; when `predict_coords` is supplied it also includes
+#'   `point_predictions` and (if a `present` column is present) per-model and
+#'   ensemble `metrics`.
 #' @export
 evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir = getwd(),
                             methods = NULL, aoi_year = NULL, count = NULL, bg_ratio = NULL,

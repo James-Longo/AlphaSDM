@@ -2,20 +2,10 @@
 % Please edit documentation in R/gee_logic.R
 \name{prep_training_data_gee}
 \alias{prep_training_data_gee}
-\title{Prepare Training Data for GEE
-Prepare Training Data on GEE (Pure Server-Side)}
+\title{Prepare Training Data for GEE}
 \usage{
 prep_training_data_gee(df, class_property = "present", scale = 10)
 }
-\arguments{
-\item{df}{Data frame with longitude, latitude, year, and class_property}
-
-\item{class_property}{Column name for presence/absence}
-
-\item{scale}{Resolution in meters}
-}
 \description{
 Prepare Training Data for GEE
-Prepare Training Data on GEE (Pure Server-Side)
 }
-\keyword{internal}

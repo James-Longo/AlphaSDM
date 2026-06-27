@@ -2,66 +2,104 @@
 % Please edit documentation in R/AlphaSDM.R
 \name{evaluate_models}
 \alias{evaluate_models}
-\title{Evaluate SDM Models}
+\title{Evaluate SDM models on Alpha Earth embeddings}
 \usage{
 evaluate_models(
   data,
-  predict_coords,
+  predict_coords = NULL,
   scale = 10,
   output_dir = getwd(),
   methods = NULL,
   aoi_year = NULL,
   count = NULL,
+  bg_ratio = NULL,
+  balance_trees = TRUE,
   n_trees = 100L,
   min_leaf_population = 5L,
   bag_fraction = 0.5,
   shrinkage = 0.005,
-  max_nodes = NULL,
+  max_nodes = 6L,
   variables_per_split = NULL,
-  lambda_ = 0,
-  polynomial = 2L,
+  svm_type = "EPSILON_SVR",
+  svm_kernel = "RBF",
+  svm_cost = 10,
+  svm_gamma = 0.05,
+  maxent_beta = 1,
+  maxent_features = "auto",
+  cv_folds = 5L,
+  cv_method = "block",
+  block_size = NULL,
+  weighted_ensemble = FALSE,
+  async = FALSE,
+  persist_classifier = FALSE,
   gee_project = NULL,
   python_path = NULL,
   options = list()
 )
 }
 \arguments{
-\item{data}{A data frame formatted via `format_data()`.}
+\item{data}{Data frame of training records with `longitude`, `latitude`, `year`
+and a `present` column (1 = presence; include 0 rows to supply real absences).}
 
-\item{predict_coords}{Data frame of target coordinates.}
+\item{predict_coords}{Optional data frame of coordinates to score. Include a
+`present` column to compute evaluation metrics on it.}
 
-\item{scale}{Resolution in meters.}
+\item{scale}{Embedding resolution in metres (default 10, the native resolution).}
 
-\item{output_dir}{Directory to save results.}
+\item{output_dir}{Directory for any written outputs.}
 
-\item{methods}{Character vector of method names.}
+\item{methods}{Character vector of models to ensemble. Defaults to the validated
+tier `c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`,
+`cart`, `mindist`.}
 
-\item{aoi_year}{Alpha Earth Mosaic year.}
+\item{aoi_year}{Year of the Alpha Earth mosaic to sample (default 2023).}
 
-\item{count}{Number of background points.}
+\item{count}{Number of background points to generate for presence-only data.}
 
-\item{n_trees}{Number of trees for tree-based methods.}
+\item{bg_ratio}{Optional absence:presence ratio; downsamples the rf/gbt background
+to `bg_ratio * n_presence`. Overrides `balance_trees` when set.}
 
-\item{min_leaf_population}{Min leaf size for trees.}
+\item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt train on a
+balanced 1:1 background while svm/maxent use the full background; set `FALSE`
+to train the trees on all background points too.}
 
-\item{bag_fraction}{Bagging fraction.}
+\item{n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes, variables_per_split}{Tree-model (rf/gbt) hyperparameters.}
 
-\item{shrinkage}{Learning rate for GBT.}
+\item{svm_type, svm_kernel, svm_cost, svm_gamma}{libsvm hyperparameters (default
+EPSILON_SVR / RBF / cost 10 / gamma 0.05).}
 
-\item{max_nodes}{Max nodes per tree.}
+\item{maxent_beta, maxent_features}{MaxEnt regularisation multiplier and feature
+classes (`"auto"` or a combination of L/Q/H/P/T).}
 
-\item{variables_per_split}{Variables per split.}
+\item{cv_folds}{Number of spatial cross-validation folds (0 to skip CV).}
 
-\item{lambda_}{Penalty for Ridge.}
+\item{cv_method}{Fold assignment: `"block"` (spatial blocks), `"kmeans"`
+(coordinate clusters), or `"random"` (non-spatial k-fold).}
 
-\item{polynomial}{Degree of polynomial terms for Ridge regression.}
+\item{block_size}{Optional block size (metres) for `cv_method = "block"`.}
 
-\item{gee_project}{Optional override. Normally configured once via \code{\link{setup_gee}}.}
+\item{weighted_ensemble}{Logical; if `TRUE`, weight the ensemble by CV AUC
+(requires `cv_folds > 0`). Default `FALSE` (equal weights).}
 
-\item{python_path}{Optional. Path to Python executable.}
+\item{async}{Logical; use asynchronous GEE export for large prediction sets.}
 
-\item{options}{Named list of advanced hyperparameters.}
+\item{persist_classifier}{Logical; persist trained classifiers as temporary GEE assets.}
+
+\item{gee_project}{Optional Earth Engine project override (normally set via [setup_gee()]).}
+
+\item{python_path}{Optional path to the Python/Earth Engine environment.}
+
+\item{options}{Named list of advanced options.}
+}
+\value{
+A list containing `methods`, `model_metadata`, `cv_metrics` and
+  `ensemble_weights`; when `predict_coords` is supplied it also includes
+  `point_predictions` and (if a `present` column is present) per-model and
+  ensemble `metrics`.
 }
 \description{
-Evaluate SDM Models
+Trains the model ensemble on Google Earth Engine and either cross-validates it
+and/or scores an independent set of coordinates. Training data may be
+presence-only (background is generated automatically) or presence/absence
+(the supplied absences are used directly).
 }

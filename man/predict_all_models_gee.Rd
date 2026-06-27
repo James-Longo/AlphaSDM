@@ -12,6 +12,6 @@ predict_all_models_gee(fc, models_list)
 \item{models_list}{List of model results from AlphaSDM}
 }
 \description{
-Consolidates scoring to minimize GEE map passes.
+Predict Scores for Multiple Models on GEE
 }
 \keyword{internal}

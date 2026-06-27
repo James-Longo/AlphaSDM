@@ -5,12 +5,31 @@
 \alias{GEE_CLASSIFIER_METHODS}
 \title{GEE Classifier Methods Registry}
 \format{
-An object of class \code{list} of length 4.
+An object of class \code{list} of length 8.
 }
 \usage{
 GEE_CLASSIFIER_METHODS
 }
 \description{
-GEE Classifier Methods Registry
+Every supervised classifier exposed by `ee.Classifier` that can be trained
+from labelled points is registered here. Each entry records how to build the
+classifier and how to read its output back as a presence-suitability score
+(higher = more suitable):
+  fn        : the `ee.Classifier` factory name
+  output    : value passed to `setOutputMode()`
+  score     : band / property produced by `classify()` to read
+  transform : how to convert the raw `score` into presence-suitability
+    - "none"        score is already P(presence) (the SMILE probability of class 1)
+    - "invert"      use `1 - score` (libsvm reports the probability of the
+                    FIRST class it saw in training; see format_data row-order contract)
+    - "mindist_raw" `score` is a RAW distance array `[d_absence, d_presence]`;
+                    use `d_absence - d_presence` so closer-to-presence ranks higher
+                    (minimumDistance has no PROBABILITY output mode)
 }
-\keyword{internal}
+\details{
+Notes from benchmarking on float Alpha Earth embeddings:
+  - smileNaiveBayes assumes positive-integer feature vectors and DISCARDS
+    negative inputs, so it collapses to ~0.5 on embeddings (kept for
+    completeness; not recommended).
+}
+\keyword{datasets}

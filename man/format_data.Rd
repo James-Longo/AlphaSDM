@@ -4,7 +4,7 @@
 \alias{format_data}
 \title{Format Data for AlphaSDM}
 \usage{
-format_data(data, coords, year, presence = NULL, species = NULL)
+format_data(data, coords, year, presence = NULL, species = NULL, label = NULL)
 }
 \arguments{
 \item{data}{A data frame containing your survey data.}

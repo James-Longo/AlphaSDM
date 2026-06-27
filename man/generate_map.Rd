@@ -2,7 +2,7 @@
 % Please edit documentation in R/AlphaSDM.R
 \name{generate_map}
 \alias{generate_map}
-\title{Generate SDM Map}
+\title{Generate an SDM suitability map}
 \usage{
 generate_map(
   data,
@@ -13,59 +13,74 @@ generate_map(
   ensemble = TRUE,
   aoi_year = NULL,
   count = NULL,
+  bg_ratio = NULL,
+  balance_trees = TRUE,
   n_trees = 100L,
   min_leaf_population = 5L,
   bag_fraction = 0.5,
   shrinkage = 0.005,
-  max_nodes = NULL,
+  max_nodes = 6L,
   variables_per_split = NULL,
-  lambda_ = 0,
-  polynomial = 2L,
+  svm_type = "EPSILON_SVR",
+  svm_kernel = "RBF",
+  svm_cost = 10,
+  svm_gamma = 0.05,
+  maxent_beta = 1,
+  maxent_features = "auto",
+  persist_classifier = FALSE,
   gee_project = NULL,
   python_path = NULL,
   options = list()
 )
 }
 \arguments{
-\item{data}{A data frame formatted via `format_data()`. Must have (longitude, latitude, year, present).
-If a 'species' column is present with multiple species, the function processes each separately.}
+\item{data}{Data frame of training records with `longitude`, `latitude`, `year`
+and a `present` column (1 = presence; include 0 rows to supply real absences).}
 
-\item{aoi}{Either a list with `lat`, `lon`, and `radius` (in meters), or a path to a polygon file.}
+\item{aoi}{Area of interest: a pre-built `ee.Geometry`, a list with `lon`/`lat`/`radius`,
+or a path to a vector file readable by [sf::st_read()].}
 
-\item{scale}{Resolution in meters for the final map. Defaults to 10.}
+\item{scale}{Output resolution in metres (default 10).}
 
-\item{output_dir}{Directory to save results. Defaults to the current working directory.}
+\item{output_dir}{Directory to write the GeoTIFF(s) to.}
 
-\item{methods}{Character vector of method names. Supported: "rf", "gbt", "maxent", "svm", "ridge", "centroid".}
+\item{methods}{Character vector of models to ensemble. Defaults to
+`c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`, `cart`, `mindist`.}
 
-\item{ensemble}{Combine all methods into an ensemble map. Defaults to TRUE.}
+\item{ensemble}{Logical; also export the ensemble mean map (default `TRUE`).}
 
-\item{aoi_year}{Alpha Earth Mosaic year for map generation. Defaults to current year.}
+\item{aoi_year}{Year of the Alpha Earth mosaic to sample (default 2023).}
 
-\item{count}{Number of background points. Defaults to 10x presence points.}
+\item{count}{Number of background points to generate for presence-only data.}
 
-\item{n_trees}{Number of trees for tree-based methods.}
+\item{bg_ratio}{Optional absence:presence ratio for the rf/gbt background. Overrides
+`balance_trees` when set.}
 
-\item{min_leaf_population}{Min leaf size for trees.}
+\item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt train on a
+balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
+the trees all background points.}
 
-\item{bag_fraction}{Bagging fraction.}
+\item{n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes, variables_per_split}{Tree-model (rf/gbt) hyperparameters.}
 
-\item{shrinkage}{Learning rate for GBT.}
+\item{svm_type, svm_kernel, svm_cost, svm_gamma}{libsvm hyperparameters (default
+EPSILON_SVR / RBF / cost 10 / gamma 0.05).}
 
-\item{max_nodes}{Max nodes per tree.}
+\item{maxent_beta, maxent_features}{MaxEnt regularisation multiplier and feature classes.}
 
-\item{variables_per_split}{Variables per split.}
+\item{persist_classifier}{Logical; persist trained classifiers as temporary GEE assets.}
 
-\item{lambda_}{Penalty for Ridge.}
+\item{gee_project}{Optional Earth Engine project override (normally set via [setup_gee()]).}
 
-\item{polynomial}{Degree of polynomial terms for Ridge regression. 1 = linear, 2 = quadratic (default).}
+\item{python_path}{Optional path to the Python/Earth Engine environment.}
 
-\item{gee_project}{Optional override. Normally configured once via \code{\link{setup_gee}}.}
-
-\item{python_path}{Optional. Path to Python executable.}
-
-\item{options}{Named list of advanced hyperparameters.}
+\item{options}{Named list of advanced options.}
+}
+\value{
+A named list of output file paths, with one `<method>_map` entry per
+  model (and the ensemble) pointing to the exported GeoTIFF.
 }
 \description{
-Trains models on provided data and generates spatial prediction maps (rasters) on GEE.
+Trains the model ensemble on Google Earth Engine and exports a continuous
+habitat-suitability raster over an area of interest, one GeoTIFF per model plus
+the ensemble. Export is Drive-free (tiled `getDownloadURL`).
 }

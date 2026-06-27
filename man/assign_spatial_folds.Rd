@@ -6,12 +6,6 @@
 \usage{
 assign_spatial_folds(df, n_folds = 10)
 }
-\arguments{
-\item{df}{Data frame with longitude, latitude}
-
-\item{n_folds}{Number of folds}
-}
 \description{
 Assign Spatial Folds
 }
-\keyword{internal}

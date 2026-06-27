@@ -8,19 +8,19 @@ train_gee_model(
   sampled_fc,
   method,
   params = list(),
-  class_property = "present"
+  class_property = "present",
+  persist = FALSE,
+  project = NULL
 )
 }
 \arguments{
-\item{sampled_fc}{Sampled FeatureCollection (from get_embeddings_at_fc)}
+\item{persist}{When TRUE and the method is a persistable tree classifier
+(`PERSISTABLE_CLASSIFIERS`), the trained model is exported to a temporary GEE
+asset and reloaded — the workaround for "Computed value is too large" on large
+random forests. The returned list then carries the `asset_id` to clean up.}
 
-\item{method}{Method name}
-
-\item{params}{List of hyperparameters}
-
-\item{class_property}{Column name for labels}
+\item{project}{GEE project id for the temporary asset folder.}
 }
 \description{
 Train GEE Model
 }
-\keyword{internal}

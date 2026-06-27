@@ -2,21 +2,18 @@
 % Please edit documentation in R/gee_logic.R
 \name{upload_points_to_gee}
 \alias{upload_points_to_gee}
-\title{Upload Individual Points to GEE with IDs}
+\title{Upload Points to GEE efficiently, chunking large DFs to stay under 10 MB}
 \usage{
-upload_points_to_gee(df, chunk_size = 2000, id_offset = 0)
+upload_points_to_gee(df, chunk_size = 5000L)
 }
 \arguments{
-\item{df}{Data frame with longitude, latitude, year}
+\item{df}{Data frame with longitude, latitude, and optional columns.}
 
-\item{chunk_size}{Points per upload chunk}
-
-\item{id_offset}{Numeric offset for tmp_id to support outer batching}
+\item{chunk_size}{Max rows per GeoJSON payload (default 5000 ≈ 4 MB).}
 }
 \value{
-GEE FeatureCollection
+ee$FeatureCollection
 }
 \description{
-Upload Individual Points to GEE with IDs
+Upload Points to GEE efficiently, chunking large DFs to stay under 10 MB
 }
-\keyword{internal}
