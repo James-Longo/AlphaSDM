@@ -135,6 +135,7 @@ cleanup_classifier_assets <- function(train_res) {
 #' @export
 generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          methods = NULL, ensemble = TRUE, aoi_year = NULL, count = NULL, bg_ratio = NULL,
+                         balance_trees = TRUE,
                          n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
                          shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
                          svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
@@ -153,6 +154,10 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   # benchmarks. Lighter models (similarity, knn, cart, mindist) remain available
   # via `methods=` but trail by ~0.03-0.07 AUC, so they are not in the default.
   if (is.null(methods)) methods <- c("svm", "rf", "gbt", "maxent")
+
+  # Balanced 1:1 tree background by default (set balance_trees = FALSE for full background;
+  # an explicit numeric bg_ratio overrides). See evaluate_models() for details.
+  if (is.null(bg_ratio) && isTRUE(balance_trees)) bg_ratio <- 1
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
   # 1. Prepare AOI Geometry
@@ -330,6 +335,7 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
 #' @export
 evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir = getwd(),
                             methods = NULL, aoi_year = NULL, count = NULL, bg_ratio = NULL,
+                            balance_trees = TRUE,
                             n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
                             shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
                             svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
@@ -350,6 +356,12 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   # benchmarks. Lighter models (similarity, knn, cart, mindist) remain available
   # via `methods=` but trail by ~0.03-0.07 AUC, so they are not in the default.
   if (is.null(methods)) methods <- c("svm", "rf", "gbt", "maxent")
+
+  # Tree models (rf/gbt) train on a balanced 1:1 background by default — the main lever for
+  # tree performance on imbalanced presence/background data (svm/maxent always see the full
+  # background). Set balance_trees = FALSE to give the trees all background instead; an
+  # explicit numeric bg_ratio (absence:presence) overrides both.
+  if (is.null(bg_ratio) && isTRUE(balance_trees)) bg_ratio <- 1
 
   # --- Parameter validation ---
   cv_folds <- as.integer(cv_folds)
