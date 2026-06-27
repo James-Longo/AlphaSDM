@@ -149,12 +149,17 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  if (is.null(methods)) methods <- c("similarity", "rf", "gbt", "maxent")
+  # Default ensemble: the strong, complementary tier validated across the
+  # benchmarks. Lighter models (similarity, knn, cart, mindist) remain available
+  # via `methods=` but trail by ~0.03-0.07 AUC, so they are not in the default.
+  if (is.null(methods)) methods <- c("svm", "rf", "gbt", "maxent")
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
   # 1. Prepare AOI Geometry
   aoi_geom <- NULL
-  if (is.list(aoi) && !is.null(aoi$lat)) {
+  if (inherits(aoi, "python.builtin.object")) {
+    aoi_geom <- aoi                                   # pre-built ee.Geometry
+  } else if (is.list(aoi) && !is.null(aoi$lat)) {
     aoi_geom <- ee$Geometry$Point(c(as.numeric(aoi$lon), as.numeric(aoi$lat)))$buffer(as.numeric(aoi$radius))
   } else if (is.character(aoi) && file.exists(aoi)) {
     aoi_sf <- sf::st_read(aoi, quiet = TRUE)
@@ -214,7 +219,11 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     sdm_info(sprintf("Exporting %s ...", toupper(m)), indent = 1L)
     pred_img <- predict_gee_map(train_res$models[[m]], img_mosaic)
     tif_path <- file.path(output_dir, paste0(m, ".tif"))
-    try(rgee::ee_as_rast(image = pred_img, region = aoi_geom$bounds(), scale = scale, dsn = tif_path), silent = TRUE)
+    # Drive-free, water-robust export: tile getDownloadURL + local mosaic.
+    tryCatch(
+      export_image_tiled(pred_img, aoi_geom, scale, tif_path),
+      error = function(e) sdm_warn(sprintf("Export of %s failed: %s", m, conditionMessage(e)))
+    )
     final_results[[paste0(m, "_map")]] <- tif_path
     pb_map <- sdm_progress_update(pb_map)
   }
@@ -337,7 +346,10 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  if (is.null(methods)) methods <- c("similarity", "rf", "gbt", "maxent")
+  # Default ensemble: the strong, complementary tier validated across the
+  # benchmarks. Lighter models (similarity, knn, cart, mindist) remain available
+  # via `methods=` but trail by ~0.03-0.07 AUC, so they are not in the default.
+  if (is.null(methods)) methods <- c("svm", "rf", "gbt", "maxent")
 
   # --- Parameter validation ---
   cv_folds <- as.integer(cv_folds)
@@ -356,8 +368,13 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
     maxNodes = max_nodes, variablesPerSplit = variables_per_split
   )
   method_params <- setNames(lapply(methods, function(m) base_params), methods)
-  if ("gbt" %in% methods && n_trees == 100L) method_params$gbt$numberOfTrees <- 150L
-  if ("rf"  %in% methods && n_trees == 100L) method_params$rf$numberOfTrees  <- 250L
+  # Validated defaults: gbt 150 trees @ shrinkage 0.05, maxNodes 6;
+  # rf 500 deep trees, variablesPerSplit 8. Each override only fires when the corresponding
+  # global argument is still at its default, so explicit user values always win.
+  if ("gbt" %in% methods && n_trees == 100L)    method_params$gbt$numberOfTrees <- 150L
+  if ("gbt" %in% methods && shrinkage == 0.005) method_params$gbt$shrinkage     <- 0.05
+  if ("rf"  %in% methods && n_trees == 100L)    method_params$rf$numberOfTrees  <- 500L
+  if ("rf"  %in% methods && is.null(variables_per_split)) method_params$rf$variablesPerSplit <- 8L
   # RF benefits from deep trees (default maxNodes=6/minLeaf=5 are near-stumps); rf-specific.
   if ("rf"  %in% methods && max_nodes == 6L)           method_params$rf$maxNodes <- NULL
   if ("rf"  %in% methods && min_leaf_population == 5L) method_params$rf$minLeafPopulation <- 1L
@@ -400,8 +417,9 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
     # Spatial folds: blockCV blocks by default (controls spatial autocorrelation
     # better than contiguous k-means clusters); falls back to k-means if unavailable.
     pres_df$cv_fold <- assign_cv_folds(pres_df, cv_folds, method = cv_method, block_size = block_size)
-    sdm_info(sprintf("Spatial folds: %s (%d folds)",
-                     if (cv_method == "block") "blockCV blocks" else "k-means clusters", cv_folds), indent = 1L)
+    sdm_info(sprintf("CV folds: %s (%d folds)",
+                     switch(cv_method, block = "blockCV blocks", kmeans = "k-means clusters",
+                            random = "random k-fold", cv_method), cv_folds), indent = 1L)
 
     # Generate validation background on GEE, download coordinates once before the CV loop
     val_bg_n  <- if (is.null(count)) n_pres else as.integer(count)

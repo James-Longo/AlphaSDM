@@ -1,0 +1,106 @@
+---
+title: "Tuning and cross-validation with AlphaSDM"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Tuning and cross-validation with AlphaSDM}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(eval = FALSE, collapse = TRUE, comment = "#>")
+```
+
+AlphaSDM is deliberately small: it fits a fixed, well-validated **ensemble of
+complementary models** on Alpha Earth embeddings and does so quickly, with all heavy
+computation on Google Earth Engine. We benchmarked per-species hyperparameter tuning
+extensively and found it buys essentially nothing on these embeddings (the cross-validation
+metric is saturated and mis-ranks configurations), so the package ships sensible defaults
+rather than a built-in tuner.
+
+If you *do* want to tune hyperparameters or run cross-validation for your own data, you do
+not need a special function — the package's regular building blocks are enough. This
+vignette shows the common patterns. The whole public surface is short:
+
+| function | purpose |
+|---|---|
+| `setup_gee()` | authenticate / initialise Earth Engine |
+| `format_data()` | clean & standardise occurrence records |
+| `evaluate_models()` | fit the model ensemble (optionally cross-validate / score a test set) |
+| `predict_at_coords()` | score new coordinates with fitted models |
+| `generate_map()` | export a suitability raster |
+| `calculate_classifier_metrics()`, `calculate_cbi()` | evaluation metrics (AUC, TSS, CBI, ...) |
+
+## 1. The default ensemble
+
+```{r}
+library(AlphaSDM)
+setup_gee(project = "your-gee-project")
+
+occ <- format_data(my_records, coords = c("longitude", "latitude"),
+                   year = "year", presence = "present")
+
+# Fit the default curated ensemble and score an independent test set.
+fit <- evaluate_models(data = occ, predict_coords = test_points,
+                       aoi_year = 2024, cv_folds = 0)
+fit$metrics                     # per-model + ensemble metrics on the test set
+fit$metrics$ensemble$auc_roc    # e.g. the ensemble's AUC
+```
+
+## 2. Cross-validation
+
+`evaluate_models()` has a built-in spatial cross-validation path. Set `cv_folds > 0` and
+choose how folds are assigned with `cv_method`:
+
+- `"block"` — spatial blocks (blockCV). Best estimate of **transfer** to new regions.
+- `"kmeans"` — k-means clusters on coordinates (a lighter spatial split).
+- `"random"` — non-spatial k-fold. Appropriate for **interpolation** within a sampled region.
+
+```{r}
+cv <- evaluate_models(data = occ, aoi_year = 2024,
+                      cv_folds = 5, cv_method = "block")
+cv$cv_metrics         # named list: cross-validated AUC per model (e.g. cv$cv_metrics$rf)
+```
+
+Pick `cv_method` to match your goal: spatial blocks if you will predict into unsampled
+areas, random folds if your prediction targets are interspersed with your training data.
+
+## 3. Hyperparameter tuning (rolling your own sweep)
+
+Every model knob is a plain argument to `evaluate_models()` (e.g. `svm_cost`, `svm_gamma`,
+`n_trees`, `shrinkage`, `max_nodes`, `maxent_beta`, `maxent_features`). To tune, loop over a
+grid, cross-validate each setting, and keep the best by whatever metric you care about. This
+reproduces what a built-in tuner would do, but transparently and only when you want it.
+
+```{r}
+grid <- expand.grid(svm_cost = c(10, 100), svm_gamma = c(0.05, 0.5))
+
+scores <- apply(grid, 1, function(g) {
+  res <- evaluate_models(data = occ, aoi_year = 2024, methods = "svm",
+                         svm_cost = g[["svm_cost"]], svm_gamma = g[["svm_gamma"]],
+                         cv_folds = 5, cv_method = "block")
+  res$cv_metrics[["svm"]]      # cross-validated AUC for this configuration
+})
+
+grid[which.max(scores), ]   # best configuration by spatial-CV AUC
+```
+
+The same pattern tunes any method — swap in `n_trees`/`max_nodes`/`shrinkage` for `gbt`,
+`maxent_beta`/`maxent_features` for `maxent`, and so on. To select among *methods* rather
+than hyperparameters, vary the `methods` argument instead.
+
+## 4. Custom ensembles
+
+The default ensemble is `c("svm", "rf", "gbt", "maxent")` — a strong, complementary set.
+You can fit any subset (or add the lighter models `similarity`, `knn`, `cart`, `mindist`)
+by passing `methods`:
+
+```{r}
+# A leaner two-model ensemble
+evaluate_models(data = occ, predict_coords = test_points, aoi_year = 2024,
+                methods = c("rf", "maxent"), cv_folds = 0)
+```
+
+Because tuning rarely helps on Alpha Earth embeddings, the recommended workflow is: use the
+defaults, and only reach for sections 2–3 when you have a specific reason to validate or
+adapt the models to an unusual dataset.

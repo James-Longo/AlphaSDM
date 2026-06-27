@@ -613,8 +613,15 @@ predict_all_models_gee <- function(fc, models_list) {
 #' fold one geographic chunk, the most pessimistic spatial CV). Falls back to k-means
 #' if `blockCV`/`sf` are unavailable or fail.
 #' @keywords internal
-assign_cv_folds <- function(df, k, method = c("block", "kmeans"), block_size = NULL) {
+assign_cv_folds <- function(df, k, method = c("block", "kmeans", "random"), block_size = NULL) {
   method <- match.arg(method)
+  if (method == "random") {
+    # Non-spatial k-fold: matches an interpolation (within-region) prediction task,
+    # where held-out points are drawn from the same domain as training. Contrast with
+    # "block", which separates folds spatially to estimate transfer/extrapolation error.
+    n <- nrow(df)
+    return(as.integer(sample(rep_len(seq_len(k), n), n)))
+  }
   if (method == "block") {
     if (requireNamespace("blockCV", quietly = TRUE) && requireNamespace("sf", quietly = TRUE)) {
       folds <- tryCatch(blockcv_folds(df, k, block_size), error = function(e) {
@@ -677,4 +684,92 @@ assign_spatial_folds <- function(df, n_folds = 10) {
 #' @keywords internal
 get_feature_names <- function(fc) {
   return(sprintf("A%02d", 0:63))
+}
+
+#' Internal: download a single-band EE image over a region as a GeoTIFF (tiled)
+#'
+#' Self-contained replacement for \code{rgee::ee_as_rast} that does NOT require
+#' Google Drive or GCS authentication — it pulls pixels directly through the
+#' synchronous \code{getDownloadURL} endpoint and mosaics the tiles locally.
+#'
+#' Robustness to water / missing data: AlphaEarth has no embedding over open
+#' water, so predictions there are \emph{masked}. Masked pixels otherwise export
+#' as ragged or zero-sized tiles, and a tile that is entirely water can come back
+#' empty. We therefore \code{unmask()} the image to an explicit \code{nodata}
+#' sentinel before download: every pixel (land or water) then has a real value,
+#' so every tile — including all-water tiles — returns a valid, equal-sized
+#' GeoTIFF. The sentinel is restored to \code{NA} in the mosaicked output.
+#'
+#' Tiles are sized to stay under \code{getDownloadURL}'s synchronous limits
+#' (~32 MB request, 10000 px per side); a single-band float32 tile of
+#' \code{max_tile_px} on a side is ~\code{max_tile_px^2 * 4} bytes.
+#'
+#' @param image     ee.Image with a single prediction band.
+#' @param region    ee.Geometry whose bounds define the export extent.
+#' @param scale     Output pixel size in metres.
+#' @param dsn       Destination GeoTIFF path.
+#' @param nodata    Sentinel written over masked (e.g. water) pixels, mapped to NA.
+#' @param max_tile_px Tile edge length in pixels (request-size budget).
+#' @param tries     Per-tile download retries (exponential backoff).
+#' @return \code{dsn}; writes the GeoTIFF as a side effect.
+#' @keywords internal
+export_image_tiled <- function(image, region, scale, dsn,
+                               nodata = -9999, max_tile_px = 2048L, tries = 4L) {
+  ee <- reticulate::import("ee")
+
+  # Explicit nodata so masked/water pixels download uniformly (no ragged tiles,
+  # no "empty image" failures on all-water tiles). See function docs.
+  img <- image$unmask(ee$Image$constant(nodata))$toFloat()
+
+  # Region bounding box in EPSG:4326.
+  ring <- region$bounds()$coordinates()$get(0L)$getInfo()
+  xs   <- vapply(ring, function(p) p[[1]], numeric(1))
+  ys   <- vapply(ring, function(p) p[[2]], numeric(1))
+  xmin <- min(xs); xmax <- max(xs); ymin <- min(ys); ymax <- max(ys)
+
+  # Tile size in degrees from a pixel budget (~111320 m per degree of latitude).
+  tile_deg <- max_tile_px * scale / 111320
+  nx <- max(1L, as.integer(ceiling((xmax - xmin) / tile_deg)))
+  ny <- max(1L, as.integer(ceiling((ymax - ymin) / tile_deg)))
+  xb <- seq(xmin, xmax, length.out = nx + 1L)
+  yb <- seq(ymin, ymax, length.out = ny + 1L)
+
+  tmpdir <- file.path(tempdir(), sprintf("alphasdm_tiles_%06d", as.integer(stats::runif(1, 1, 1e6))))
+  dir.create(tmpdir, showWarnings = FALSE, recursive = TRUE)
+  on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
+
+  fetch_tile <- function(geom, path) {
+    for (k in seq_len(tries)) {
+      ok <- tryCatch({
+        url <- img$getDownloadURL(list(region = geom, scale = scale,
+                                       format = "GEO_TIFF", crs = "EPSG:4326"))
+        utils::download.file(url, path, mode = "wb", quiet = TRUE)
+        file.exists(path) && file.info(path)$size > 0
+      }, error = function(e) FALSE)
+      if (isTRUE(ok)) return(TRUE)
+      Sys.sleep(2 * k)
+    }
+    FALSE
+  }
+
+  tiles <- character(0); failed <- 0L
+  for (i in seq_len(nx)) for (j in seq_len(ny)) {
+    geom <- ee$Geometry$Rectangle(c(xb[i], yb[j], xb[i + 1L], yb[j + 1L]))
+    path <- file.path(tmpdir, sprintf("tile_%03d_%03d.tif", i, j))
+    if (fetch_tile(geom, path)) tiles <- c(tiles, path) else failed <- failed + 1L
+  }
+  if (length(tiles) == 0L) stop("export_image_tiled: all tile downloads failed.")
+  if (failed > 0L)
+    sdm_warn(sprintf("%d of %d export tiles failed after %d retries — the output raster has gaps in those areas.",
+                     failed, nx * ny, tries))
+
+  if (length(tiles) == 1L) {
+    r <- stars::read_stars(tiles[[1]], proxy = FALSE)
+  } else {
+    moz <- stars::st_mosaic(tiles)               # GDAL mosaic -> temp GeoTIFF
+    r   <- stars::read_stars(moz, proxy = FALSE)
+  }
+  r[[1]][r[[1]] == nodata] <- NA                  # sentinel (water) -> NA
+  stars::write_stars(r, dsn)
+  dsn
 }
