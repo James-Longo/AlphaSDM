@@ -61,7 +61,7 @@ read_fc_paged <- function(fc, page_size = 5000L) {
 #' Returns the running task handle and its target asset id. Starting many exports
 #' before awaiting any of them lets independent chunks run concurrently server-side.
 #' @keywords internal
-ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
+ee_start_fc_export <- function(fc, project = NULL, select = NULL, announce = TRUE) {
   ee <- reticulate::import("ee")
   if (!is.null(select)) fc <- fc$select(as.list(select))
 
@@ -74,14 +74,20 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
     collection = fc, description = paste0("alphasdm_async_", suffix), assetId = asset_id
   )
   task$start()
-  sdm_info(sprintf("Async batch export started (server-side) -> %s", asset_id), indent = 1L)
+  # Bulk callers (many chunks) set announce = FALSE and report aggregate progress instead.
+  if (isTRUE(announce))
+    sdm_info(sprintf("Async batch export started (server-side) -> %s", asset_id), indent = 1L)
   list(task = task, asset_id = asset_id)
 }
 
 #' Poll a started export task until it completes (or fail/timeout)
+#'
+#' Emits a periodic heartbeat (every ~minute) so a long server-side export shows
+#' progress instead of sitting silent.
 #' @keywords internal
 ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60) {
   deadline <- Sys.time() + max_minutes * 60
+  start <- Sys.time(); last_beat <- 0
   repeat {
     st    <- handle$task$status()
     state <- st[["state"]]
@@ -94,9 +100,47 @@ ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60) {
       try(handle$task$cancel(), silent = TRUE)
       stop(sprintf("Async GEE export exceeded max_minutes = %d (asset %s)", max_minutes, handle$asset_id))
     }
+    elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
+    if (elapsed - last_beat >= 60) {
+      sdm_info(sprintf("export running server-side ... (%.0fs elapsed)", elapsed), indent = 2L)
+      last_beat <- elapsed
+    }
     Sys.sleep(poll_seconds)
   }
   handle$asset_id
+}
+
+#' Await several started export tasks at once, reporting aggregate progress
+#'
+#' Polls all task handles each cycle and prints `X/N chunks complete` as they finish,
+#' so a large chunked export (e.g. tens of thousands of points) shows live progress.
+#' Returns the asset ids in the original handle order.
+#' @keywords internal
+ee_await_exports <- function(handles, poll_seconds = 15, max_minutes = 60, label = "Export") {
+  n <- length(handles)
+  if (n == 0L) return(character(0))
+  if (n == 1L) return(ee_await_export(handles[[1]], poll_seconds, max_minutes))
+  deadline <- Sys.time() + max_minutes * 60
+  done <- logical(n); reported <- 0L
+  repeat {
+    for (i in which(!done)) {
+      st <- handles[[i]]$task$status(); state <- st[["state"]]
+      if (identical(state, "COMPLETED")) { done[i] <- TRUE; next }
+      if (state %in% c("FAILED", "CANCELLED", "CANCEL_REQUESTED")) {
+        msg <- if (!is.null(st[["error_message"]])) st[["error_message"]] else state
+        stop(sprintf("Async GEE export %s (chunk %d/%d): %s", state, i, n, msg))
+      }
+    }
+    nd <- sum(done)
+    if (nd != reported) { sdm_info(sprintf("%s: %d/%d chunks complete", label, nd, n), indent = 2L); reported <- nd }
+    if (all(done)) break
+    if (Sys.time() > deadline) {
+      for (i in which(!done)) try(handles[[i]]$task$cancel(), silent = TRUE)
+      stop(sprintf("Async GEE export exceeded max_minutes = %d (%d/%d chunks done)", max_minutes, nd, n))
+    }
+    Sys.sleep(poll_seconds)
+  }
+  vapply(handles, function(h) h$asset_id, character(1))
 }
 
 #' Export a FeatureCollection to a temporary GEE asset (batch) and wait
@@ -189,14 +233,16 @@ sample_embeddings_to_asset <- function(df, scale, properties, years, project = N
   emb <- sprintf("A%02d", 0:63)
   starts <- seq(1L, nrow(df), by = as.integer(chunk_size))
 
-  # Start every chunk's sample+export, then await them (concurrent server-side).
+  # Start every chunk's sample+export (concurrent server-side), then await with progress.
+  sdm_info(sprintf("Sampling embeddings: starting %d chunk export(s) (~%d pts each) ...",
+                   length(starts), as.integer(chunk_size)), indent = 1L)
   handles <- lapply(starts, function(s) {
     sub    <- df[s:min(s + chunk_size - 1L, nrow(df)), , drop = FALSE]
     fc_sub <- get_embeddings_at_fc(upload_points_to_gee(sub), scale,
                                    properties = properties, geometries = TRUE, years = years)
-    ee_start_fc_export(fc_sub$select(as.list(c(emb, properties))), project = project)
+    ee_start_fc_export(fc_sub$select(as.list(c(emb, properties))), project = project, announce = FALSE)
   })
-  asset_ids <- vapply(handles, function(h) ee_await_export(h, poll_seconds, max_minutes), character(1))
+  asset_ids <- ee_await_exports(handles, poll_seconds, max_minutes, label = "Embedding export")
 
   merged <- Reduce(function(a, b) a$merge(b),
                    lapply(asset_ids, function(a) ee$FeatureCollection(a)))

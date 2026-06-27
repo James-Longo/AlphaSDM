@@ -4,7 +4,7 @@
 \alias{ee_start_fc_export}
 \title{Start (without waiting for) an Export.table.toAsset batch task}
 \usage{
-ee_start_fc_export(fc, project = NULL, select = NULL)
+ee_start_fc_export(fc, project = NULL, select = NULL, announce = TRUE)
 }
 \description{
 Returns the running task handle and its target asset id. Starting many exports

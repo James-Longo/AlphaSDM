@@ -7,6 +7,7 @@
 ee_await_export(handle, poll_seconds = 15, max_minutes = 60)
 }
 \description{
-Poll a started export task until it completes (or fail/timeout)
+Emits a periodic heartbeat (every ~minute) so a long server-side export shows
+progress instead of sitting silent.
 }
 \keyword{internal}
