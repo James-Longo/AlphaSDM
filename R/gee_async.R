@@ -87,7 +87,7 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL, announce = TRU
 #' @keywords internal
 ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60) {
   deadline <- Sys.time() + max_minutes * 60
-  start <- Sys.time(); last_beat <- 0
+  start <- Sys.time(); last_beat <- 0; last_state <- ""
   repeat {
     st    <- handle$task$status()
     state <- st[["state"]]
@@ -100,10 +100,13 @@ ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60) {
       try(handle$task$cancel(), silent = TRUE)
       stop(sprintf("Async GEE export exceeded max_minutes = %d (asset %s)", max_minutes, handle$asset_id))
     }
+    # Report the real task state (READY = queued vs RUNNING) on every change, plus a
+    # ~per-minute heartbeat, so it's clear whether GEE is queuing or actually working.
     elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
-    if (elapsed - last_beat >= 60) {
-      sdm_info(sprintf("export running server-side ... (%.0fs elapsed)", elapsed), indent = 2L)
-      last_beat <- elapsed
+    if (!identical(state, last_state) || elapsed - last_beat >= 60) {
+      lbl <- switch(state, READY = "queued", RUNNING = "running", tolower(state))
+      sdm_info(sprintf("export %s server-side ... (%.0fs elapsed)", lbl, elapsed), indent = 2L)
+      last_beat <- elapsed; last_state <- state
     }
     Sys.sleep(poll_seconds)
   }
@@ -121,8 +124,9 @@ ee_await_exports <- function(handles, poll_seconds = 15, max_minutes = 60, label
   if (n == 0L) return(character(0))
   if (n == 1L) return(ee_await_export(handles[[1]], poll_seconds, max_minutes))
   deadline <- Sys.time() + max_minutes * 60
-  done <- logical(n); reported <- 0L
+  done <- logical(n); last_report <- ""
   repeat {
+    running <- 0L; queued <- 0L
     for (i in which(!done)) {
       st <- handles[[i]]$task$status(); state <- st[["state"]]
       if (identical(state, "COMPLETED")) { done[i] <- TRUE; next }
@@ -130,9 +134,12 @@ ee_await_exports <- function(handles, poll_seconds = 15, max_minutes = 60, label
         msg <- if (!is.null(st[["error_message"]])) st[["error_message"]] else state
         stop(sprintf("Async GEE export %s (chunk %d/%d): %s", state, i, n, msg))
       }
+      if (identical(state, "RUNNING")) running <- running + 1L else queued <- queued + 1L
     }
     nd <- sum(done)
-    if (nd != reported) { sdm_info(sprintf("%s: %d/%d chunks complete", label, nd, n), indent = 2L); reported <- nd }
+    # Show done / running / queued so it's clear how the batch is progressing on GEE.
+    rpt <- sprintf("%s: %d done, %d running, %d queued (of %d)", label, nd, running, queued, n)
+    if (rpt != last_report) { sdm_info(rpt, indent = 2L); last_report <- rpt }
     if (all(done)) break
     if (Sys.time() > deadline) {
       for (i in which(!done)) try(handles[[i]]$task$cancel(), silent = TRUE)
@@ -141,6 +148,42 @@ ee_await_exports <- function(handles, poll_seconds = 15, max_minutes = 60, label
     Sys.sleep(poll_seconds)
   }
   vapply(handles, function(h) h$asset_id, character(1))
+}
+
+#' Show the status of recent AlphaSDM Earth Engine batch tasks
+#'
+#' Lists the async export / classifier tasks AlphaSDM has started — fallback scoring in
+#' [evaluate_models()], map export, and embedding materialisation — with each task's
+#' current state and age, so you can see what Earth Engine is doing at any time. Call it
+#' from another session while a long run is in progress.
+#'
+#' @param active_only If `TRUE` (default), show only pending/running tasks; `FALSE` also
+#'   lists recently finished ones.
+#' @param since_minutes Only include tasks created within this many minutes (default 180).
+#' @return (invisibly) a data frame of tasks (description, state, age in minutes); also printed.
+#' @export
+sdm_gee_status <- function(active_only = TRUE, since_minutes = 180) {
+  ee  <- reticulate::import("ee")
+  ops <- tryCatch(ee$data$listOperations(), error = function(e) NULL)
+  if (is.null(ops) || length(ops) == 0) { sdm_info("No Earth Engine tasks found."); return(invisible(NULL)) }
+  df <- do.call(rbind, lapply(ops, function(o) {
+    m <- o$metadata
+    data.frame(description = tryCatch(m$description, error = function(e) NA_character_),
+               state       = tryCatch(m$state,       error = function(e) NA_character_),
+               created     = tryCatch(m$createTime,  error = function(e) NA_character_),
+               stringsAsFactors = FALSE)
+  }))
+  df$created <- as.POSIXct(df$created, format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC")
+  df$age_min <- round(as.numeric(Sys.time() - df$created, units = "mins"), 1)
+  keep <- !is.na(df$created) & df$age_min <= since_minutes & grepl("alphasdm", df$description)
+  if (active_only) keep <- keep & df$state %in% c("PENDING", "RUNNING")
+  df <- df[keep, , drop = FALSE]
+  df <- df[order(df$created), , drop = FALSE]
+  if (nrow(df) == 0) { sdm_info("No matching AlphaSDM Earth Engine tasks."); return(invisible(df)) }
+  sdm_section(sprintf("AlphaSDM Earth Engine tasks (%d)", nrow(df)))
+  for (i in seq_len(nrow(df)))
+    sdm_info(sprintf("[%-9s] %s  (%.1f min ago)", df$state[i], df$description[i], df$age_min[i]), indent = 1L)
+  invisible(df)
 }
 
 #' Export a FeatureCollection to a temporary GEE asset (batch) and wait

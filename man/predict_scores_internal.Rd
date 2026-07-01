@@ -2,7 +2,7 @@
 % Please edit documentation in R/AlphaSDM.R
 \name{predict_scores_internal}
 \alias{predict_scores_internal}
-\title{Internal: score a coordinate data frame against trained models (image-first, server-side)}
+\title{Internal: score a coordinate data frame against trained models (FC-first, server-side)}
 \usage{
 predict_scores_internal(
   predict_df,
@@ -16,8 +16,9 @@ predict_scores_internal(
 )
 }
 \description{
-Classifies the embedding image once per model, stacks into a multi-band prediction image,
-then batch-samples that image at eval coords. This avoids re-embedding eval points through
-64 bands and re-triggering classifier training on every batch.
+Samples the embeddings at the eval coordinates into a FeatureCollection, then classifies
+that FC with each trained model. Classifying a finite point set this way is light and
+scales to high-abundance species — unlike classifying the whole embedding image and
+sampleRegions-ing it, whose per-pixel graph runs GEE out of memory for large models.
 }
 \keyword{internal}

@@ -278,25 +278,22 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   return(final_results)
 }
 
-#' Internal: score a coordinate data frame against trained models (image-first, server-side)
+#' Internal: score a coordinate data frame against trained models (FC-first, server-side)
 #'
-#' Classifies the embedding image once per model, stacks into a multi-band prediction image,
-#' then batch-samples that image at eval coords. This avoids re-embedding eval points through
-#' 64 bands and re-triggering classifier training on every batch.
+#' Samples the embeddings at the eval coordinates into a FeatureCollection, then classifies
+#' that FC with each trained model. Classifying a finite point set this way is light and
+#' scales to high-abundance species — unlike classifying the whole embedding image and
+#' sampleRegions-ing it, whose per-pixel graph runs GEE out of memory for large models.
 #' @keywords internal
 predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi_year,
                                     async = FALSE, project = NULL) {
   ee <- reticulate::import("ee")
   if (!"year" %in% names(predict_df)) predict_df$year <- aoi_year
 
-  # Build multi-band prediction image once — classifier training evaluated here by GEE,
-  # then cached for all subsequent sampleRegions batches.
-  pred_imgs  <- lapply(methods, function(m) predict_gee_map(models[[m]], img)$rename(paste0("pred_", m)))
-  pred_stack <- Reduce(function(a, b) a$addBands(b), pred_imgs)
-
   pred_cols <- paste0("pred_", methods)
   for (col in pred_cols) predict_df[[col]] <- NA_real_
   predict_df$.row_idx <- seq_len(nrow(predict_df))
+  yrs <- as.list(sort(unique(as.integer(predict_df$year))))
 
   fill_from_features <- function(features) {
     for (f in features) {
@@ -309,53 +306,38 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
     }
   }
 
-  # --- Async path: one batch export of the whole scored collection -------------
-  # Materialises training + sampling server-side (no synchronous compute limit),
-  # then reads the result back in pages. Embeddings never leave GEE.
-  if (async) {
-    chunk <- predict_df[, c("longitude", "latitude", "year", ".row_idx"), drop = FALSE]
+  # FC-first scoring: sample embeddings AT the eval points, then classify the resulting
+  # FeatureCollection. Classifying a few thousand feature vectors is light and scales to
+  # high-abundance species — unlike classifying the whole embedding image and then
+  # sampleRegions-ing it (the per-pixel classify graph of a large trained model runs GEE
+  # out of memory). Map export still uses the image path (predict_gee_map); this is only
+  # for scoring a finite point set. On a genuine compute timeout, retry that chunk via a
+  # batch export (larger server-side budget).
+  score_features <- function(sub_df, use_async) {
+    chunk <- sub_df[, c("longitude", "latitude", "year", ".row_idx"), drop = FALSE]
     names(chunk)[names(chunk) == ".row_idx"] <- "row_idx"
-    eval_fc    <- upload_points_to_gee(chunk)
-    # geometries = TRUE: Export.table.toAsset rejects null-geometry features.
-    sampled_fc <- pred_stack$sampleRegions(
-      collection = eval_fc, properties = as.list("row_idx"),
-      scale = as.integer(scale), tileScale = 16L, geometries = TRUE
-    )
-    info <- ee_table_to_info_async(sampled_fc$select(as.list(c("row_idx", pred_cols))), project)
-    fill_from_features(info$features)
-    predict_df$.row_idx <- NULL
-    return(predict_df)
+    emb_fc <- get_embeddings_at_fc(upload_points_to_gee(chunk), scale,
+                                   properties = c("year", "row_idx"),
+                                   geometries = use_async, years = yrs)  # geometry needed for export
+    scored <- predict_all_models_gee(emb_fc, models[methods])$select(as.list(c("row_idx", pred_cols)))
+    if (use_async) ee_table_to_info_async(scored, project)$features else read_fc_paged(scored)$features
   }
 
-  # --- Synchronous path (default): chunked getInfo -----------------------------
-  chunk_size   <- 5000L
-  n_rows       <- nrow(predict_df)
-  batch_starts <- seq(1L, n_rows, by = chunk_size)
-
-  for (i in batch_starts) {
-    end_idx <- min(i + chunk_size - 1L, n_rows)
-    chunk   <- predict_df[i:end_idx, c("longitude", "latitude", "year", ".row_idx"), drop = FALSE]
-    names(chunk)[names(chunk) == ".row_idx"] <- "row_idx"
-
-    eval_fc    <- upload_points_to_gee(chunk)
-    sampled_fc <- pred_stack$sampleRegions(
-      collection = eval_fc,
-      properties = as.list("row_idx"),
-      scale      = as.integer(scale),
-      tileScale  = 16L,
-      geometries = FALSE
-    )
-
-    res <- tryCatch(retry_curl_download(sampled_fc$getInfo()), error = function(e) e)
-    if (inherits(res, "error")) {
-      # A genuine compute timeout means the job is too big for synchronous scoring —
-      # fail loudly and point the user at the async path rather than silently
-      # returning NA scores (which would corrupt downstream metrics).
-      if (is_gee_timeout(res)) stop(async_timeout_message(res, where = "scoring"))
-      next  # other transient errors: skip this chunk (legacy behaviour)
+  # Chunk the eval points; each chunk is one classify graph (read paged, so no 5000-feature
+  # cap). Fall back to batch export for any chunk that hits a compute timeout.
+  chunk_size <- 4000L
+  n_rows     <- nrow(predict_df)
+  for (i in seq(1L, n_rows, by = chunk_size)) {
+    sub   <- predict_df[i:min(i + chunk_size - 1L, n_rows), , drop = FALSE]
+    feats <- tryCatch(score_features(sub, use_async = isTRUE(async)), error = function(e) e)
+    if (inherits(feats, "error")) {
+      if (is_gee_timeout(feats)) {
+        sdm_warn("Scoring hit a GEE compute timeout; retrying that batch via export.", indent = 1L)
+        feats <- tryCatch(score_features(sub, use_async = TRUE), error = function(e) e)
+        if (inherits(feats, "error")) { sdm_warn(sprintf("Batch scoring failed: %s", conditionMessage(feats)), indent = 1L); next }
+      } else next
     }
-    if (is.null(res) || !"features" %in% names(res)) next
-    fill_from_features(res$features)
+    fill_from_features(feats)
   }
 
   predict_df$.row_idx <- NULL
@@ -585,7 +567,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   }
 
   # --- Prediction ---
-  sdm_section(sprintf("Predicting at %d coordinates (image-first, server-side)", nrow(predict_coords)))
+  sdm_section(sprintf("Predicting at %d coordinates (server-side)", nrow(predict_coords)))
   pb_pred    <- sdm_progress_start("Prediction")
   final_pred <- predict_scores_internal(predict_coords, train_res$models, methods, img, scale, aoi_year, async = async, project = gee_project)
   sdm_progress_done(pb_pred)
