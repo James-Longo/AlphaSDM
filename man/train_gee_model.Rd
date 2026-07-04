@@ -10,7 +10,8 @@ train_gee_model(
   params = list(),
   class_property = "present",
   persist = FALSE,
-  project = NULL
+  project = NULL,
+  regression = FALSE
 )
 }
 \arguments{
@@ -20,6 +21,11 @@ asset and reloaded — the workaround for "Computed value is too large" on large
 random forests. The returned list then carries the `asset_id` to clean up.}
 
 \item{project}{GEE project id for the temporary asset folder.}
+
+\item{regression}{When TRUE, the target in `class_property` is treated as a continuous
+value: the label is kept as-is (no integer encoding) and the classifier is put in
+`REGRESSION` output mode. Use for continuous responses (e.g. yield, a proportion);
+the default FALSE preserves the classification path.}
 }
 \description{
 Train GEE Model

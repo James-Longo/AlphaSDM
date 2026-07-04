@@ -435,8 +435,12 @@ GEE_REDUCER_METHODS <- list(
 #'   asset and reloaded — the workaround for "Computed value is too large" on large
 #'   random forests. The returned list then carries the `asset_id` to clean up.
 #' @param project GEE project id for the temporary asset folder.
+#' @param regression When TRUE, the target in `class_property` is treated as a continuous
+#'   value: the label is kept as-is (no integer encoding) and the classifier is put in
+#'   `REGRESSION` output mode. Use for continuous responses (e.g. yield, a proportion);
+#'   the default FALSE preserves the classification path.
 train_gee_model <- function(sampled_fc, method, params = list(), class_property = "present",
-                            persist = FALSE, project = NULL) {
+                            persist = FALSE, project = NULL, regression = FALSE) {
   ee <- reticulate::import("ee")
   emb_cols <- sprintf("A%02d", 0:63)
 
@@ -447,9 +451,11 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
 
   LABEL_COL <- "label"
 
-  # 1. Label Encoding
+  # 1. Label Encoding. Classification integer-encodes the class; REGRESSION keeps the
+  #    continuous target as-is (e.g. crop yield, a proportion) — toInt() would destroy it.
   sampled_fc <- sampled_fc$map(function(f) {
-    f$set(LABEL_COL, ee$Number(f$get(class_property))$toInt())
+    v <- ee$Number(f$get(class_property))
+    f$set(LABEL_COL, if (isTRUE(regression)) v else v$toInt())
   })
 
   # 2. Training
@@ -459,6 +465,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
     # An `output` param tunes the GEE output mode; strip it before constructing the
     # classifier (it is set via setOutputMode, not a constructor argument).
     output_override <- params[["output"]]; params[["output"]] <- NULL
+    if (isTRUE(regression)) output_override <- "REGRESSION"  # continuous target -> regression output
 
     filtered_params <- build_gee_clf_params(method, params)
     spec <- resolve_clf_spec(method, filtered_params)
