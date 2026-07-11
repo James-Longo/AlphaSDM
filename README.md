@@ -17,37 +17,72 @@ devtools::install_github("James-Longo/AlphaSDM")
 
 ## Google Earth Engine Setup
 
-AlphaSDM needs a Google Earth Engine account. You only have to set this up once.
+AlphaSDM connects to Earth Engine with your **personal Google account**. You set
+this up **once per machine** — after that, every R session connects automatically.
 
-### Prerequisites
-- **GEE Account**: Sign up at [earthengine.google.com](https://earthengine.google.com/signup/). Free for academic and non-commercial use.
-- **Google Cloud Project**: Create one at [console.cloud.google.com](https://console.cloud.google.com/) and enable the **Earth Engine API**. Note your Project ID (e.g., `"my-ee-project"`).
+### Prerequisites (one-time, free)
+
+1. **Register for Earth Engine.** Go to
+   [earthengine.google.com/signup](https://earthengine.google.com/signup/) and
+   sign in with your Google account. Earth Engine is **free for noncommercial
+   use** — research, education, and nonprofit projects. Registration links your
+   account to a Cloud project and gives you its **Project ID** (e.g.
+   `"my-ee-project"`), which is the only thing you need to pass to AlphaSDM.
+
+That's the only prerequisite. You do **not** need to create a service account,
+manage a JSON key, or set up billing for standard noncommercial use.
 
 ### One-Time Setup
 
 ```r
 library(AlphaSDM)
 
-# First run only — installs Python dependencies and authenticates
 setup_gee(project = "your-project-id")
 ```
 
-On first run, `setup_gee()` will:
-1. Install a Python environment with `earthengine-api` via `rgee` (you may need to restart R after this step)
-2. Open a browser window for Google OAuth — just click **Allow**
-3. Save your project ID locally so you never have to enter it again
+`setup_gee()` is designed to be run **once and never thought about again**:
 
-**That's it.** Future R sessions connect automatically.
+1. **Finds your Python automatically.** If any Python on your machine already has
+   `earthengine-api` (a conda env, a virtualenv, or a system Python with
+   `pip install earthengine-api`), AlphaSDM uses it directly — no downloads. It
+   only builds a new environment as a last resort.
+2. **Authenticates with one browser click — no code to paste.** On a desktop or
+   laptop your browser opens, you click **Allow**, and the credential is captured
+   automatically. The saved credentials are long-lived; you are not asked again.
+3. **Remembers your project.** The Project ID is saved locally.
+
+**Re-running `setup_gee()` is safe.** If you are already connected it detects the
+working credentials and returns immediately — *"Already connected. Nothing to do."*
+
+### Check your connection
+
+```r
+gee_status()
+#> ┌─ AlphaSDM — Google Earth Engine connection
+#>     ‣ [OK  ] Python env : .../earthengine-api
+#>     ‣ [OK  ] Credentials: present — user account (OAuth)
+#>     ‣ [OK  ] Project    : my-ee-project
+#>     ‣ [OK  ] Live check : connected
+#>   ✔ Earth Engine is set up. No action needed.
+```
+
+### Headless / remote machines (SSH, HPC, containers)
+
+On a machine with no local browser, `setup_gee()` detects this and prints a URL
+to open on any device; you approve access and paste the short code back once. To
+force this flow explicitly:
+
+```r
+setup_gee(project = "your-project-id", auth_mode = "notebook")
+```
 
 ### Resetting Credentials
 
-If you need to switch accounts or troubleshoot:
+To switch accounts or troubleshoot:
 
 ```r
 clear_gee_credentials()
-
-# Then re-run setup
-setup_gee(project = "your-project-id")
+setup_gee(project = "your-project-id")   # re-authenticate
 ```
 
 ---

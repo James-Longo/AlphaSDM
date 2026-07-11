@@ -2,19 +2,48 @@
 % Please edit documentation in R/install.R
 \name{setup_gee}
 \alias{setup_gee}
-\title{Set Up Google Earth Engine for AlphaSDM}
+\title{Set Up Google Earth Engine for AlphaSDM (one-time)}
 \usage{
-setup_gee(project = NULL, force = FALSE)
+setup_gee(project = NULL, force = FALSE, auth_mode = NULL)
 }
 \arguments{
-\item{project}{Google Cloud Project ID (e.g., "my-ee-project").
-If NULL, you will be prompted to enter it interactively.}
+\item{project}{Google Cloud / Earth Engine project ID (e.g.,
+\code{"my-ee-project"}). If \code{NULL}, the saved project is reused, or you
+are prompted interactively.}
 
-\item{force}{If TRUE, re-run the full setup even if already configured.}
+\item{force}{If \code{TRUE}, re-authenticate even if valid credentials
+already exist.}
+
+\item{auth_mode}{Optional override for the Earth Engine authorization flow,
+passed straight to \code{ee$Authenticate()}. Leave \code{NULL} (recommended)
+to let AlphaSDM choose: \code{"localhost"} (one-click, no paste) on a
+machine with a browser, and \code{"notebook"} on a detected headless/remote
+session. Set \code{"notebook"} yourself to force the paste-a-code flow, or
+\code{"gcloud"} if you use the gcloud CLI.}
+}
+\value{
+Invisibly \code{TRUE} on success, or \code{FALSE} if a step (such as
+  the Python install) requires you to restart R and re-run.
 }
 \description{
-One-time interactive setup. Installs Python dependencies via rgee,
-authenticates with GEE through a browser OAuth flow, and saves your
-project ID locally. After running this once, all AlphaSDM functions
-connect to GEE automatically without further prompts.
+Connects AlphaSDM to Google Earth Engine using your personal Google account.
+You only ever need to run this once per machine: it authenticates through a
+single browser click and saves long-lived credentials, so every future R
+session connects automatically with no further prompts.
+}
+\details{
+\strong{Before you start} you need a free Earth Engine account. Sign up at
+\url{https://earthengine.google.com/signup/} — Earth Engine is free for
+noncommercial, research, education, and nonprofit use. Registration links
+your Google account to a Cloud project (its ID is what you pass as
+\code{project}).
+
+\strong{The authentication is a browser click, not a code to paste.} On a
+desktop or laptop, \code{setup_gee()} opens your browser, you click
+\strong{Allow}, and the credential is captured automatically over a local
+loopback port (\code{auth_mode = "localhost"}). Nothing is copied or pasted,
+and the saved credentials do not expire with normal use.
+
+Re-running \code{setup_gee()} when you are already connected is a harmless
+no-op — it detects the working credentials and returns immediately.
 }
