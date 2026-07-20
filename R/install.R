@@ -17,10 +17,66 @@
                          file.path(dir, "config.json"), auto_unbox = TRUE)
 }
 
+#' Path to the live GEE credentials file (the one the ee client reads)
+#' @keywords internal
+.gee_live_cred_path <- function() {
+    file.path(Sys.getenv("HOME"), ".config", "earthengine", "credentials")
+}
+
 #' Check if GEE credentials exist on disk
 #' @keywords internal
 .gee_credentials_exist <- function() {
-    file.exists(file.path(Sys.getenv("HOME"), ".config", "earthengine", "credentials"))
+    file.exists(.gee_live_cred_path())
+}
+
+#' Durable credential store (optional)
+#'
+#' On some platforms the home/config directory is ephemeral — wiped between
+#' processes (sandboxes, some container and HPC-scratch setups) — so the GEE
+#' credentials the ee client writes to \code{~/.config/earthengine/credentials}
+#' do not survive to the next run. If the environment variable
+#' \code{ALPHASDM_GEE_CRED_STORE} points at a directory on a PERSISTENT
+#' filesystem, AlphaSDM mirrors the credentials there and restores them at the
+#' start of every session, so a one-time authentication persists.
+#'
+#' Returns the store directory (NULL if the feature is not enabled).
+#' @keywords internal
+.gee_cred_store <- function() {
+    d <- Sys.getenv("ALPHASDM_GEE_CRED_STORE", unset = "")
+    if (!nzchar(d)) return(NULL)
+    d
+}
+
+#' Copy the live credentials into the durable store (after a successful auth)
+#' @keywords internal
+.gee_backup_credentials <- function() {
+    store <- .gee_cred_store(); if (is.null(store)) return(invisible(FALSE))
+    live <- .gee_live_cred_path(); if (!file.exists(live)) return(invisible(FALSE))
+    dir.create(store, showWarnings = FALSE, recursive = TRUE)
+    ok <- file.copy(live, file.path(store, "credentials"), overwrite = TRUE)
+    proj_cfg <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json")
+    if (file.exists(proj_cfg)) file.copy(proj_cfg, file.path(store, "config.json"), overwrite = TRUE)
+    invisible(ok)
+}
+
+#' Restore credentials from the durable store into the live location
+#'
+#' Runs at session start: if the live credentials are missing but a durable copy
+#' exists, copy it into place (and the saved project id) so the ee client finds
+#' a working token without re-authenticating. No-op when the store is unset or empty.
+#' @keywords internal
+.gee_restore_credentials <- function() {
+    store <- .gee_cred_store(); if (is.null(store)) return(invisible(FALSE))
+    src <- file.path(store, "credentials"); if (!file.exists(src)) return(invisible(FALSE))
+    if (.gee_credentials_exist()) return(invisible(TRUE))   # live copy already present
+    dir.create(dirname(.gee_live_cred_path()), showWarnings = FALSE, recursive = TRUE)
+    ok <- file.copy(src, .gee_live_cred_path(), overwrite = TRUE)
+    proj_src <- file.path(store, "config.json")
+    if (file.exists(proj_src)) {
+        dir.create(file.path(Sys.getenv("HOME"), ".config", "AlphaSDM"), showWarnings = FALSE, recursive = TRUE)
+        file.copy(proj_src, file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json"), overwrite = TRUE)
+    }
+    invisible(ok)
 }
 
 #' Suppress Python DeprecationWarnings from the GEE client library
@@ -242,6 +298,9 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
     # 2. Idempotency short-circuit: if we are NOT forcing and credentials on disk
     #    already produce a live connection, we are done — never prompt again.
     #    This is what makes setup a genuine one-time action.
+    #    First restore from the durable store (if configured) in case the live
+    #    ~/.config copy was wiped since last session (ephemeral-home platforms).
+    .gee_restore_credentials()
     need_auth <- force || !.gee_credentials_exist()
     if (!force && .gee_credentials_exist()) {
         sdm_section("Checking existing Google Earth Engine connection")
@@ -286,6 +345,9 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         }
         ee <- reticulate::import("ee")
         ee$Authenticate(auth_mode = chosen_mode, force = force)
+        # Mirror the freshly written token to the durable store (if configured)
+        # so it survives an ephemeral home directory on the next session.
+        .gee_backup_credentials()
     }
 
     # 4. Get project ID (now that we are authenticated)
@@ -342,6 +404,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
 
     # 5. Persist project ID for future sessions
     .save_project(project)
+    .gee_backup_credentials()   # mirror creds + project id to the durable store, if configured
     options(AlphaSDM.gee_initialized = TRUE)
     .suppress_gee_deprecation_warnings()
 
@@ -453,6 +516,11 @@ ensure_gee_authenticated <- function(project = NULL) {
     if (!requireNamespace("rgee", quietly = TRUE)) {
         stop("The 'rgee' package is required. Install it with: install.packages('rgee')")
     }
+
+    # Restore credentials from the durable store if the live copy was wiped
+    # (ephemeral-home platforms) — a no-op when the store is unset or the live
+    # copy is already present.
+    .gee_restore_credentials()
 
     # Resolve project: argument > saved config > env var
     if (is.null(project) || project == "") {
