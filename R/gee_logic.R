@@ -724,6 +724,12 @@ export_image_tiled <- function(image, region, scale, dsn,
                                nodata = -9999, max_tile_px = 2048L, tries = 4L) {
   ee <- reticulate::import("ee")
 
+  # Env override for tile size: on restricted-quota projects or very large AOIs the
+  # 2048 px default can exceed getDownloadURL's synchronous size/compute budget and
+  # stall. ALPHASDM_MAX_TILE_PX lets a caller shrink tiles without a code change.
+  .env_tile <- suppressWarnings(as.integer(Sys.getenv("ALPHASDM_MAX_TILE_PX", "")))
+  if (!is.na(.env_tile) && .env_tile >= 128L) max_tile_px <- .env_tile
+
   # Explicit nodata so masked/water pixels download uniformly (no ragged tiles,
   # no "empty image" failures on all-water tiles). See function docs.
   img <- image$unmask(ee$Image$constant(nodata))$toFloat()
@@ -741,11 +747,27 @@ export_image_tiled <- function(image, region, scale, dsn,
   xb <- seq(xmin, xmax, length.out = nx + 1L)
   yb <- seq(ymin, ymax, length.out = ny + 1L)
 
-  tmpdir <- file.path(tempdir(), sprintf("alphasdm_tiles_%06d", as.integer(stats::runif(1, 1, 1e6))))
-  dir.create(tmpdir, showWarnings = FALSE, recursive = TRUE)
-  on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
+  # Tile scratch dir. By default a throwaway tempdir (cleaned on exit). If
+  # ALPHASDM_TILE_CACHE is set, tiles stream into a PERSISTENT, per-output cache
+  # keyed by the destination filename: already-downloaded, non-empty tiles are
+  # skipped on a re-run, so an interrupted or throttled export resumes on just the
+  # missing tiles instead of restarting. This is what makes a slow whole-region
+  # export (many small tiles under a tight quota) robust to process death.
+  cache_root <- Sys.getenv("ALPHASDM_TILE_CACHE", "")
+  if (nzchar(cache_root)) {
+    key    <- gsub("[^A-Za-z0-9]+", "_", tools::file_path_sans_ext(basename(dsn)))
+    tmpdir <- file.path(cache_root, sprintf("%s_%dm", key, as.integer(scale)))
+    dir.create(tmpdir, showWarnings = FALSE, recursive = TRUE)
+    # persistent: do NOT unlink on exit
+  } else {
+    tmpdir <- file.path(tempdir(), sprintf("alphasdm_tiles_%06d", as.integer(stats::runif(1, 1, 1e6))))
+    dir.create(tmpdir, showWarnings = FALSE, recursive = TRUE)
+    on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
+  }
 
   fetch_tile <- function(geom, path) {
+    # resume: a cached, non-empty tile from a prior run is reused as-is
+    if (file.exists(path) && file.info(path)$size > 0) return(TRUE)
     for (k in seq_len(tries)) {
       ok <- tryCatch({
         url <- img$getDownloadURL(list(region = geom, scale = scale,
