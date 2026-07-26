@@ -1,7 +1,13 @@
 #' Internal Unified GEE Training Pipeline
 #' @keywords internal
 fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, training_params, count = NULL,
-                           bg_ratio = NULL, persist_classifier = FALSE, project = NULL) {
+                           bg_ratio = NULL, persist_classifier = TRUE, project = NULL) {
+  # persist_classifier defaults TRUE: the package decides internally which classifiers
+  # actually persist (only PERSISTABLE_CLASSIFIERS = rf/cart; svm/gbt/maxent ignore it),
+  # so callers never reason about it. Persisting a whole-region map's tree model to an
+  # asset once lets every export tile apply a *stored* forest instead of retraining it
+  # server-side per tile — the single biggest export speedup under a throttled tier.
+  # The cross-validation path passes FALSE explicitly (per-fold persistence is overhead).
   ee <- reticulate::import("ee")
 
   # Optional class balancing: downsample an absence/background FeatureCollection to
@@ -97,12 +103,10 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     }
     models[[m]]   <- train_gee_model(fc_for_method, m, params = training_params[[m]],
                                      persist = persist_classifier, project = project)
-
-    if (models[[m]]$is_classifier) {
-      invisible(retry_curl_download(
-        pres_sampled$limit(1L)$classify(models[[m]]$trained)$getInfo()
-      ))
-    }
+    # (No post-fit one-point classify probe here: it was a redundant synchronous getInfo()
+    # round-trip — the map-export and scoring steps classify independently and surface any
+    # malformed classifier on their own — and under a throttled GEE tier it was the failure
+    # chokepoint, timing out and discarding classifiers that had trained successfully.)
 
     pb <- sdm_progress_update(pb)
   }
@@ -158,7 +162,11 @@ cleanup_classifier_assets <- function(train_res) {
 #' @param svm_type,svm_kernel,svm_cost,svm_gamma libsvm hyperparameters (default
 #'   EPSILON_SVR / RBF / cost 10 / gamma 0.05).
 #' @param maxent_beta,maxent_features MaxEnt regularisation multiplier and feature classes.
-#' @param persist_classifier Logical; persist trained classifiers as temporary GEE assets.
+#' @param persist_classifier Logical; whether to persist internally-persistable classifiers
+#'   (currently RF/CART) to a temporary GEE asset so a whole-region export applies a stored
+#'   model instead of retraining the forest on every tile. Defaults to `TRUE`; the package
+#'   ignores it for methods that cannot persist (SVM/GBT/MaxEnt), so most callers should
+#'   leave it unset.
 #' @param gee_project Optional Earth Engine project override (normally set via [setup_gee()]).
 #' @param python_path Optional path to the Python/Earth Engine environment.
 #' @param options Named list of advanced options.
@@ -172,7 +180,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
                          svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
                          maxent_beta = 1, maxent_features = "auto",
-                         persist_classifier = FALSE,
+                         persist_classifier = TRUE,
                          gee_project = NULL, python_path = NULL,
                          options = list()) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
@@ -381,7 +389,9 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
 #' @param weighted_ensemble Logical; if `TRUE`, weight the ensemble by CV AUC
 #'   (requires `cv_folds > 0`). Default `FALSE` (equal weights).
 #' @param async Logical; use asynchronous GEE export for large prediction sets.
-#' @param persist_classifier Logical; persist trained classifiers as temporary GEE assets.
+#' @param persist_classifier Logical; persist internally-persistable classifiers (RF/CART)
+#'   to a temporary GEE asset. Defaults to `FALSE` here: cross-validation refits per fold,
+#'   where per-fold persistence is pure overhead. (Map generation defaults it `TRUE`.)
 #' @param gee_project Optional Earth Engine project override (normally set via [setup_gee()]).
 #' @param python_path Optional path to the Python/Earth Engine environment.
 #' @param options Named list of advanced options.

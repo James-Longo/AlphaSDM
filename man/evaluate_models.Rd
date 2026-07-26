@@ -83,7 +83,9 @@ classes (`"auto"` or a combination of L/Q/H/P/T).}
 
 \item{async}{Logical; use asynchronous GEE export for large prediction sets.}
 
-\item{persist_classifier}{Logical; persist trained classifiers as temporary GEE assets.}
+\item{persist_classifier}{Logical; persist internally-persistable classifiers (RF/CART)
+to a temporary GEE asset. Defaults to \code{FALSE} here: cross-validation refits per fold,
+where per-fold persistence is pure overhead. (Map generation defaults it \code{TRUE}.)}
 
 \item{gee_project}{Optional Earth Engine project override (normally set via [setup_gee()]).}
 

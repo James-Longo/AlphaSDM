@@ -487,14 +487,28 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
     # rewritten so predict reads it as a regression score.
     asset_id <- NULL
     if (persist && method %in% PERSISTABLE_CLASSIFIERS) {
-      # Train a FRESH regressor (you cannot re-mode a classification-trained forest),
-      # export+reload it, and read it as a regression suitability score (~P(presence)).
-      reg_clf <- do.call(clf_factory, filtered_params)$setOutputMode("REGRESSION")$train(
-        features = sampled_fc, classProperty = LABEL_COL, inputProperties = emb_cols)
-      pc <- ee_persist_classifier(reg_clf, project = project)
-      trained_model <- pc$classifier
-      spec <- list(fn = spec$fn, output = "REGRESSION", score = "classification", transform = "none")
-      asset_id <- pc$asset_id
+      # Persistence is an optimization, not a requirement: it lets a whole-region export
+      # apply a STORED forest instead of retraining it on every tile. It relies on GEE's
+      # batch scheduler, which under a throttled/restricted tier can be too backlogged to
+      # run even this tiny export. So cap the wait short and FALL BACK to the inline
+      # classifier on any failure rather than aborting the whole run — the inline
+      # PROBABILITY classify path still produces a valid map (just retrains per tile).
+      persisted <- tryCatch({
+        # Train a FRESH regressor (you cannot re-mode a classification-trained forest),
+        # export+reload it, and read it as a regression suitability score (~P(presence)).
+        reg_clf <- do.call(clf_factory, filtered_params)$setOutputMode("REGRESSION")$train(
+          features = sampled_fc, classProperty = LABEL_COL, inputProperties = emb_cols)
+        ee_persist_classifier(reg_clf, project = project, max_minutes = 5)
+      }, error = function(e) {
+        sdm_warn(sprintf("Classifier persistence unavailable (%s) — falling back to the inline %s classifier.",
+                         conditionMessage(e), toupper(method)), indent = 1L)
+        NULL
+      })
+      if (!is.null(persisted)) {
+        trained_model <- persisted$classifier
+        spec <- list(fn = spec$fn, output = "REGRESSION", score = "classification", transform = "none")
+        asset_id <- persisted$asset_id
+      }
     }
 
     return(list(

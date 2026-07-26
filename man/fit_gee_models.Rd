@@ -13,7 +13,7 @@ fit_gee_models(
   training_params,
   count = NULL,
   bg_ratio = NULL,
-  persist_classifier = FALSE,
+  persist_classifier = TRUE,
   project = NULL
 )
 }
