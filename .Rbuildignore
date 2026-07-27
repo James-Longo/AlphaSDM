@@ -1,7 +1,5 @@
 ^benchmarks
 ^scripts
-^task\.md
-^walkthrough\.md
 ^\.git
 ^\.agent
 ^\.gitignore
