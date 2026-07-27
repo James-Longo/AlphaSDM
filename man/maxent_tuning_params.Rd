@@ -9,7 +9,7 @@ maxent_tuning_params(beta = 1, features = "auto")
 \description{
 The two ENMeval-style maxent levers (Muscarella 2014, Radosavljevic & Anderson 2014):
 `beta` is the regularization multiplier (higher = simpler/smoother) and `features`
-is a feature-class string — "auto" keeps GEE's sample-size-based autoFeature, else a
+is a feature-class string: "auto" keeps GEE's sample-size-based autoFeature, else a
 combination of L/Q/H/P/T (e.g. "LQH") turns autoFeature off and toggles those classes.
 }
 \keyword{internal}

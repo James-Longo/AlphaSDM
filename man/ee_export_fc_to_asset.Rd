@@ -13,8 +13,8 @@ ee_export_fc_to_asset(
 )
 }
 \description{
-Runs an `Export.table.toAsset` batch task — server-side, with no synchronous
-compute limit — and polls until it completes. Returns the new asset id. The
+Runs an `Export.table.toAsset` batch task, which runs server-side with no synchronous
+compute limit, and polls until it completes. Returns the new asset id. The
 caller is responsible for deleting the asset (see `ee_delete_asset_quietly`).
 }
 \keyword{internal}

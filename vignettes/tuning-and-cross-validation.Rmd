@@ -19,7 +19,7 @@ metric is saturated and mis-ranks configurations), so the package ships sensible
 rather than a built-in tuner.
 
 If you *do* want to tune hyperparameters or run cross-validation for your own data, you do
-not need a special function — the package's regular building blocks are enough. This
+not need a special function; the package's regular building blocks are enough. This
 vignette shows the common patterns. The whole public surface is short:
 
 | function | purpose |
@@ -52,9 +52,9 @@ fit$metrics$ensemble$auc_roc    # e.g. the ensemble's AUC
 `evaluate_models()` has a built-in spatial cross-validation path. Set `cv_folds > 0` and
 choose how folds are assigned with `cv_method`:
 
-- `"block"` — spatial blocks (blockCV). Best estimate of **transfer** to new regions.
-- `"kmeans"` — k-means clusters on coordinates (a lighter spatial split).
-- `"random"` — non-spatial k-fold. Appropriate for **interpolation** within a sampled region.
+- `"block"`: spatial blocks (blockCV). Best estimate of **transfer** to new regions.
+- `"kmeans"`: k-means clusters on coordinates (a lighter spatial split).
+- `"random"`: non-spatial k-fold. Appropriate for **interpolation** within a sampled region.
 
 ```{r}
 cv <- evaluate_models(data = occ, aoi_year = 2024,
@@ -85,13 +85,13 @@ scores <- apply(grid, 1, function(g) {
 grid[which.max(scores), ]   # best configuration by spatial-CV AUC
 ```
 
-The same pattern tunes any method — swap in `n_trees`/`max_nodes`/`shrinkage` for `gbt`,
+The same pattern tunes any method: swap in `n_trees`/`max_nodes`/`shrinkage` for `gbt`,
 `maxent_beta`/`maxent_features` for `maxent`, and so on. To select among *methods* rather
 than hyperparameters, vary the `methods` argument instead.
 
 ## 4. Custom ensembles
 
-The default ensemble is `c("svm", "rf", "gbt", "maxent")` — a strong, complementary set.
+The default ensemble is `c("svm", "rf", "gbt", "maxent")`, a strong, complementary set.
 You can fit any subset (or add the lighter models `similarity`, `knn`, `cart`, `mindist`)
 by passing `methods`:
 

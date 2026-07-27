@@ -34,7 +34,7 @@ cat("  ✓ GEE connection verified (ee$Image(0)$getInfo() returned successfully)
 
 cat("\n=== Step 4: Simulate new session (clear session cache) ===\n")
 options(AlphaSDM.gee_initialized = NULL)
-# This should auto-reconnect using saved project — no browser prompt
+# This should auto-reconnect using saved project, with no browser prompt
 AlphaSDM:::ensure_gee_authenticated()
 stopifnot(isTRUE(getOption("AlphaSDM.gee_initialized")))
 cat("  ✓ Auto-reconnection works (simulated session restart)\n")

@@ -1,5 +1,5 @@
 # ============================================================
-#  AlphaSDM — Internal Logging & Progress Utilities (base R)
+#  AlphaSDM: Internal Logging & Progress Utilities (base R)
 # ============================================================
 
 # ---- Package-level state ----

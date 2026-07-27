@@ -116,7 +116,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
     if (!is.null(presence)) {
         result$present <- as.numeric(data[[presence]])
     } else {
-        sdm_warn("No 'presence' column supplied — treating all records as presence-only")
+        sdm_warn("No 'presence' column supplied; treating all records as presence-only")
         sdm_info("Background pseudo-absences will be generated automatically", indent = 1L)
         result$present <- 1
     }

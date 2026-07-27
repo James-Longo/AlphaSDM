@@ -16,8 +16,8 @@ lists recently finished ones.}
 (invisibly) a data frame of tasks (description, state, age in minutes); also printed.
 }
 \description{
-Lists the async export / classifier tasks AlphaSDM has started — fallback scoring in
-[evaluate_models()], map export, and embedding materialisation — with each task's
+Lists the async export / classifier tasks AlphaSDM has started (fallback scoring in
+[evaluate_models()], map export, and embedding materialisation) with each task's
 current state and age, so you can see what Earth Engine is doing at any time. Call it
 from another session while a long run is in progress.
 }

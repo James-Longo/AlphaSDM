@@ -18,7 +18,7 @@ predict_scores_internal(
 \description{
 Samples the embeddings at the eval coordinates into a FeatureCollection, then classifies
 that FC with each trained model. Classifying a finite point set this way is light and
-scales to high-abundance species — unlike classifying the whole embedding image and
+scales to high-abundance species, unlike classifying the whole embedding image and
 sampleRegions-ing it, whose per-pixel graph runs GEE out of memory for large models.
 }
 \keyword{internal}

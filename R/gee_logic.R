@@ -14,7 +14,7 @@ retry_curl_download <- function(expr, max_retries = 5, initial_delay = 1) {
 
     if (is_retryable && i < max_retries) {
       delay <- initial_delay * (2^(i - 1)) + runif(1, 0, 1)
-      sdm_warn(sprintf("GEE rate limit or timeout — retrying in %.0fs (attempt %d of %d)",
+      sdm_warn(sprintf("GEE rate limit or timeout; retrying in %.0fs (attempt %d of %d)",
                        delay, i, max_retries), indent = 1L)
       Sys.sleep(delay)
     } else {
@@ -74,7 +74,7 @@ get_embeddings_at_fc_raw <- function(fc, scale, properties = NULL, geometries = 
 #'
 #' Generates background points in independent small batches (different seeds),
 #' sampling embeddings for each via ee.data.computeFeatures() pagination.
-#' Each batch is a fresh, isolated server-side expression — no large FC to count
+#' Each batch is a fresh, isolated server-side expression, with no large FC to count
 #' or slice, no accumulated lazy graph. Repeats until n valid points collected.
 #' Returns an R data frame with longitude, latitude, and A00-A63 columns.
 #' @keywords internal
@@ -194,7 +194,7 @@ upload_points_to_gee <- function(df, chunk_size = 5000L) {
 #' Generate Background Points Server-Side
 #'
 #' Generates pseudo-absence points entirely on GEE. Samples only band A00
-#' for land validation — never downloads background coordinates to R.
+#' for land validation; it never downloads background coordinates to R.
 #' Returns a GEE FeatureCollection (geometry + year + present=0).
 #' @keywords internal
 generate_background_fc_gee <- function(bbox, aoi_year, count, aoi_geom = NULL) {
@@ -203,7 +203,7 @@ generate_background_fc_gee <- function(bbox, aoi_year, count, aoi_geom = NULL) {
 
   sdm_info(sprintf("Target: %d background points (server-side, no pre-check)", count), indent = 1L)
 
-  # No A00 pre-check needed — get_embeddings_at_fc already filters notNull("A00"),
+  # No A00 pre-check needed: get_embeddings_at_fc already filters notNull("A00"),
   # so ocean/invalid points are dropped during the main 64-band embedding sampling.
   # This collapses two sampleRegions calls into one.
   raw_fc <- ee$FeatureCollection$randomPoints(region, as.integer(count * 3L))
@@ -243,14 +243,14 @@ prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
                      dropped_coverage, if (dropped_coverage == 1) "" else "s"), indent = 1L)
   }
 
-  # Deduplicate on embedding vectors — nearby points in the same pixel return
+  # Deduplicate on embedding vectors; nearby points in the same pixel return
   # identical embeddings and add no new information to the classifier.
   emb_cols_r <- as.list(sprintf("A%02d", 0:63))
   sampled_fc  <- sampled_fc$distinct(emb_cols_r)
   final_count <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
   dropped_emb <- after_coverage - final_count
   if (dropped_emb > 0) {
-    sdm_info(sprintf("%d point%s removed (duplicate embedding — same pixel or identical landscape)",
+    sdm_info(sprintf("%d point%s removed (duplicate embedding: same pixel or identical landscape)",
                      dropped_emb, if (dropped_emb == 1) "" else "s"), indent = 1L)
   }
 
@@ -342,7 +342,7 @@ build_gee_clf_params <- function(method, params) {
     svm = {
       sp <- params[setdiff(names(params), tree_core)]
       # Benchmarked defaults (FD, 5 taxa, spatial CV): an EPSILON_SVR with
-      # an RBF kernel (cost 10, gamma 0.05) is the robust general winner — it beats
+      # an RBF kernel (cost 10, gamma 0.05) is the robust general winner; it beats
       # the old C_SVC/LINEAR default by ~0.05 AUC because regressing the 0/1 label
       # yields a smoother, better-ranking suitability score. RBF is O(n^2); for very
       # large training sets pass kernelType = "LINEAR" to scale O(n x d).
@@ -365,7 +365,7 @@ build_gee_clf_params <- function(method, params) {
 #'
 #' The two ENMeval-style maxent levers (Muscarella 2014, Radosavljevic & Anderson 2014):
 #' `beta` is the regularization multiplier (higher = simpler/smoother) and `features`
-#' is a feature-class string — "auto" keeps GEE's sample-size-based autoFeature, else a
+#' is a feature-class string: "auto" keeps GEE's sample-size-based autoFeature, else a
 #' combination of L/Q/H/P/T (e.g. "LQH") turns autoFeature off and toggles those classes.
 #' @keywords internal
 maxent_tuning_params <- function(beta = 1, features = "auto") {
@@ -432,7 +432,7 @@ GEE_REDUCER_METHODS <- list(
 #'
 #' @param persist When TRUE and the method is a persistable tree classifier
 #'   (`PERSISTABLE_CLASSIFIERS`), the trained model is exported to a temporary GEE
-#'   asset and reloaded — the workaround for "Computed value is too large" on large
+#'   asset and reloaded, the workaround for "Computed value is too large" on large
 #'   random forests. The returned list then carries the `asset_id` to clean up.
 #' @param project GEE project id for the temporary asset folder.
 #' @param regression When TRUE, the target in `class_property` is treated as a continuous
@@ -452,7 +452,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
   LABEL_COL <- "label"
 
   # 1. Label Encoding. Classification integer-encodes the class; REGRESSION keeps the
-  #    continuous target as-is (e.g. crop yield, a proportion) — toInt() would destroy it.
+  #    continuous target as-is (e.g. crop yield, a proportion); toInt() would destroy it.
   sampled_fc <- sampled_fc$map(function(f) {
     v <- ee$Number(f$get(class_property))
     f$set(LABEL_COL, if (isTRUE(regression)) v else v$toInt())
@@ -491,7 +491,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
       # apply a STORED forest instead of retraining it on every tile. It relies on GEE's
       # batch scheduler, which under a throttled/restricted tier can be too backlogged to
       # run even this tiny export. So cap the wait short and FALL BACK to the inline
-      # classifier on any failure rather than aborting the whole run — the inline
+      # classifier on any failure rather than aborting the whole run; the inline
       # PROBABILITY classify path still produces a valid map (just retrains per tile).
       persisted <- tryCatch({
         # Train a FRESH regressor (you cannot re-mode a classification-trained forest),
@@ -500,7 +500,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
           features = sampled_fc, classProperty = LABEL_COL, inputProperties = emb_cols)
         ee_persist_classifier(reg_clf, project = project, max_minutes = 5)
       }, error = function(e) {
-        sdm_warn(sprintf("Classifier persistence unavailable (%s) — falling back to the inline %s classifier.",
+        sdm_warn(sprintf("Classifier persistence unavailable (%s); falling back to the inline %s classifier.",
                          conditionMessage(e), toupper(method)), indent = 1L)
         NULL
       })
@@ -710,7 +710,7 @@ get_feature_names <- function(fc) {
 #' Internal: download a single-band EE image over a region as a GeoTIFF (tiled)
 #'
 #' Self-contained replacement for \code{rgee::ee_as_rast} that does NOT require
-#' Google Drive or GCS authentication — it pulls pixels directly through the
+#' Google Drive or GCS authentication; it pulls pixels directly through the
 #' synchronous \code{getDownloadURL} endpoint and mosaics the tiles locally.
 #'
 #' Robustness to water / missing data: AlphaEarth has no embedding over open
@@ -718,7 +718,7 @@ get_feature_names <- function(fc) {
 #' as ragged or zero-sized tiles, and a tile that is entirely water can come back
 #' empty. We therefore \code{unmask()} the image to an explicit \code{nodata}
 #' sentinel before download: every pixel (land or water) then has a real value,
-#' so every tile — including all-water tiles — returns a valid, equal-sized
+#' so every tile, including all-water tiles, returns a valid, equal-sized
 #' GeoTIFF. The sentinel is restored to \code{NA} in the mosaicked output.
 #'
 #' Tiles are sized to stay under \code{getDownloadURL}'s synchronous limits
@@ -803,7 +803,7 @@ export_image_tiled <- function(image, region, scale, dsn,
   }
   if (length(tiles) == 0L) stop("export_image_tiled: all tile downloads failed.")
   if (failed > 0L)
-    sdm_warn(sprintf("%d of %d export tiles failed after %d retries — the output raster has gaps in those areas.",
+    sdm_warn(sprintf("%d of %d export tiles failed after %d retries; the output raster has gaps in those areas.",
                      failed, nx * ny, tries))
 
   if (length(tiles) == 1L) {

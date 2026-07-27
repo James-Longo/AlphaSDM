@@ -34,7 +34,7 @@ export_image_tiled(
 }
 \description{
 Self-contained replacement for \code{rgee::ee_as_rast} that does NOT require
-Google Drive or GCS authentication — it pulls pixels directly through the
+Google Drive or GCS authentication; it pulls pixels directly through the
 synchronous \code{getDownloadURL} endpoint and mosaics the tiles locally.
 }
 \details{
@@ -43,7 +43,7 @@ water, so predictions there are \emph{masked}. Masked pixels otherwise export
 as ragged or zero-sized tiles, and a tile that is entirely water can come back
 empty. We therefore \code{unmask()} the image to an explicit \code{nodata}
 sentinel before download: every pixel (land or water) then has a real value,
-so every tile — including all-water tiles — returns a valid, equal-sized
+so every tile, including all-water tiles, returns a valid, equal-sized
 GeoTIFF. The sentinel is restored to \code{NA} in the mosaicked output.
 
 Tiles are sized to stay under \code{getDownloadURL}'s synchronous limits

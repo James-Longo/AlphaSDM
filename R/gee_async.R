@@ -1,7 +1,7 @@
 #' Detect a Google Earth Engine synchronous-compute limit error
 #'
 #' GEE's interactive `getInfo()` has a compute-time budget (and a 5000-feature
-#' page cap). Heavy jobs — large point sets, many classes, expensive classifiers —
+#' page cap). Heavy jobs (large point sets, many classes, expensive classifiers)
 #' blow that budget and surface as one of the messages matched here. These are
 #' exactly the cases the async (batch-export) path is designed for.
 #' @keywords internal
@@ -152,8 +152,8 @@ ee_await_exports <- function(handles, poll_seconds = 15, max_minutes = 60, label
 
 #' Show the status of recent AlphaSDM Earth Engine batch tasks
 #'
-#' Lists the async export / classifier tasks AlphaSDM has started — fallback scoring in
-#' [evaluate_models()], map export, and embedding materialisation — with each task's
+#' Lists the async export / classifier tasks AlphaSDM has started (fallback scoring in
+#' [evaluate_models()], map export, and embedding materialisation) with each task's
 #' current state and age, so you can see what Earth Engine is doing at any time. Call it
 #' from another session while a long run is in progress.
 #'
@@ -188,8 +188,8 @@ sdm_gee_status <- function(active_only = TRUE, since_minutes = 180) {
 
 #' Export a FeatureCollection to a temporary GEE asset (batch) and wait
 #'
-#' Runs an `Export.table.toAsset` batch task — server-side, with no synchronous
-#' compute limit — and polls until it completes. Returns the new asset id. The
+#' Runs an `Export.table.toAsset` batch task, which runs server-side with no synchronous
+#' compute limit, and polls until it completes. Returns the new asset id. The
 #' caller is responsible for deleting the asset (see `ee_delete_asset_quietly`).
 #' @keywords internal
 ee_export_fc_to_asset <- function(fc, project = NULL, select = NULL,

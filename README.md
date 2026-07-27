@@ -1,6 +1,6 @@
 # AlphaSDM
 
-An R package for species distribution modeling at up to 10m resolution. AlphaSDM uses **Google's Alpha Earth satellite embeddings** — 64-dimensional vectors that capture the environmental characteristics of any location on Earth — so you don't need to find, download, or align environmental layers yourself.
+An R package for species distribution modeling at up to 10m resolution. AlphaSDM uses **Google's Alpha Earth satellite embeddings**, 64-dimensional vectors that capture the environmental characteristics of any location on Earth, so you don't need to find, download, or align environmental layers yourself.
 
 Everything runs on **Google Earth Engine**, from data extraction to model training to spatial prediction.
 
@@ -18,14 +18,14 @@ devtools::install_github("James-Longo/AlphaSDM")
 ## Google Earth Engine Setup
 
 AlphaSDM connects to Earth Engine with your **personal Google account**. You set
-this up **once per machine** — after that, every R session connects automatically.
+this up **once per machine**. After that, every R session connects automatically.
 
 ### Prerequisites (one-time, free)
 
 1. **Register for Earth Engine.** Go to
    [earthengine.google.com/signup](https://earthengine.google.com/signup/) and
    sign in with your Google account. Earth Engine is **free for noncommercial
-   use** — research, education, and nonprofit projects. Registration links your
+   use** in research, education, and nonprofit projects. Registration links your
    account to a Cloud project and gives you its **Project ID** (e.g.
    `"my-ee-project"`), which is the only thing you need to pass to AlphaSDM.
 
@@ -44,23 +44,24 @@ setup_gee(project = "your-project-id")
 
 1. **Finds your Python automatically.** If any Python on your machine already has
    `earthengine-api` (a conda env, a virtualenv, or a system Python with
-   `pip install earthengine-api`), AlphaSDM uses it directly — no downloads. It
-   only builds a new environment as a last resort.
-2. **Authenticates with one browser click — no code to paste.** On a desktop or
+   `pip install earthengine-api`), AlphaSDM uses it directly, with no downloads.
+   It only builds a new environment as a last resort.
+2. **Authenticates with one browser click, no code to paste.** On a desktop or
    laptop your browser opens, you click **Allow**, and the credential is captured
    automatically. The saved credentials are long-lived; you are not asked again.
 3. **Remembers your project.** The Project ID is saved locally.
 
 **Re-running `setup_gee()` is safe.** If you are already connected it detects the
-working credentials and returns immediately — *"Already connected. Nothing to do."*
+working credentials and returns immediately with *"Already connected to Earth
+Engine. Nothing to do."*
 
 ### Check your connection
 
 ```r
 gee_status()
-#> ┌─ AlphaSDM — Google Earth Engine connection
+#> ┌─ AlphaSDM: Google Earth Engine connection
 #>     ‣ [OK  ] Python env : .../earthengine-api
-#>     ‣ [OK  ] Credentials: present — user account (OAuth)
+#>     ‣ [OK  ] Credentials: present, user account (OAuth)
 #>     ‣ [OK  ] Project    : my-ee-project
 #>     ‣ [OK  ] Live check : connected
 #>   ✔ Earth Engine is set up. No action needed.
@@ -91,12 +92,41 @@ setup_gee(project = "your-project-id")   # re-authenticate
 
 *   **10m Resolution**: Model habitat at up to 10m resolution, anywhere on the globe, using Google's 64-band Alpha Earth satellite embeddings.
 *   **Fully Server-Side**: No environmental data to download. All data extraction, model training, and prediction happens on Google Earth Engine.
-*   **Built-in Models**: Five modeling methods ready to use:
-    *   [**Random Forest (RF)**](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilerandomforest)
-    *   [**Gradient Boosted Trees (GBT)**](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilegradienttreeboost)
-    *   [**Maxent**](https://developers.google.com/earth-engine/apidocs/ee-classifier-amnhmaxent)
-    *   [**Support Vector Machines (SVM)**](https://developers.google.com/earth-engine/apidocs/ee-classifier-libsvm)
-    *   [**Similarity Search**](https://developers.google.com/earth-engine/apidocs/ee-reducer-mean) (dot product against the mean presence embedding)
+*   **Built-in Models**: Nine modeling methods plus an ensemble, all trained and
+    applied server-side. See [Built-in Models](#built-in-models) below.
+
+---
+
+## Built-in Models
+
+Pass any of these to the `methods =` argument of `evaluate_models()` or
+`generate_map()`. The default is `c("svm", "rf", "gbt", "maxent")`, the tier
+validated across the package's benchmarks.
+
+| `methods` value | Model | Earth Engine backend |
+| --- | --- | --- |
+| `"svm"` | Support Vector Machine (default EPSILON_SVR, RBF kernel) | [`ee.Classifier.libsvm`](https://developers.google.com/earth-engine/apidocs/ee-classifier-libsvm) |
+| `"rf"` | Random Forest | [`ee.Classifier.smileRandomForest`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilerandomforest) |
+| `"gbt"` | Gradient Boosted Trees | [`ee.Classifier.smileGradientTreeBoost`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilegradienttreeboost) |
+| `"maxent"` | MaxEnt | [`ee.Classifier.amnhMaxent`](https://developers.google.com/earth-engine/apidocs/ee-classifier-amnhmaxent) |
+| `"cart"` | Classification and Regression Tree | [`ee.Classifier.smileCart`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilecart) |
+| `"knn"` | k-Nearest Neighbors | [`ee.Classifier.smileKNN`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smileknn) |
+| `"mindist"` | Minimum Distance to class centroid | [`ee.Classifier.minimumDistance`](https://developers.google.com/earth-engine/apidocs/ee-classifier-minimumdistance) |
+| `"naivebayes"` | Naive Bayes (see note below) | [`ee.Classifier.smileNaiveBayes`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilenaivebayes) |
+| `"similarity"` | Dot product against the mean presence embedding | `ee.Reducer.mean` |
+
+Selecting more than one method also produces an **ensemble** map and score. It is
+equal-weighted by default; `evaluate_models(weighted_ensemble = TRUE)` weights
+members by their cross-validated AUC instead.
+
+Two caveats worth knowing:
+
+*   `"naivebayes"` is exposed for completeness but is not recommended.
+    `smileNaiveBayes` assumes positive-integer features and discards negative
+    inputs, so it collapses to roughly random performance on the signed Alpha
+    Earth embeddings.
+*   The lighter methods (`similarity`, `knn`, `cart`, `mindist`) work but trail
+    the default four by roughly 0.03 to 0.07 AUC in the package's benchmarks.
 
 ---
 

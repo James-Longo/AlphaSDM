@@ -8,7 +8,7 @@ generate_background_fc_gee(bbox, aoi_year, count, aoi_geom = NULL)
 }
 \description{
 Generates pseudo-absence points entirely on GEE. Samples only band A00
-for land validation — never downloads background coordinates to R.
+for land validation; it never downloads background coordinates to R.
 Returns a GEE FeatureCollection (geometry + year + present=0).
 }
 \keyword{internal}

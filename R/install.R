@@ -31,8 +31,8 @@
 
 #' Durable credential store (optional)
 #'
-#' On some platforms the home/config directory is ephemeral — wiped between
-#' processes (sandboxes, some container and HPC-scratch setups) — so the GEE
+#' On some platforms the home/config directory is ephemeral, wiped between
+#' processes (sandboxes, some container and HPC-scratch setups), so the GEE
 #' credentials the ee client writes to \code{~/.config/earthengine/credentials}
 #' do not survive to the next run. If the environment variable
 #' \code{ALPHASDM_GEE_CRED_STORE} points at a directory on a PERSISTENT
@@ -222,7 +222,7 @@
 #' session connects automatically with no further prompts.
 #'
 #' \strong{Before you start} you need a free Earth Engine account. Sign up at
-#' \url{https://earthengine.google.com/signup/} — Earth Engine is free for
+#' \url{https://earthengine.google.com/signup/}. Earth Engine is free for
 #' noncommercial, research, education, and nonprofit use. Registration links
 #' your Google account to a Cloud project (its ID is what you pass as
 #' \code{project}).
@@ -234,7 +234,7 @@
 #' and the saved credentials do not expire with normal use.
 #'
 #' Re-running \code{setup_gee()} when you are already connected is a harmless
-#' no-op — it detects the working credentials and returns immediately.
+#' no-op; it detects the working credentials and returns immediately.
 #'
 #' @param project Google Cloud / Earth Engine project ID (e.g.,
 #'   \code{"my-ee-project"}). If \code{NULL}, the saved project is reused, or you
@@ -258,7 +258,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
     # 1. Python environment.
     #    FAST PATH: if any interpreter reticulate can reach already has
     #    earthengine-api, bind to it and skip installation entirely. This avoids
-    #    the slow rgee::ee_install() rebuild — and, on machines where reticulate
+    #    the slow rgee::ee_install() rebuild, and, on machines where reticulate
     #    cannot find a conda binary, the ~100 MB Miniconda download it falls back
     #    to. Most users already have a suitable Python (conda env, venv, or a
     #    system Python with `pip install earthengine-api`).
@@ -268,7 +268,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         sdm_done(sprintf("Using existing Python with earthengine-api: %s", ee_py))
     } else if (Sys.getenv("EARTHENGINE_PYTHON") != "" && !force) {
         # A Python was previously configured but earthengine-api isn't importable
-        # from it — install just the package into it, no full env rebuild.
+        # from it: install just the package into it, no full env rebuild.
         sdm_section("Installing earthengine-api into your Python environment")
         ok <- tryCatch({ reticulate::py_install("earthengine-api", pip = TRUE); TRUE },
                        error = function(e) { sdm_warn(conditionMessage(e)); FALSE })
@@ -296,7 +296,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
     }
 
     # 2. Idempotency short-circuit: if we are NOT forcing and credentials on disk
-    #    already produce a live connection, we are done — never prompt again.
+    #    already produce a live connection, we are done; never prompt again.
     #    This is what makes setup a genuine one-time action.
     #    First restore from the durable store (if configured) in case the live
     #    ~/.config copy was wiped since last session (ephemeral-home platforms).
@@ -315,14 +315,14 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         # Credentials are present but do not produce a live connection (expired
         # or revoked). Force a fresh authentication rather than falling through
         # to ee_Initialize with stale credentials and a confusing error.
-        sdm_info("Stored credentials are missing or expired — re-authenticating.")
+        sdm_info("Stored credentials are missing or expired; re-authenticating.")
         need_auth <- TRUE
     }
 
     # 3. Authenticate with the personal Google account.
     #    Default flow is auth_mode = "localhost": the browser opens, the user
     #    clicks Allow, and the token is captured automatically over a loopback
-    #    port — NO code to copy or paste, and the credentials are long-lived.
+    #    port, with NO code to copy or paste, and the credentials are long-lived.
     #    On a detected headless/remote session (no browser reachable) we fall
     #    back to "notebook" so the flow still completes instead of hanging.
     if (need_auth) {
@@ -337,7 +337,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
             } else {
                 chosen_mode <- "localhost"
                 sdm_section("Authenticating with Google Earth Engine")
-                sdm_info("A browser window will open — click 'Allow'. No code to paste.")
+                sdm_info("A browser window will open; click 'Allow'. No code to paste.")
             }
         } else {
             sdm_section(sprintf("Authenticating with Google Earth Engine (auth_mode = '%s')",
@@ -460,7 +460,7 @@ clear_gee_credentials <- function() {
 #' @return Invisibly, a named list of the status fields.
 #' @export
 gee_status <- function(check_live = TRUE) {
-    sdm_section("AlphaSDM — Google Earth Engine connection")
+    sdm_section("AlphaSDM: Google Earth Engine connection")
 
     py_env  <- Sys.getenv("EARTHENGINE_PYTHON", unset = "")
     creds   <- .gee_credentials_exist()
@@ -474,7 +474,7 @@ gee_status <- function(check_live = TRUE) {
     sdm_info(sprintf("[%s] Python env : %s", mark(py_env != ""),
                      if (py_env == "") "not set (run setup_gee once)" else py_env), indent = 1L)
     sdm_info(sprintf("[%s] Credentials: %s", mark(creds),
-                     if (creds) sprintf("present — %s", atype) else "none on disk"), indent = 1L)
+                     if (creds) sprintf("present, %s", atype) else "none on disk"), indent = 1L)
     sdm_info(sprintf("[%s] Project    : %s", mark(project != ""),
                      if (project == "") "not set" else project), indent = 1L)
 
@@ -518,7 +518,7 @@ ensure_gee_authenticated <- function(project = NULL) {
     }
 
     # Restore credentials from the durable store if the live copy was wiped
-    # (ephemeral-home platforms) — a no-op when the store is unset or the live
+    # (ephemeral-home platforms); a no-op when the store is unset or the live
     # copy is already present.
     .gee_restore_credentials()
 
@@ -541,7 +541,7 @@ ensure_gee_authenticated <- function(project = NULL) {
         if (!is.null(ee_py)) Sys.setenv(EARTHENGINE_PYTHON = ee_py, RETICULATE_PYTHON = ee_py)
     }
 
-    # Suppress GEE Python DeprecationWarnings BEFORE initializing — the GEE
+    # Suppress GEE Python DeprecationWarnings BEFORE initializing: the GEE
     # client fires these during ee_Initialize itself (server-side catalog audit).
     # EARTHENGINE_PYTHON in .Renviron ensures rgee uses the correct virtualenv;
     # we do not override use_python() here to avoid re-initialization conflicts.

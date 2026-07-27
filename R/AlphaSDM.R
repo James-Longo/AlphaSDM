@@ -6,14 +6,14 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
   # actually persist (only PERSISTABLE_CLASSIFIERS = rf/cart; svm/gbt/maxent ignore it),
   # so callers never reason about it. Persisting a whole-region map's tree model to an
   # asset once lets every export tile apply a *stored* forest instead of retraining it
-  # server-side per tile — the single biggest export speedup under a throttled tier.
+  # server-side per tile, the single biggest export speedup under a throttled tier.
   # The cross-validation path passes FALSE explicitly (per-fold persistence is overhead).
   ee <- reticulate::import("ee")
 
   # Optional class balancing: downsample an absence/background FeatureCollection to
   # a target absence:presence ratio, entirely server-side (no embeddings egressed).
   # On imbalanced SDM data this is the main lever that moves TSS for the tree
-  # methods (rf/gbt). Only downsamples — never upsamples — so a ratio looser than
+  # methods (rf/gbt). Only downsamples, never upsamples, so a ratio looser than
   # the data already is leaves the pool untouched.
   balance_bg <- function(bg_fc, n_pos, n_neg) {
     if (is.null(bg_ratio) || n_pos <= 0L || n_neg <= 0L) return(bg_fc)
@@ -33,7 +33,7 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     bg_count <- if (is.null(count)) n_pres else as.integer(count)
 
     lons <- pres_df$longitude; lats <- pres_df$latitude
-    sdm_info(sprintf("Coordinate extent — Lon [%.2f, %.2f]  Lat [%.2f, %.2f]",
+    sdm_info(sprintf("Coordinate extent: Lon [%.2f, %.2f]  Lat [%.2f, %.2f]",
                      min(lons), max(lons), min(lats), max(lats)), indent = 1L)
     sdm_info(sprintf("Transferring %d presence coordinates ...", n_pres), indent = 1L)
 
@@ -44,7 +44,7 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
                                          properties = c("year", "present"),
                                          years      = all_years)
 
-    # Background: server-side randomPoints — computation graph stays small regardless
+    # Background: server-side randomPoints; the computation graph stays small regardless
     # of n, avoiding the 10 MB payload limit from embedding re-upload.
     lon_buf   <- max(0.1, (max(lons) - min(lons)) * 0.1)
     lat_buf   <- max(0.1, (max(lats) - min(lats)) * 0.1)
@@ -72,7 +72,7 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
                                          years      = as.list(unique(as.integer(upload_df$year))))
     pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
     # When real absences are supplied, RF/GBT use them as background (merged back
-    # with presences below) — mirrors the presence-only branch's bg_rf/bg_gbt.
+    # with presences below), mirroring the presence-only branch's bg_rf/bg_gbt.
     n_pres       <- sum(train_df$present == 1)
     n_background <- sum(train_df$present == 0)
     bg_rf        <- balance_bg(sampled_fc$filter(ee$Filter$eq("present", 0L)), n_pres, n_background)
@@ -84,7 +84,7 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
   # 2. Train all models, forcing each classifier to evaluate immediately (chunked GEE training).
   # GEE classifiers are lazy: clf$train() only builds a computation graph.
   # By calling getInfo() on each classifier right after training, we materialize them
-  # one at a time — one getInfo() per model keeps each call within GEE's timeout.
+  # one at a time; one getInfo() per model keeps each call within GEE's timeout.
   # Similarity is already eager (reduceColumns$getInfo() fires inside train_gee_model).
   sdm_section(sprintf("Training %d model%s on Google Earth Engine",
                       length(methods), if (length(methods) == 1) "" else "s"))
@@ -104,8 +104,8 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     models[[m]]   <- train_gee_model(fc_for_method, m, params = training_params[[m]],
                                      persist = persist_classifier, project = project)
     # (No post-fit one-point classify probe here: it was a redundant synchronous getInfo()
-    # round-trip — the map-export and scoring steps classify independently and surface any
-    # malformed classifier on their own — and under a throttled GEE tier it was the failure
+    # round-trip (the map-export and scoring steps classify independently and surface any
+    # malformed classifier on their own), and under a throttled GEE tier it was the failure
     # chokepoint, timing out and discarding classifiers that had trained successfully.)
 
     pb <- sdm_progress_update(pb)
@@ -290,7 +290,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
 #'
 #' Samples the embeddings at the eval coordinates into a FeatureCollection, then classifies
 #' that FC with each trained model. Classifying a finite point set this way is light and
-#' scales to high-abundance species — unlike classifying the whole embedding image and
+#' scales to high-abundance species, unlike classifying the whole embedding image and
 #' sampleRegions-ing it, whose per-pixel graph runs GEE out of memory for large models.
 #' @keywords internal
 predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi_year,
@@ -316,7 +316,7 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
 
   # FC-first scoring: sample embeddings AT the eval points, then classify the resulting
   # FeatureCollection. Classifying a few thousand feature vectors is light and scales to
-  # high-abundance species — unlike classifying the whole embedding image and then
+  # high-abundance species, unlike classifying the whole embedding image and then
   # sampleRegions-ing it (the per-pixel classify graph of a large trained model runs GEE
   # out of memory). Map export still uses the image path (predict_gee_map); this is only
   # for scoring a finite point set. On a genuine compute timeout, retry that chunk via a
@@ -424,7 +424,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   # via `methods=` but trail by ~0.03-0.07 AUC, so they are not in the default.
   if (is.null(methods)) methods <- c("svm", "rf", "gbt", "maxent")
 
-  # Tree models (rf/gbt) train on a balanced 1:1 background by default — the main lever for
+  # Tree models (rf/gbt) train on a balanced 1:1 background by default, the main lever for
   # tree performance on imbalanced presence/background data (svm/maxent always see the full
   # background). Set balance_trees = FALSE to give the trees all background instead; an
   # explicit numeric bg_ratio (absence:presence) overrides both.
@@ -473,7 +473,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
                 max(ref_df$longitude), max(ref_df$latitude))
   aoi_geom <- ee$Geometry$Rectangle(bbox)
 
-  # Embedding image — lazy GEE object, shared across training and prediction.
+  # Embedding image: lazy GEE object, shared across training and prediction.
   img <- get_embedding_image(aoi_year, scale)
 
   # --- Cross-validation ---
@@ -528,7 +528,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
       na_bg_cv   <- is.na(bg_scored[[paste0("pred_",  methods[1])]])
       if (any(na_pres_cv) || any(na_bg_cv)) {
         sdm_warn(sprintf(
-          "CV fold %d: %d presence and %d background points dropped — no satellite coverage.",
+          "CV fold %d: %d presence and %d background points dropped: no satellite coverage.",
           k, sum(na_pres_cv), sum(na_bg_cv)
         ), indent = 2L)
       }
@@ -542,7 +542,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
 
     cv_aucs    <- colMeans(cv_fold_aucs, na.rm = TRUE)
     cv_metrics <- as.list(cv_aucs)
-    sdm_info(paste("CV AUC —", paste(sprintf("%s:%.3f", names(cv_aucs), cv_aucs), collapse = "  ")))
+    sdm_info(paste("CV AUC:", paste(sprintf("%s:%.3f", names(cv_aucs), cv_aucs), collapse = "  ")))
 
     if (weighted_ensemble) {
       raw_wts <- pmax(cv_aucs - 0.5, 0)
@@ -552,7 +552,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
       } else {
         ensemble_weights <- raw_wts / sum(raw_wts)
       }
-      sdm_info(paste("Ensemble weights —", paste(sprintf("%s:%.3f", names(ensemble_weights), ensemble_weights), collapse = "  ")))
+      sdm_info(paste("Ensemble weights:", paste(sprintf("%s:%.3f", names(ensemble_weights), ensemble_weights), collapse = "  ")))
     }
   }
 
@@ -609,7 +609,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
       na_pres <- sum(na_mask & final_pred$present == 1)
       na_bg   <- sum(na_mask & final_pred$present == 0)
       sdm_warn(sprintf(
-        "%d eval point%s dropped — no satellite coverage at prediction time (%d presence, %d background).",
+        "%d eval point%s dropped: no satellite coverage at prediction time (%d presence, %d background).",
         sum(na_mask), if (sum(na_mask) == 1) "" else "s", na_pres, na_bg
       ), indent = 1L)
       dropped_coords <- final_pred[na_mask, c("longitude", "latitude", "present"), drop = FALSE]

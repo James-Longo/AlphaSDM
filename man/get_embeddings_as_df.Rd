@@ -17,7 +17,7 @@ get_embeddings_as_df(
 \description{
 Generates background points in independent small batches (different seeds),
 sampling embeddings for each via ee.data.computeFeatures() pagination.
-Each batch is a fresh, isolated server-side expression — no large FC to count
+Each batch is a fresh, isolated server-side expression, with no large FC to count
 or slice, no accumulated lazy graph. Repeats until n valid points collected.
 Returns an R data frame with longitude, latitude, and A00-A63 columns.
 }

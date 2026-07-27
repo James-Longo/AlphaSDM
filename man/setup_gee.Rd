@@ -33,7 +33,7 @@ session connects automatically with no further prompts.
 }
 \details{
 \strong{Before you start} you need a free Earth Engine account. Sign up at
-\url{https://earthengine.google.com/signup/} — Earth Engine is free for
+\url{https://earthengine.google.com/signup/}. Earth Engine is free for
 noncommercial, research, education, and nonprofit use. Registration links
 your Google account to a Cloud project (its ID is what you pass as
 \code{project}).
@@ -45,5 +45,5 @@ loopback port (\code{auth_mode = "localhost"}). Nothing is copied or pasted,
 and the saved credentials do not expire with normal use.
 
 Re-running \code{setup_gee()} when you are already connected is a harmless
-no-op — it detects the working credentials and returns immediately.
+no-op; it detects the working credentials and returns immediately.
 }

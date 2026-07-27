@@ -8,7 +8,7 @@ is_gee_timeout(e)
 }
 \description{
 GEE's interactive `getInfo()` has a compute-time budget (and a 5000-feature
-page cap). Heavy jobs — large point sets, many classes, expensive classifiers —
+page cap). Heavy jobs (large point sets, many classes, expensive classifiers)
 blow that budget and surface as one of the messages matched here. These are
 exactly the cases the async (batch-export) path is designed for.
 }

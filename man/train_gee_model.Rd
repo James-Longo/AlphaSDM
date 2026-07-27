@@ -17,7 +17,7 @@ train_gee_model(
 \arguments{
 \item{persist}{When TRUE and the method is a persistable tree classifier
 (`PERSISTABLE_CLASSIFIERS`), the trained model is exported to a temporary GEE
-asset and reloaded — the workaround for "Computed value is too large" on large
+asset and reloaded, the workaround for "Computed value is too large" on large
 random forests. The returned list then carries the `asset_id` to clean up.}
 
 \item{project}{GEE project id for the temporary asset folder.}
