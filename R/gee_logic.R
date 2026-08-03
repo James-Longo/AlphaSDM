@@ -299,6 +299,28 @@ GEE_CLASSIFIER_METHODS <- list(
   mindist    = list(fn = "minimumDistance",        output = "RAW",         score = "classification", transform = "mindist_raw")
 )
 
+#' Classifiers that must train on a class-balanced background
+#'
+#' rf/gbt are balanced explicitly in `fit_gee_models()` (via `bg_ratio`/`balance_trees`)
+#' because balancing is the main TSS lever for trees. `knn` needs it for a harder
+#' reason: `smileKNN` in PROBABILITY mode returns the *raw positive-vote fraction*
+#' among the k neighbours, so its output IS the local class frequency. On an
+#' imbalanced pool the score is pinned near the global prevalence and quantized to
+#' multiples of 1/k, which collapses the surface.
+#'
+#' Worked example (an imbalanced dataset, 130 presences / 20,969 absences, k = 5):
+#' expected positive neighbours = 5 x 0.0062 = 0.03, so the map came back with two
+#' distinct values — 0.0 on 99.98% of cells and 0.2 on 164 — and AUC-ROC 0.607 driven
+#' almost entirely by ties. Training the same classifier on the balanced 1:1 pool
+#' restores a usable gradient.
+#'
+#' Not included: `cart` and `svm` emit a fitted score rather than a neighbourhood
+#' frequency, and `maxent` models background contrast by construction. Adding them
+#' here would change published benchmark numbers and should be a deliberate,
+#' separately-benchmarked decision.
+#' @keywords internal
+BALANCED_BG_CLASSIFIERS <- c("knn")
+
 #' Build constructor arguments for a GEE classifier
 #'
 #' Picks only the arguments each `ee.Classifier` factory accepts out of the
@@ -328,7 +350,14 @@ build_gee_clf_params <- function(method, params) {
       minLeafPopulation = int_or_null(params$minLeafPopulation)
     ),
     knn = list(
-      k            = int_or_null(if (!is.null(params$k)) params$k else 5L),
+      # k sets the RESOLUTION of the output surface, not just the smoothing: PROBABILITY
+      # mode returns the positive-vote fraction, so the score can only take k+1 distinct
+      # values. k = 5 yields a 6-level suitability map, too coarse to rank cells or to
+      # threshold sensibly, and it inflates AUC-PRG (clean top-of-ranking) while sinking
+      # AUC-ROC (mass ties below it). 15 keeps the neighbourhood local while giving a
+      # 16-level surface. Callers with very small training sets should lower it: smile
+      # requires k < n_train.
+      k            = int_or_null(if (!is.null(params$k)) params$k else 15L),
       searchMethod = params$searchMethod,
       metric       = params$metric
     ),

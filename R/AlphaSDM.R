@@ -13,7 +13,8 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
   # Optional class balancing: downsample an absence/background FeatureCollection to
   # a target absence:presence ratio, entirely server-side (no embeddings egressed).
   # On imbalanced SDM data this is the main lever that moves TSS for the tree
-  # methods (rf/gbt). Only downsamples, never upsamples, so a ratio looser than
+  # methods (rf/gbt) and it is what keeps knn's vote fraction off the prevalence floor.
+  # Only downsamples, never upsamples, so a ratio looser than
   # the data already is leaves the pool untouched.
   balance_bg <- function(bg_fc, n_pos, n_neg) {
     if (is.null(bg_ratio) || n_pos <= 0L || n_neg <= 0L) return(bg_fc)
@@ -98,6 +99,10 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
       pres_sampled$merge(bg_rf)
     } else if (m == "gbt") {
       pres_sampled$merge(bg_gbt)
+    } else if (m %in% BALANCED_BG_CLASSIFIERS) {
+      # Vote-fraction classifiers read prevalence directly off the training pool, so
+      # they need the same balanced background rf/gbt get. See BALANCED_BG_CLASSIFIERS.
+      pres_sampled$merge(bg_rf)
     } else {
       sampled_fc
     }
@@ -152,9 +157,10 @@ cleanup_classifier_assets <- function(train_res) {
 #' @param ensemble Logical; also export the ensemble mean map (default `TRUE`).
 #' @param aoi_year Year of the Alpha Earth mosaic to sample (default 2023).
 #' @param count Number of background points to generate for presence-only data.
-#' @param bg_ratio Optional absence:presence ratio for the rf/gbt background. Overrides
-#'   `balance_trees` when set.
-#' @param balance_trees Logical (default `TRUE`). When `TRUE`, rf/gbt train on a
+#' @param bg_ratio Optional absence:presence ratio for the balanced background pool
+#'   (rf/gbt plus `BALANCED_BG_CLASSIFIERS`, currently knn). Overrides `balance_trees`
+#'   when set.
+#' @param balance_trees Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
 #'   balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
 #'   the trees all background points.
 #' @param n_trees,min_leaf_population,bag_fraction,shrinkage,max_nodes,variables_per_split
@@ -162,6 +168,12 @@ cleanup_classifier_assets <- function(train_res) {
 #' @param svm_type,svm_kernel,svm_cost,svm_gamma libsvm hyperparameters (default
 #'   EPSILON_SVR / RBF / cost 10 / gamma 0.05).
 #' @param maxent_beta,maxent_features MaxEnt regularisation multiplier and feature classes.
+#' @param knn_k Neighbours for kNN (default 15). Also fixes the output resolution:
+#'   the surface can take only `k + 1` distinct values. Raise alongside `bg_ratio`.
+#' @param knn_search_method kNN neighbour search: `"AUTO"`, `"LINEAR_SEARCH"`,
+#'   `"KD_TREE"` or `"COVER_TREE"`. Note `KD_TREE` ignores `knn_metric`.
+#' @param knn_metric kNN distance metric: `"EUCLIDEAN"`, `"MAHALANOBIS"`,
+#'   `"MANHATTAN"` or `"BRAYCURTIS"`. Only honoured for search methods that use it.
 #' @param persist_classifier Logical; whether to persist internally-persistable classifiers
 #'   (currently RF/CART) to a temporary GEE asset so a whole-region export applies a stored
 #'   model instead of retraining the forest on every tile. Defaults to `TRUE`; the package
@@ -180,6 +192,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
                          svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
                          maxent_beta = 1, maxent_features = "auto",
+                         knn_k = NULL, knn_search_method = NULL, knn_metric = NULL,
                          persist_classifier = TRUE,
                          gee_project = NULL, python_path = NULL,
                          options = list()) {
@@ -251,6 +264,19 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   # MaxEnt tuning (ENMeval-style): regularization multiplier + feature classes
   if ("maxent" %in% methods)
     method_params$maxent <- modifyList(method_params$maxent, maxent_tuning_params(maxent_beta, maxent_features))
+  # k is kNN's output RESOLUTION knob, not just a smoothing knob: PROBABILITY mode
+  # returns the positive-vote fraction, so the surface can take only k + 1 distinct
+  # values. Raise it together with bg_ratio -- k should stay a small share of the
+  # balanced pool (~5%) or the vote over-smooths.
+  if ("knn" %in% methods && !is.null(knn_k)) method_params$knn$k <- as.integer(knn_k)
+  # searchMethod/metric are unset by default, so GEE picks them. Both matter here:
+  # the docs warn results vary by search method "for distance ties and probability
+  # values", and KD_TREE (plus AUTO at low dimensions) IGNORES the metric -- so pin
+  # searchMethod to LINEAR_SEARCH or COVER_TREE whenever the metric is meant to apply.
+  if ("knn" %in% methods && !is.null(knn_search_method))
+    method_params$knn$searchMethod <- as.character(knn_search_method)
+  if ("knn" %in% methods && !is.null(knn_metric))
+    method_params$knn$metric <- as.character(knn_metric)
 
   # 4. Unified Training
   train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
@@ -371,9 +397,10 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
 #'   `cart`, `mindist`.
 #' @param aoi_year Year of the Alpha Earth mosaic to sample (default 2023).
 #' @param count Number of background points to generate for presence-only data.
-#' @param bg_ratio Optional absence:presence ratio; downsamples the rf/gbt background
-#'   to `bg_ratio * n_presence`. Overrides `balance_trees` when set.
-#' @param balance_trees Logical (default `TRUE`). When `TRUE`, rf/gbt train on a
+#' @param bg_ratio Optional absence:presence ratio; downsamples the balanced background
+#'   pool (rf/gbt plus `BALANCED_BG_CLASSIFIERS`, currently knn) to `bg_ratio * n_presence`.
+#'   Overrides `balance_trees` when set.
+#' @param balance_trees Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
 #'   balanced 1:1 background while svm/maxent use the full background; set `FALSE`
 #'   to train the trees on all background points too.
 #' @param n_trees,min_leaf_population,bag_fraction,shrinkage,max_nodes,variables_per_split
@@ -382,6 +409,12 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
 #'   EPSILON_SVR / RBF / cost 10 / gamma 0.05).
 #' @param maxent_beta,maxent_features MaxEnt regularisation multiplier and feature
 #'   classes (`"auto"` or a combination of L/Q/H/P/T).
+#' @param knn_k Neighbours for kNN (default 15). Also fixes the output resolution:
+#'   the surface can take only `k + 1` distinct values. Raise alongside `bg_ratio`.
+#' @param knn_search_method kNN neighbour search: `"AUTO"`, `"LINEAR_SEARCH"`,
+#'   `"KD_TREE"` or `"COVER_TREE"`. Note `KD_TREE` ignores `knn_metric`.
+#' @param knn_metric kNN distance metric: `"EUCLIDEAN"`, `"MAHALANOBIS"`,
+#'   `"MANHATTAN"` or `"BRAYCURTIS"`. Only honoured for search methods that use it.
 #' @param cv_folds Number of spatial cross-validation folds (0 to skip CV).
 #' @param cv_method Fold assignment: `"block"` (spatial blocks), `"kmeans"`
 #'   (coordinate clusters), or `"random"` (non-spatial k-fold).
@@ -407,6 +440,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
                             shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
                             svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
                             maxent_beta = 1, maxent_features = "auto",
+                            knn_k = NULL, knn_search_method = NULL, knn_metric = NULL,
                             cv_folds = 5L, cv_method = "block", block_size = NULL,
                             weighted_ensemble = FALSE, async = FALSE,
                             persist_classifier = FALSE,
@@ -466,6 +500,19 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   # MaxEnt tuning (ENMeval-style): regularization multiplier + feature classes
   if ("maxent" %in% methods)
     method_params$maxent <- modifyList(method_params$maxent, maxent_tuning_params(maxent_beta, maxent_features))
+  # k is kNN's output RESOLUTION knob, not just a smoothing knob: PROBABILITY mode
+  # returns the positive-vote fraction, so the surface can take only k + 1 distinct
+  # values. Raise it together with bg_ratio -- k should stay a small share of the
+  # balanced pool (~5%) or the vote over-smooths.
+  if ("knn" %in% methods && !is.null(knn_k)) method_params$knn$k <- as.integer(knn_k)
+  # searchMethod/metric are unset by default, so GEE picks them. Both matter here:
+  # the docs warn results vary by search method "for distance ties and probability
+  # values", and KD_TREE (plus AUTO at low dimensions) IGNORES the metric -- so pin
+  # searchMethod to LINEAR_SEARCH or COVER_TREE whenever the metric is meant to apply.
+  if ("knn" %in% methods && !is.null(knn_search_method))
+    method_params$knn$searchMethod <- as.character(knn_search_method)
+  if ("knn" %in% methods && !is.null(knn_metric))
+    method_params$knn$metric <- as.character(knn_metric)
 
   # --- AOI geometry (bounding box of prediction target or training data) ---
   ref_df   <- if (!is.null(predict_coords)) predict_coords else data

@@ -26,6 +26,9 @@ evaluate_models(
   svm_gamma = 0.05,
   maxent_beta = 1,
   maxent_features = "auto",
+  knn_k = NULL,
+  knn_search_method = NULL,
+  knn_metric = NULL,
   cv_folds = 5L,
   cv_method = "block",
   block_size = NULL,
@@ -56,10 +59,11 @@ tier `c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`,
 
 \item{count}{Number of background points to generate for presence-only data.}
 
-\item{bg_ratio}{Optional absence:presence ratio; downsamples the rf/gbt background
-to `bg_ratio * n_presence`. Overrides `balance_trees` when set.}
+\item{bg_ratio}{Optional absence:presence ratio; downsamples the balanced background
+pool (rf/gbt plus `BALANCED_BG_CLASSIFIERS`, currently knn) to `bg_ratio * n_presence`.
+Overrides `balance_trees` when set.}
 
-\item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt train on a
+\item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
 balanced 1:1 background while svm/maxent use the full background; set `FALSE`
 to train the trees on all background points too.}
 
@@ -70,6 +74,15 @@ EPSILON_SVR / RBF / cost 10 / gamma 0.05).}
 
 \item{maxent_beta, maxent_features}{MaxEnt regularisation multiplier and feature
 classes (`"auto"` or a combination of L/Q/H/P/T).}
+
+\item{knn_k}{Neighbours for kNN (default 15). Also fixes the output resolution:
+the surface can take only `k + 1` distinct values. Raise alongside `bg_ratio`.}
+
+\item{knn_search_method}{kNN neighbour search: `"AUTO"`, `"LINEAR_SEARCH"`,
+`"KD_TREE"` or `"COVER_TREE"`. Note `KD_TREE` ignores `knn_metric`.}
+
+\item{knn_metric}{kNN distance metric: `"EUCLIDEAN"`, `"MAHALANOBIS"`,
+`"MANHATTAN"` or `"BRAYCURTIS"`. Only honoured for search methods that use it.}
 
 \item{cv_folds}{Number of spatial cross-validation folds (0 to skip CV).}
 
@@ -84,8 +97,8 @@ classes (`"auto"` or a combination of L/Q/H/P/T).}
 \item{async}{Logical; use asynchronous GEE export for large prediction sets.}
 
 \item{persist_classifier}{Logical; persist internally-persistable classifiers (RF/CART)
-to a temporary GEE asset. Defaults to \code{FALSE} here: cross-validation refits per fold,
-where per-fold persistence is pure overhead. (Map generation defaults it \code{TRUE}.)}
+to a temporary GEE asset. Defaults to `FALSE` here: cross-validation refits per fold,
+where per-fold persistence is pure overhead. (Map generation defaults it `TRUE`.)}
 
 \item{gee_project}{Optional Earth Engine project override (normally set via [setup_gee()]).}
 

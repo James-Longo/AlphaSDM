@@ -27,6 +27,9 @@ generate_map(
   svm_gamma = 0.05,
   maxent_beta = 1,
   maxent_features = "auto",
+  knn_k = NULL,
+  knn_search_method = NULL,
+  knn_metric = NULL,
   persist_classifier = TRUE,
   gee_project = NULL,
   python_path = NULL,
@@ -53,10 +56,11 @@ or a path to a vector file readable by [sf::st_read()].}
 
 \item{count}{Number of background points to generate for presence-only data.}
 
-\item{bg_ratio}{Optional absence:presence ratio for the rf/gbt background. Overrides
-`balance_trees` when set.}
+\item{bg_ratio}{Optional absence:presence ratio for the balanced background pool
+(rf/gbt plus `BALANCED_BG_CLASSIFIERS`, currently knn). Overrides `balance_trees`
+when set.}
 
-\item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt train on a
+\item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
 balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
 the trees all background points.}
 
@@ -67,9 +71,18 @@ EPSILON_SVR / RBF / cost 10 / gamma 0.05).}
 
 \item{maxent_beta, maxent_features}{MaxEnt regularisation multiplier and feature classes.}
 
+\item{knn_k}{Neighbours for kNN (default 15). Also fixes the output resolution:
+the surface can take only `k + 1` distinct values. Raise alongside `bg_ratio`.}
+
+\item{knn_search_method}{kNN neighbour search: `"AUTO"`, `"LINEAR_SEARCH"`,
+`"KD_TREE"` or `"COVER_TREE"`. Note `KD_TREE` ignores `knn_metric`.}
+
+\item{knn_metric}{kNN distance metric: `"EUCLIDEAN"`, `"MAHALANOBIS"`,
+`"MANHATTAN"` or `"BRAYCURTIS"`. Only honoured for search methods that use it.}
+
 \item{persist_classifier}{Logical; whether to persist internally-persistable classifiers
 (currently RF/CART) to a temporary GEE asset so a whole-region export applies a stored
-model instead of retraining the forest on every tile. Defaults to \code{TRUE}; the package
+model instead of retraining the forest on every tile. Defaults to `TRUE`; the package
 ignores it for methods that cannot persist (SVM/GBT/MaxEnt), so most callers should
 leave it unset.}
 
