@@ -27,9 +27,9 @@ classifier and how to read its output back as a presence-suitability score
                     (minimumDistance has no PROBABILITY output mode)
 }
 \details{
-Notes from benchmarking on float Alpha Earth embeddings:
-  - smileNaiveBayes assumes positive-integer feature vectors and DISCARDS
-    negative inputs, so it collapses to ~0.5 on embeddings (kept for
-    completeness; not recommended).
+One caveat on the signed Alpha Earth embeddings: smileNaiveBayes assumes
+positive-integer features and discards negative inputs, so it cannot use
+embeddings that span [-1, 1]. It is registered for completeness and is not
+a sensible choice here.
 }
 \keyword{datasets}

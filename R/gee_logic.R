@@ -228,10 +228,10 @@ generate_background_fc_gee <- function(bbox, aoi_year, count, aoi_geom = NULL) {
 #'                     use `d_absence - d_presence` so closer-to-presence ranks higher
 #'                     (minimumDistance has no PROBABILITY output mode)
 #'
-#' Notes from benchmarking on float Alpha Earth embeddings:
-#'   - smileNaiveBayes assumes positive-integer feature vectors and DISCARDS
-#'     negative inputs, so it collapses to ~0.5 on embeddings (kept for
-#'     completeness; not recommended).
+#' One caveat on the signed Alpha Earth embeddings: smileNaiveBayes assumes
+#' positive-integer features and discards negative inputs, so it cannot use
+#' embeddings that span [-1, 1]. It is registered for completeness and is not
+#' a sensible choice here.
 GEE_CLASSIFIER_METHODS <- list(
   rf         = list(fn = "smileRandomForest",      output = "PROBABILITY", score = "classification", transform = "none"),
   gbt        = list(fn = "smileGradientTreeBoost", output = "PROBABILITY", score = "classification", transform = "none"),
@@ -249,23 +249,22 @@ GEE_CLASSIFIER_METHODS <- list(
 
 #' Classifiers that must train on a class-balanced background
 #'
-#' rf/gbt are balanced explicitly in `fit_gee_models()` (via `bg_ratio`/`balance_trees`)
-#' because balancing is the main TSS lever for trees. `knn` needs it for a harder
+#' rf/gbt are balanced explicitly in `fit_gee_models()` (via `bg_ratio`/`balance_trees`):
+#' a tree fit on a heavily skewed pool can minimise its loss by predicting the majority
+#' class nearly everywhere, which costs sensitivity. `knn` needs it for a harder
 #' reason: `smileKNN` in PROBABILITY mode returns the *raw positive-vote fraction*
 #' among the k neighbours, so its output IS the local class frequency. On an
 #' imbalanced pool the score is pinned near the global prevalence and quantized to
 #' multiples of 1/k, which collapses the surface.
 #'
-#' To see how far this goes, take a prevalence near 0.6% and k = 5: the expected
-#' number of positive neighbours is 0.03, so almost every cell votes 0 and the few
-#' that do not vote 0.2. The surface collapses to two values and AUC-ROC is driven
-#' almost entirely by ties. Training the same classifier on a balanced 1:1 pool
-#' restores a usable gradient.
+#' The arithmetic is easy to check: at prevalence p the expected number of positive
+#' neighbours is k * p, so once k * p falls below 1 most neighbourhoods contain no
+#' presence at all and the score is 0 nearly everywhere. Balancing the pool raises p
+#' to 0.5 and restores a usable gradient.
 #'
 #' Not included: `cart` and `svm` emit a fitted score rather than a neighbourhood
-#' frequency, and `maxent` models background contrast by construction. Adding them
-#' would change the scores those methods currently produce, so it should be a
-#' deliberate and separately validated decision.
+#' frequency, and `maxent` models background contrast by construction, so none of
+#' them read prevalence off the pool the way a vote fraction does.
 #' @keywords internal
 BALANCED_BG_CLASSIFIERS <- c("knn")
 
@@ -301,10 +300,9 @@ build_gee_clf_params <- function(method, params) {
       # k sets the RESOLUTION of the output surface, not just the smoothing: PROBABILITY
       # mode returns the positive-vote fraction, so the score can only take k+1 distinct
       # values. k = 5 yields a 6-level suitability map, too coarse to rank cells or to
-      # threshold sensibly, and it inflates AUC-PRG (clean top-of-ranking) while sinking
-      # AUC-ROC (mass ties below it). 15 keeps the neighbourhood local while giving a
-      # 16-level surface. Callers with very small training sets should lower it: smile
-      # requires k < n_train.
+      # threshold sensibly; 15 keeps the neighbourhood local while giving a 16-level
+      # surface. Callers with very small training sets should lower it: smile requires
+      # k < n_train.
       k            = int_or_null(if (!is.null(params$k)) params$k else 15L),
       searchMethod = params$searchMethod,
       metric       = params$metric
@@ -318,11 +316,11 @@ build_gee_clf_params <- function(method, params) {
     ),
     svm = {
       sp <- params[setdiff(names(params), tree_core)]
-      # Validated defaults: an EPSILON_SVR with an RBF kernel (cost 10, gamma 0.05)
-      # is the robust general choice; it beats a C_SVC/LINEAR setup by roughly 0.05
-      # AUC under spatial cross-validation, because regressing the 0/1 label yields a
-      # smoother, better-ranking suitability score. RBF is O(n^2); for very large
-      # training sets pass kernelType = "LINEAR" to scale O(n x d).
+      # Defaults: an EPSILON_SVR with an RBF kernel (cost 10, gamma 0.05). Regressing
+      # the 0/1 label gives a continuous, smoothly varying score, which suits the
+      # ranking SDM needs better than the discrete class probability a C_SVC produces.
+      # RBF is O(n^2); for very large training sets pass kernelType = "LINEAR" to
+      # scale O(n x d).
       if (is.null(sp$svmType))    sp$svmType    <- "EPSILON_SVR"
       if (is.null(sp$kernelType)) sp$kernelType <- "RBF"
       if (is.null(sp$cost))       sp$cost       <- 10

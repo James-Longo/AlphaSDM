@@ -12,10 +12,9 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
 
   # Optional class balancing: downsample an absence/background FeatureCollection to
   # a target absence:presence ratio, entirely server-side (no embeddings egressed).
-  # On imbalanced SDM data this is the main lever that moves TSS for the tree
-  # methods (rf/gbt) and it is what keeps knn's vote fraction off the prevalence floor.
-  # Only downsamples, never upsamples, so a ratio looser than
-  # the data already is leaves the pool untouched.
+  # This keeps the tree methods from collapsing onto the majority class and keeps knn's
+  # vote fraction off the prevalence floor. Only downsamples, never upsamples, so a
+  # ratio looser than the data already is leaves the pool untouched.
   balance_bg <- function(bg_fc, n_pos, n_neg) {
     if (is.null(bg_ratio) || n_pos <= 0L || n_neg <= 0L) return(bg_fc)
     target <- ceiling(as.numeric(bg_ratio) * n_pos)
@@ -94,9 +93,9 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     fc_for_method <- if (m == "similarity") {
       pres_sampled
     } else if (m %in% c("rf", "gbt", BALANCED_BG_CLASSIFIERS)) {
-      # Trees take the balanced pool because balancing is the main TSS lever for them;
-      # vote-fraction classifiers need it because they read prevalence straight off the
-      # training pool. See BALANCED_BG_CLASSIFIERS.
+      # Trees take the balanced pool because a skewed pool lets them minimise loss by
+      # predicting the majority class; vote-fraction classifiers need it because they
+      # read prevalence straight off the training pool. See BALANCED_BG_CLASSIFIERS.
       pres_sampled$merge(bg_balanced)
     } else {
       sampled_fc
@@ -195,10 +194,10 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  # Default ensemble: the strong, complementary tier, chosen because it held up across
-  # taxa and regions under spatial cross-validation. Lighter models (similarity, knn,
-  # cart, mindist) remain available via `methods=` but trail by roughly 0.03-0.07 AUC,
-  # so they are not in the default.
+  # Default ensemble: four methods that make different modelling assumptions, so their
+  # errors are only partly correlated and averaging them helps. The lighter methods
+  # (similarity, knn, cart, mindist) stay available via `methods=`; they are cheaper
+  # but less expressive, so they are not in the default.
   if (is.null(methods)) methods <- c("svm", "rf", "gbt", "maxent")
 
   # Balanced 1:1 tree background by default (set balance_trees = FALSE for full background;
@@ -242,12 +241,13 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   if ("rf" %in% methods && n_trees == 100L) {
     method_params$rf$numberOfTrees <- 250L
   }
-  # RF benefits from DEEP trees; the shared default maxNodes=6 / minLeaf=5 are near-stumps
-  # (worth +0.02-0.05 AUC from unlimited depth). RF-specific so gbt/cart stay shallow.
+  # RF wants DEEP trees: it reduces variance by averaging many low-bias trees, so the
+  # shared maxNodes=6 / minLeaf=5 defaults leave it fitting near-stumps. Boosting is the
+  # opposite, hence the override is RF-specific and gbt/cart stay shallow.
   if ("rf" %in% methods && max_nodes == 6L)            method_params$rf$maxNodes <- NULL
   if ("rf" %in% methods && min_leaf_population == 5L)  method_params$rf$minLeafPopulation <- 1L
 
-  # SVM tuning: validated epsilon-SVR + RBF defaults (overridable per call)
+  # SVM: epsilon-SVR + RBF defaults (overridable per call)
   if ("svm" %in% methods) {
     method_params$svm$svmType    <- svm_type
     method_params$svm$kernelType <- svm_kernel
@@ -411,8 +411,8 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
 #' @param predict_coords Optional data frame of coordinates to score. Include a
 #'   `present` column to compute evaluation metrics on it.
 #' @param scale Embedding resolution in metres (default 10, the native resolution).
-#' @param methods Character vector of models to ensemble. Defaults to the validated
-#'   tier `c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`,
+#' @param methods Character vector of models to ensemble. Defaults to
+#'   `c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`,
 #'   `cart`, `mindist`.
 #' @param aoi_year Year of the Alpha Earth mosaic to sample (default 2023).
 #' @param count Number of background points to generate for presence-only data.
@@ -472,10 +472,10 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  # Default ensemble: the strong, complementary tier, chosen because it held up across
-  # taxa and regions under spatial cross-validation. Lighter models (similarity, knn,
-  # cart, mindist) remain available via `methods=` but trail by roughly 0.03-0.07 AUC,
-  # so they are not in the default.
+  # Default ensemble: four methods that make different modelling assumptions, so their
+  # errors are only partly correlated and averaging them helps. The lighter methods
+  # (similarity, knn, cart, mindist) stay available via `methods=`; they are cheaper
+  # but less expressive, so they are not in the default.
   if (is.null(methods)) methods <- c("svm", "rf", "gbt", "maxent")
 
   # Tree models (rf/gbt) train on a balanced 1:1 background by default, the main lever for
@@ -505,14 +505,15 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
     maxNodes = max_nodes, variablesPerSplit = variables_per_split
   )
   method_params <- setNames(lapply(methods, function(m) base_params), methods)
-  # Validated defaults: gbt 150 trees @ shrinkage 0.05, maxNodes 6; rf 500 deep trees,
-  # variablesPerSplit 8. Each override only fires when the corresponding global argument
-  # is still at its default, so explicit user values always win.
+  # Per-method defaults: gbt 150 trees @ shrinkage 0.05, maxNodes 6 (many shallow trees,
+  # small steps); rf 500 deep trees, variablesPerSplit 8 (sqrt of the 64 embedding bands).
+  # Each override only fires when the corresponding global argument is still at its
+  # default, so explicit user values always win.
   if ("gbt" %in% methods && n_trees == 100L)    method_params$gbt$numberOfTrees <- 150L
   if ("gbt" %in% methods && shrinkage == 0.005) method_params$gbt$shrinkage     <- 0.05
   if ("rf"  %in% methods && n_trees == 100L)    method_params$rf$numberOfTrees  <- 500L
   if ("rf"  %in% methods && is.null(variables_per_split)) method_params$rf$variablesPerSplit <- 8L
-  # RF benefits from deep trees (default maxNodes=6/minLeaf=5 are near-stumps); rf-specific.
+  # RF averages many low-bias trees, so it wants depth the shared defaults do not give.
   if ("rf"  %in% methods && max_nodes == 6L)           method_params$rf$maxNodes <- NULL
   if ("rf"  %in% methods && min_leaf_population == 5L) method_params$rf$minLeafPopulation <- 1L
   if ("svm" %in% methods) {

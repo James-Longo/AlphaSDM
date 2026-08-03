@@ -100,8 +100,9 @@ setup_gee(project = "your-project-id")   # re-authenticate
 ## Built-in Models
 
 Pass any of these to the `methods =` argument of `evaluate_models()` or
-`generate_map()`. The default is `c("svm", "rf", "gbt", "maxent")`, the tier
-validated across the package's benchmarks.
+`generate_map()`. The default is `c("svm", "rf", "gbt", "maxent")`: four methods
+that make different modelling assumptions, so averaging them is worth more than
+averaging four variations on the same idea.
 
 | `methods` value | Model | Earth Engine backend |
 | --- | --- | --- |
@@ -125,8 +126,9 @@ Two caveats worth knowing:
     `smileNaiveBayes` assumes positive-integer features and discards negative
     inputs, so it collapses to roughly random performance on the signed Alpha
     Earth embeddings.
-*   The lighter methods (`similarity`, `knn`, `cart`, `mindist`) work but trail
-    the default four by roughly 0.03 to 0.07 AUC in the package's benchmarks.
+*   The lighter methods (`similarity`, `knn`, `cart`, `mindist`) are cheaper to fit
+    but less expressive than the default four. `similarity` in particular is a single
+    dot product against the mean presence embedding, with no fitted decision boundary.
 
 ---
 

@@ -47,8 +47,8 @@ and a `present` column (1 = presence; include 0 rows to supply real absences).}
 
 \item{scale}{Embedding resolution in metres (default 10, the native resolution).}
 
-\item{methods}{Character vector of models to ensemble. Defaults to the validated
-tier `c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`,
+\item{methods}{Character vector of models to ensemble. Defaults to
+`c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`,
 `cart`, `mindist`.}
 
 \item{aoi_year}{Year of the Alpha Earth mosaic to sample (default 2023).}

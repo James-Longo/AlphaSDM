@@ -11,23 +11,22 @@ An object of class \code{character} of length 1.
 BALANCED_BG_CLASSIFIERS
 }
 \description{
-rf/gbt are balanced explicitly in `fit_gee_models()` (via `bg_ratio`/`balance_trees`)
-because balancing is the main TSS lever for trees. `knn` needs it for a harder
+rf/gbt are balanced explicitly in `fit_gee_models()` (via `bg_ratio`/`balance_trees`):
+a tree fit on a heavily skewed pool can minimise its loss by predicting the majority
+class nearly everywhere, which costs sensitivity. `knn` needs it for a harder
 reason: `smileKNN` in PROBABILITY mode returns the *raw positive-vote fraction*
 among the k neighbours, so its output IS the local class frequency. On an
 imbalanced pool the score is pinned near the global prevalence and quantized to
 multiples of 1/k, which collapses the surface.
 }
 \details{
-To see how far this goes, take a prevalence near 0.6% and k = 5: the expected
-number of positive neighbours is 0.03, so almost every cell votes 0 and the few
-that do not vote 0.2. The surface collapses to two values and AUC-ROC is driven
-almost entirely by ties. Training the same classifier on a balanced 1:1 pool
-restores a usable gradient.
+The arithmetic is easy to check: at prevalence p the expected number of positive
+neighbours is k * p, so once k * p falls below 1 most neighbourhoods contain no
+presence at all and the score is 0 nearly everywhere. Balancing the pool raises p
+to 0.5 and restores a usable gradient.
 
 Not included: `cart` and `svm` emit a fitted score rather than a neighbourhood
-frequency, and `maxent` models background contrast by construction. Adding them
-would change the scores those methods currently produce, so it should be a
-deliberate and separately validated decision.
+frequency, and `maxent` models background contrast by construction, so none of
+them read prevalence off the pool the way a vote fraction does.
 }
 \keyword{internal}

@@ -11,12 +11,12 @@ vignette: >
 knitr::opts_chunk$set(eval = FALSE, collapse = TRUE, comment = "#>")
 ```
 
-AlphaSDM is deliberately small: it fits a fixed, well-validated **ensemble of
-complementary models** on Alpha Earth embeddings and does so quickly, with all heavy
-computation on Google Earth Engine. We benchmarked per-species hyperparameter tuning
-extensively and found it buys essentially nothing on these embeddings (the cross-validation
-metric is saturated and mis-ranks configurations), so the package ships sensible defaults
-rather than a built-in tuner.
+AlphaSDM is deliberately small: it fits a fixed **ensemble of complementary models**
+on Alpha Earth embeddings, with all heavy computation on Google Earth Engine. It ships
+sensible defaults rather than a built-in tuner, on the view that per-species tuning is
+usually not where the gains are: the embeddings already encode most of the environmental
+signal, and with few presences a cross-validated score is noisy enough that picking the
+best configuration risks fitting that noise.
 
 If you *do* want to tune hyperparameters or run cross-validation for your own data, you do
 not need a special function; the package's regular building blocks are enough. This
@@ -101,6 +101,6 @@ evaluate_models(data = occ, predict_coords = test_points, aoi_year = 2024,
                 methods = c("rf", "maxent"), cv_folds = 0)
 ```
 
-Because tuning rarely helps on Alpha Earth embeddings, the recommended workflow is: use the
-defaults, and only reach for sections 2–3 when you have a specific reason to validate or
-adapt the models to an unusual dataset.
+The recommended workflow is to start from the defaults and reach for the sections above
+when you have a specific reason: an unusual dataset, a prediction target that differs from
+the training region, or a need to report cross-validated performance.
