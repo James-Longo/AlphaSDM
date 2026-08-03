@@ -297,9 +297,16 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
 
   # Ensemble map: the per-pixel mean of the member predictions, reduced server-side so
   # the members are never downloaded just to be averaged. Equal weights, matching the
-  # ensemble evaluate_models() scores. Note the members are averaged on their own
-  # scales: rf/gbt/maxent emit probabilities, while similarity and mindist emit
-  # unbounded scores, so mixing those families lets the wider-ranged member dominate.
+  # ensemble evaluate_models() scores.
+  #
+  # The members are averaged on their own scales, and those scales do not agree.
+  # rf/gbt/maxent/knn emit probabilities on [0, 1]; similarity is a dot product against
+  # the presence centroid, so it is signed and capped at that centroid's norm; mindist
+  # is a difference of distances, signed and roughly twice as wide; and svm in its
+  # EPSILON_SVR default regresses the 0/1 label without clamping, so it can fall
+  # outside [0, 1] entirely. Mixing families therefore lets the widest-spread member
+  # pull the mean around, and the result is not on a probability scale. Averaging
+  # within one family (the default svm/rf/gbt/maxent tier) is the well-behaved case.
   if (want_ensemble) {
     sdm_info("Exporting ENSEMBLE ...", indent = 1L)
     ens_img  <- ee$ImageCollection(pred_imgs)$mean()$rename("similarity")
