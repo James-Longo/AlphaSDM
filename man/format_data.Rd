@@ -16,9 +16,13 @@ format_data(data, coords, year, presence = NULL, species = NULL, label = NULL)
 \item{presence}{Optional. A character string specifying the presence/absence column (values should be 0 or 1).}
 
 \item{species}{Optional. A character string specifying the species name column.}
+
+\item{label}{Optional. A short name for this dataset, used only to label the
+console summary line (e.g. "Training" or "Evaluation").}
 }
 \value{
-A standardized data frame ready for `AlphaSDM()` with lowercase column names.
+A standardized data frame with `longitude`, `latitude`, `year` and
+  `present` columns, ready for [evaluate_models()] or [generate_map()].
 }
 \description{
 This function standardizes input data frames for use in the AlphaSDM pipeline.

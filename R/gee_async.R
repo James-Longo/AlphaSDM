@@ -14,17 +14,6 @@ is_gee_timeout <- function(e) {
     grepl("computation took too long", msg, ignore.case = TRUE)
 }
 
-#' Standard message recommending the async path after a synchronous timeout
-#' @keywords internal
-async_timeout_message <- function(e, where = "scoring") {
-  paste0(
-    "GEE timed out during ", where, " (", conditionMessage(e), ").\n",
-    "  This job is too large/complex for synchronous evaluation. Re-run with ",
-    "async = TRUE\n  to materialise results via a GEE batch export (no synchronous ",
-    "compute limit)."
-  )
-}
-
 #' Resolve a writable GEE asset folder for temporary async exports
 #' @keywords internal
 async_asset_root <- function(project = NULL) {

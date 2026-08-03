@@ -9,7 +9,10 @@
 #' @param year A character string specifying the year or date column.
 #' @param presence Optional. A character string specifying the presence/absence column (values should be 0 or 1).
 #' @param species Optional. A character string specifying the species name column.
-#' @return A standardized data frame ready for `AlphaSDM()` with lowercase column names.
+#' @param label Optional. A short name for this dataset, used only to label the
+#'   console summary line (e.g. "Training" or "Evaluation").
+#' @return A standardized data frame with `longitude`, `latitude`, `year` and
+#'   `present` columns, ready for [evaluate_models()] or [generate_map()].
 #' @export
 format_data <- function(data, coords, year, presence = NULL, species = NULL, label = NULL) {
     if (!isTRUE(.alphasdm_env$standardization_active)) {
@@ -179,7 +182,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
     # List final columns
     cols_desc <- paste(names(result), collapse = ", ")
     prefix <- if (!is.null(label)) paste0(label, " data") else "Data"
-    sdm_done(sprintf("%s ready: %d rows × %d columns (%s)", prefix, nrow(result), ncol(result), cols_desc))
+    sdm_done(sprintf("%s ready: %d rows \u00d7 %d columns (%s)", prefix, nrow(result), ncol(result), cols_desc))
 
     return(result)
 }

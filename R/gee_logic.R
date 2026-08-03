@@ -211,58 +211,6 @@ generate_background_fc_gee <- function(bbox, aoi_year, count, aoi_geom = NULL) {
   return(bg_fc$limit(as.integer(count)))
 }
 
-#' Prepare Training Data for GEE
-prep_training_data_gee <- function(df, class_property = "present", scale = 10) {
-  ee <- reticulate::import("ee")
-
-  # 1. Clean data
-  cols_to_keep <- c("longitude", "latitude", "year")
-  if (!is.null(class_property)) cols_to_keep <- c(cols_to_keep, class_property)
-
-  df_clean <- df[complete.cases(df[, cols_to_keep]), ]
-  if (nrow(df_clean) == 0) stop("No valid training data remaining after dropping NAs.")
-
-  # 2. Upload to GEE
-  sdm_section("Uploading training data to Google Earth Engine")
-  pb_up <- sdm_progress_start("Uploading and sampling")
-  sdm_info(sprintf("Transferring %d coordinates ...", nrow(df_clean)))
-
-  # Use the specialized uploader for training data
-  upload_fc <- upload_points_to_gee(df_clean)
-
-  # 3. Sample embeddings
-  sample_props <- c("year", class_property)
-  known_years <- as.list(unique(as.integer(df_clean$year)))
-  sampled_fc  <- get_embeddings_at_fc(upload_fc, scale, properties = sample_props, years = known_years)
-
-  # Log valid points remaining (coverage filter)
-  after_coverage <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
-  dropped_coverage <- nrow(df_clean) - after_coverage
-  if (dropped_coverage > 0) {
-    sdm_warn(sprintf("%d point%s discarded (no satellite coverage, e.g. over water)",
-                     dropped_coverage, if (dropped_coverage == 1) "" else "s"), indent = 1L)
-  }
-
-  # Deduplicate on embedding vectors; nearby points in the same pixel return
-  # identical embeddings and add no new information to the classifier.
-  emb_cols_r <- as.list(sprintf("A%02d", 0:63))
-  sampled_fc  <- sampled_fc$distinct(emb_cols_r)
-  final_count <- as.numeric(retry_curl_download(sampled_fc$size()$getInfo()))
-  dropped_emb <- after_coverage - final_count
-  if (dropped_emb > 0) {
-    sdm_info(sprintf("%d point%s removed (duplicate embedding: same pixel or identical landscape)",
-                     dropped_emb, if (dropped_emb == 1) "" else "s"), indent = 1L)
-  }
-
-  sdm_progress_done(pb_up)
-
-  return(list(
-    fc = sampled_fc,
-    df_clean = df_clean,
-    class_property = class_property
-  ))
-}
-
 #' GEE Classifier Methods Registry
 #'
 #' Every supervised classifier exposed by `ee.Classifier` that can be trained
@@ -459,6 +407,11 @@ GEE_REDUCER_METHODS <- list(
 
 #' Train GEE Model
 #'
+#' @param sampled_fc FeatureCollection of points carrying the A00-A63 embedding
+#'   bands plus `class_property`.
+#' @param method Model key: a name in `GEE_CLASSIFIER_METHODS` or `GEE_REDUCER_METHODS`.
+#' @param params Named list of hyperparameters for the chosen method.
+#' @param class_property Property holding the response (1 = presence, 0 = background).
 #' @param persist When TRUE and the method is a persistable tree classifier
 #'   (`PERSISTABLE_CLASSIFIERS`), the trained model is exported to a temporary GEE
 #'   asset and reloaded, the workaround for "Computed value is too large" on large
@@ -700,40 +653,6 @@ blockcv_folds <- function(df, k, block_size = NULL) {
                             selection = "random", iteration = 50L,
                             progress = FALSE, plot = FALSE, report = FALSE)
   as.integer(sb$folds_ids)
-}
-
-#' Assign Spatial Folds
-assign_spatial_folds <- function(df, n_folds = 10) {
-  ee <- reticulate::import("ee")
-  if (nrow(df) <= n_folds) {
-    df$fold <- (seq_len(nrow(df)) - 1) %% n_folds
-    return(df)
-  }
-
-  df$tmp_id <- seq_len(nrow(df)) - 1
-  if (!"year" %in% names(df)) df$year <- 2020
-  fc <- upload_points_to_gee(df)
-
-  clusterer <- ee$Clusterer$wekaKMeans(as.integer(n_folds))$train(fc, list("latitude", "longitude"))
-  clustered <- fc$cluster(clusterer, "fold")
-
-  cl_res <- retry_curl_download(clustered$reduceColumns(ee$Reducer$toList(2L), list("tmp_id", "fold"))$getInfo())
-
-  fold_list <- cl_res$list
-  ids <- sapply(fold_list, `[[`, 1)
-  folds <- sapply(fold_list, `[[`, 2)
-  fold_map <- setNames(folds, as.character(ids))
-
-  df$fold <- as.integer(fold_map[as.character(df$tmp_id)])
-  df$tmp_id <- NULL
-
-  return(df)
-}
-
-#' Get Feature Names
-#' @keywords internal
-get_feature_names <- function(fc) {
-  return(sprintf("A%02d", 0:63))
 }
 
 #' Internal: download a single-band EE image over a region as a GeoTIFF (tiled)

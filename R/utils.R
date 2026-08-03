@@ -92,23 +92,3 @@ sdm_progress_done <- function(handle) {
   .sdm_msg(sprintf("  \u2714 %s complete [%.1fs]", handle$name, elapsed))
   invisible(NULL)
 }
-
-# ---- Legacy shim ----
-
-#' @keywords internal
-timestamp_message <- function(msg) {
-  cleaned <- trimws(gsub("^-+\\s*|\\s*-+$", "", msg))
-
-  # Suppress debug noise
-  if (grepl("\\[Debug\\]", msg, ignore.case = TRUE)) return(invisible(NULL))
-
-  # Section headers (wrapped in dashes)
-  if (grepl("^---", trimws(msg)) && grepl("---$", trimws(msg))) {
-    sdm_section(cleaned)
-    return(invisible(NULL))
-  }
-
-  # Detect indent
-  indent <- if (grepl("^\\s{2,}|^  ->", msg)) 1L else 0L
-  sdm_info(cleaned, indent = indent)
-}

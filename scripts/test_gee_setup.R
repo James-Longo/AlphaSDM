@@ -3,10 +3,12 @@
 # This script tests the full clear → setup → verify cycle.
 # It requires an interactive R session (browser auth will open).
 #
-# Usage:
+# Set EARTHENGINE_PROJECT to your Earth Engine project ID before running.
+#
+# Usage, from the package root:
 #   source("scripts/test_gee_setup.R")
 
-pkgload::load_all("/path/to/Projects/AlphaSDM")
+pkgload::load_all(".")
 
 cat("\n=== Step 1: Clear all GEE credentials ===\n")
 clear_gee_credentials()
@@ -18,8 +20,9 @@ cat("  ✓ Credentials cleared successfully\n")
 
 cat("\n=== Step 2: Run setup_gee() ===\n")
 cat("  (This will open a browser for authentication)\n")
-# Replace with your actual project ID
-setup_gee(project = Sys.getenv("EARTHENGINE_PROJECT"))
+project <- Sys.getenv("EARTHENGINE_PROJECT")
+stopifnot(nzchar(project))
+setup_gee(project = project)
 
 # Verify setup state
 stopifnot(file.exists(file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json")))

@@ -15,6 +15,15 @@ train_gee_model(
 )
 }
 \arguments{
+\item{sampled_fc}{FeatureCollection of points carrying the A00-A63 embedding
+bands plus `class_property`.}
+
+\item{method}{Model key: a name in `GEE_CLASSIFIER_METHODS` or `GEE_REDUCER_METHODS`.}
+
+\item{params}{Named list of hyperparameters for the chosen method.}
+
+\item{class_property}{Property holding the response (1 = presence, 0 = background).}
+
 \item{persist}{When TRUE and the method is a persistable tree classifier
 (`PERSISTABLE_CLASSIFIERS`), the trained model is exported to a temporary GEE
 asset and reloaded, the workaround for "Computed value is too large" on large

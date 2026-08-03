@@ -18,4 +18,8 @@ Useful links:
 }
 
 }
+\author{
+\strong{Maintainer}: James Longo \email{james.longo.birds@gmail.com}
+
+}
 \keyword{internal}

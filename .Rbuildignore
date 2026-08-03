@@ -1,10 +1,14 @@
 ^benchmarks
 ^scripts
+^temp_wc
 ^\.git
+^\.github$
 ^\.agent
+^\.claude$
 ^\.gitignore
 ^AlphaSDM\.Rcheck
 ^\.\.Rcheck
+^LICENSE\.md$
 \.Rhistory
 \.RData
 \.Rproj\.user

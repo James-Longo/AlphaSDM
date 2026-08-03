@@ -1,0 +1,10 @@
+citHeader("To cite AlphaSDM in publications, please use:")
+
+bibentry(
+  bibtype  = "Manual",
+  title    = "AlphaSDM: Species Distribution Modeling using Alpha Earth Embeddings",
+  author   = person("James", "Longo"),
+  year     = "2026",
+  note     = "R package version 0.1.0",
+  url      = "https://github.com/James-Longo/AlphaSDM"
+)

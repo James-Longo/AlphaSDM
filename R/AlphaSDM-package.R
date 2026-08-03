@@ -8,8 +8,7 @@
 "_PACKAGE"
 
 ## namespace imports (kept in one place so roxygen regenerates NAMESPACE correctly)
-#' @importFrom magrittr %>%
 #' @importFrom future.apply future_lapply
-#' @importFrom stats complete.cases na.omit runif setNames
-#' @importFrom utils read.csv
+#' @importFrom stats complete.cases na.omit runif sd setNames
+#' @importFrom utils modifyList read.csv
 NULL

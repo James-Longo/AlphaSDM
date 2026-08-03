@@ -117,8 +117,11 @@ calculate_classifier_metrics <- function(scores_pos, scores_neg) {
   tss <- max(sens + spec - 1)
   ba <- max((sens + spec) / 2)
   
-  # 4. Pearson Correlation (COR)
-  cor_val <- stats::cor(all_labels, scores_all, method = "pearson")
+  # 4. Pearson Correlation (COR). A degenerate model can return one constant score
+  # for every point; cor() is undefined there (zero variance) and warns, so report
+  # the no-association value directly.
+  cor_val <- if (stats::sd(scores_all) < 1e-12) 0 else
+    stats::cor(all_labels, scores_all, method = "pearson")
   
   return(list(
     cbi = as.numeric(cbi),
