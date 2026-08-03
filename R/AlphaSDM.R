@@ -1,3 +1,67 @@
+#' Build the per-method hyperparameter list
+#'
+#' Shared by [evaluate_models()] and [generate_map()] so that the model you
+#' cross-validate is the model you map. Each method starts from the shared tree
+#' arguments and then takes its own overrides.
+#'
+#' Every override is conditional on the corresponding argument still holding its
+#' default, so an explicit value from the caller always wins.
+#' @keywords internal
+build_method_params <- function(methods, n_trees, min_leaf_population, bag_fraction,
+                                shrinkage, max_nodes, variables_per_split,
+                                svm_type, svm_kernel, svm_cost, svm_gamma,
+                                maxent_beta, maxent_features,
+                                knn_k, knn_search_method, knn_metric) {
+  base <- list(numberOfTrees = n_trees, minLeafPopulation = min_leaf_population,
+               bagFraction = bag_fraction, shrinkage = shrinkage,
+               maxNodes = max_nodes, variablesPerSplit = variables_per_split)
+  p <- setNames(lapply(methods, function(m) base), methods)
+  has <- function(m) m %in% methods
+
+  # gbt: many shallow trees taking small steps.
+  if (has("gbt") && n_trees == 100L)    p$gbt$numberOfTrees <- 150L
+  if (has("gbt") && shrinkage == 0.005) p$gbt$shrinkage     <- 0.05
+
+  # rf: the opposite. It averages many low-bias trees, so it wants depth the shared
+  # defaults do not give, and a split subset near sqrt of the 64 embedding bands.
+  if (has("rf") && n_trees == 100L)                 p$rf$numberOfTrees      <- 500L
+  if (has("rf") && is.null(variables_per_split))    p$rf$variablesPerSplit  <- 8L
+  if (has("rf") && max_nodes == 6L)                 p$rf$maxNodes           <- NULL
+  if (has("rf") && min_leaf_population == 5L)       p$rf$minLeafPopulation  <- 1L
+
+  if (has("svm")) {
+    p$svm$svmType    <- svm_type
+    p$svm$kernelType <- svm_kernel
+    p$svm$cost       <- svm_cost
+    p$svm$gamma      <- svm_gamma
+  }
+  # MaxEnt (ENMeval-style): regularization multiplier + feature classes.
+  if (has("maxent")) p$maxent <- modifyList(p$maxent, maxent_tuning_params(maxent_beta, maxent_features))
+
+  # k is kNN's output RESOLUTION knob, not just a smoothing knob: PROBABILITY mode
+  # returns the positive-vote fraction, so the surface can take only k + 1 distinct
+  # values. Raise it together with bg_ratio -- k should stay a small share of the
+  # balanced pool or the vote over-smooths.
+  if (has("knn") && !is.null(knn_k)) p$knn$k <- as.integer(knn_k)
+  # searchMethod/metric are unset by default, so GEE picks them. Both matter here:
+  # the docs warn results vary by search method "for distance ties and probability
+  # values", and KD_TREE (plus AUTO at low dimensions) IGNORES the metric -- so pin
+  # searchMethod to LINEAR_SEARCH or COVER_TREE whenever the metric is meant to apply.
+  if (has("knn") && !is.null(knn_search_method)) p$knn$searchMethod <- as.character(knn_search_method)
+  if (has("knn") && !is.null(knn_metric))        p$knn$metric       <- as.character(knn_metric)
+
+  p
+}
+
+#' The default model ensemble
+#'
+#' Four methods that make different modelling assumptions, so their errors are only
+#' partly correlated and averaging them is worth more than averaging four variations
+#' on one idea. The lighter methods (similarity, knn, cart, mindist) stay available
+#' via `methods=`.
+#' @keywords internal
+DEFAULT_METHODS <- c("svm", "rf", "gbt", "maxent")
+
 #' Internal Unified GEE Training Pipeline
 #' @keywords internal
 fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, training_params, count = NULL,
@@ -194,11 +258,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  # Default ensemble: four methods that make different modelling assumptions, so their
-  # errors are only partly correlated and averaging them helps. The lighter methods
-  # (similarity, knn, cart, mindist) stay available via `methods=`; they are cheaper
-  # but less expressive, so they are not in the default.
-  if (is.null(methods)) methods <- c("svm", "rf", "gbt", "maxent")
+  if (is.null(methods)) methods <- DEFAULT_METHODS
 
   # Balanced 1:1 tree background by default (set balance_trees = FALSE for full background;
   # an explicit numeric bg_ratio overrides). See evaluate_models() for details.
@@ -216,61 +276,10 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     aoi_geom <- rgee::sf_as_ee(aoi_sf)$geometry()
   }
 
-  # Method-Specific Optimized Defaults
-  base_params <- list(
-    numberOfTrees = n_trees, 
-    minLeafPopulation = min_leaf_population,
-    bagFraction = bag_fraction, 
-    shrinkage = shrinkage,
-    maxNodes = max_nodes, 
-    variablesPerSplit = variables_per_split
-  )
-
-  # Setup method-specific params list
-  method_params <- list()
-  for (m in methods) {
-    method_params[[m]] <- base_params
-  }
-
-  # Override GBT with 150 trees if using global default of 100
-  if ("gbt" %in% methods && n_trees == 100L) {
-    method_params$gbt$numberOfTrees <- 150L
-  }
-  
-  # Override RF with 250 trees if using global default of 100
-  if ("rf" %in% methods && n_trees == 100L) {
-    method_params$rf$numberOfTrees <- 250L
-  }
-  # RF wants DEEP trees: it reduces variance by averaging many low-bias trees, so the
-  # shared maxNodes=6 / minLeaf=5 defaults leave it fitting near-stumps. Boosting is the
-  # opposite, hence the override is RF-specific and gbt/cart stay shallow.
-  if ("rf" %in% methods && max_nodes == 6L)            method_params$rf$maxNodes <- NULL
-  if ("rf" %in% methods && min_leaf_population == 5L)  method_params$rf$minLeafPopulation <- 1L
-
-  # SVM: epsilon-SVR + RBF defaults (overridable per call)
-  if ("svm" %in% methods) {
-    method_params$svm$svmType    <- svm_type
-    method_params$svm$kernelType <- svm_kernel
-    method_params$svm$cost       <- svm_cost
-    method_params$svm$gamma      <- svm_gamma
-  }
-  # MaxEnt tuning (ENMeval-style): regularization multiplier + feature classes
-  if ("maxent" %in% methods)
-    method_params$maxent <- modifyList(method_params$maxent, maxent_tuning_params(maxent_beta, maxent_features))
-  # k is kNN's output RESOLUTION knob, not just a smoothing knob: PROBABILITY mode
-  # returns the positive-vote fraction, so the surface can take only k + 1 distinct
-  # values. Raise it together with bg_ratio -- k should stay a small share of the
-  # balanced pool (~5%) or the vote over-smooths.
-  if ("knn" %in% methods && !is.null(knn_k)) method_params$knn$k <- as.integer(knn_k)
-  # searchMethod/metric are unset by default, so GEE picks them. Both matter here:
-  # the docs warn results vary by search method "for distance ties and probability
-  # values", and KD_TREE (plus AUTO at low dimensions) IGNORES the metric -- so pin
-  # searchMethod to LINEAR_SEARCH or COVER_TREE whenever the metric is meant to apply.
-  if ("knn" %in% methods && !is.null(knn_search_method))
-    method_params$knn$searchMethod <- as.character(knn_search_method)
-  if ("knn" %in% methods && !is.null(knn_metric))
-    method_params$knn$metric <- as.character(knn_metric)
-
+  method_params <- build_method_params(
+    methods, n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes,
+    variables_per_split, svm_type, svm_kernel, svm_cost, svm_gamma,
+    maxent_beta, maxent_features, knn_k, knn_search_method, knn_metric)
   # Unified Training
   train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
   on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp classifier assets on exit
@@ -472,11 +481,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  # Default ensemble: four methods that make different modelling assumptions, so their
-  # errors are only partly correlated and averaging them helps. The lighter methods
-  # (similarity, knn, cart, mindist) stay available via `methods=`; they are cheaper
-  # but less expressive, so they are not in the default.
-  if (is.null(methods)) methods <- c("svm", "rf", "gbt", "maxent")
+  if (is.null(methods)) methods <- DEFAULT_METHODS
 
   # Tree models (rf/gbt) train on a balanced 1:1 background by default, the main lever for
   # tree performance on imbalanced presence/background data (svm/maxent always see the full
@@ -498,47 +503,10 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
     stop("Either predict_coords or cv_folds > 0 must be provided.")
   }
 
-  # --- Method-Specific Optimized Defaults ---
-  base_params <- list(
-    numberOfTrees = n_trees, minLeafPopulation = min_leaf_population,
-    bagFraction = bag_fraction, shrinkage = shrinkage,
-    maxNodes = max_nodes, variablesPerSplit = variables_per_split
-  )
-  method_params <- setNames(lapply(methods, function(m) base_params), methods)
-  # Per-method defaults: gbt 150 trees @ shrinkage 0.05, maxNodes 6 (many shallow trees,
-  # small steps); rf 500 deep trees, variablesPerSplit 8 (sqrt of the 64 embedding bands).
-  # Each override only fires when the corresponding global argument is still at its
-  # default, so explicit user values always win.
-  if ("gbt" %in% methods && n_trees == 100L)    method_params$gbt$numberOfTrees <- 150L
-  if ("gbt" %in% methods && shrinkage == 0.005) method_params$gbt$shrinkage     <- 0.05
-  if ("rf"  %in% methods && n_trees == 100L)    method_params$rf$numberOfTrees  <- 500L
-  if ("rf"  %in% methods && is.null(variables_per_split)) method_params$rf$variablesPerSplit <- 8L
-  # RF averages many low-bias trees, so it wants depth the shared defaults do not give.
-  if ("rf"  %in% methods && max_nodes == 6L)           method_params$rf$maxNodes <- NULL
-  if ("rf"  %in% methods && min_leaf_population == 5L) method_params$rf$minLeafPopulation <- 1L
-  if ("svm" %in% methods) {
-    method_params$svm$svmType    <- svm_type
-    method_params$svm$kernelType <- svm_kernel
-    method_params$svm$cost       <- svm_cost
-    method_params$svm$gamma      <- svm_gamma
-  }
-  # MaxEnt tuning (ENMeval-style): regularization multiplier + feature classes
-  if ("maxent" %in% methods)
-    method_params$maxent <- modifyList(method_params$maxent, maxent_tuning_params(maxent_beta, maxent_features))
-  # k is kNN's output RESOLUTION knob, not just a smoothing knob: PROBABILITY mode
-  # returns the positive-vote fraction, so the surface can take only k + 1 distinct
-  # values. Raise it together with bg_ratio -- k should stay a small share of the
-  # balanced pool (~5%) or the vote over-smooths.
-  if ("knn" %in% methods && !is.null(knn_k)) method_params$knn$k <- as.integer(knn_k)
-  # searchMethod/metric are unset by default, so GEE picks them. Both matter here:
-  # the docs warn results vary by search method "for distance ties and probability
-  # values", and KD_TREE (plus AUTO at low dimensions) IGNORES the metric -- so pin
-  # searchMethod to LINEAR_SEARCH or COVER_TREE whenever the metric is meant to apply.
-  if ("knn" %in% methods && !is.null(knn_search_method))
-    method_params$knn$searchMethod <- as.character(knn_search_method)
-  if ("knn" %in% methods && !is.null(knn_metric))
-    method_params$knn$metric <- as.character(knn_metric)
-
+  method_params <- build_method_params(
+    methods, n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes,
+    variables_per_split, svm_type, svm_kernel, svm_cost, svm_gamma,
+    maxent_beta, maxent_features, knn_k, knn_search_method, knn_metric)
   # --- AOI geometry (bounding box of prediction target or training data) ---
   ref_df   <- if (!is.null(predict_coords)) predict_coords else data
   bbox     <- c(min(ref_df$longitude), min(ref_df$latitude),
