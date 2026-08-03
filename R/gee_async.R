@@ -4,7 +4,7 @@
 #' page cap). Heavy jobs (large point sets, many classes, expensive classifiers)
 #' blow that budget and surface as one of the messages matched here. These are
 #' exactly the cases the async (batch-export) path is designed for.
-#' @keywords internal
+#' @noRd
 is_gee_timeout <- function(e) {
   msg <- if (inherits(e, "condition")) conditionMessage(e) else as.character(e)
   grepl("Computation timed out", msg, fixed = TRUE) ||
@@ -15,7 +15,7 @@ is_gee_timeout <- function(e) {
 }
 
 #' Resolve a writable GEE asset folder for temporary async exports
-#' @keywords internal
+#' @noRd
 async_asset_root <- function(project = NULL) {
   ee <- reticulate::import("ee")
   if (!is.null(project) && nzchar(project)) return(sprintf("projects/%s/assets", project))
@@ -30,7 +30,7 @@ async_asset_root <- function(project = NULL) {
 #'
 #' Used to read a materialised asset; because the asset is already computed, each
 #' page is cheap and won't hit the synchronous compute limit.
-#' @keywords internal
+#' @noRd
 read_fc_paged <- function(fc, page_size = 5000L) {
   ee_data <- reticulate::import("ee.data")
   feats <- list(); tok <- NULL
@@ -49,8 +49,8 @@ read_fc_paged <- function(fc, page_size = 5000L) {
 #'
 #' Returns the running task handle and its target asset id. Starting many exports
 #' before awaiting any of them lets independent chunks run concurrently server-side.
-#' @keywords internal
-ee_start_fc_export <- function(fc, project = NULL, select = NULL, announce = TRUE) {
+#' @noRd
+ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
   ee <- reticulate::import("ee")
   if (!is.null(select)) fc <- fc$select(as.list(select))
 
@@ -63,9 +63,7 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL, announce = TRU
     collection = fc, description = paste0("alphasdm_async_", suffix), assetId = asset_id
   )
   task$start()
-  # Bulk callers (many chunks) set announce = FALSE and report aggregate progress instead.
-  if (isTRUE(announce))
-    sdm_info(sprintf("Async batch export started (server-side) -> %s", asset_id), indent = 1L)
+  sdm_info(sprintf("Async batch export started (server-side) -> %s", asset_id), indent = 1L)
   list(task = task, asset_id = asset_id)
 }
 
@@ -73,7 +71,7 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL, announce = TRU
 #'
 #' Emits a periodic heartbeat (every ~minute) so a long server-side export shows
 #' progress instead of sitting silent.
-#' @keywords internal
+#' @noRd
 ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60) {
   deadline <- Sys.time() + max_minutes * 60
   start <- Sys.time(); last_beat <- 0; last_state <- ""
@@ -100,43 +98,6 @@ ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60) {
     Sys.sleep(poll_seconds)
   }
   handle$asset_id
-}
-
-#' Await several started export tasks at once, reporting aggregate progress
-#'
-#' Polls all task handles each cycle and prints `X/N chunks complete` as they finish,
-#' so a large chunked export (e.g. tens of thousands of points) shows live progress.
-#' Returns the asset ids in the original handle order.
-#' @keywords internal
-ee_await_exports <- function(handles, poll_seconds = 15, max_minutes = 60, label = "Export") {
-  n <- length(handles)
-  if (n == 0L) return(character(0))
-  if (n == 1L) return(ee_await_export(handles[[1]], poll_seconds, max_minutes))
-  deadline <- Sys.time() + max_minutes * 60
-  done <- logical(n); last_report <- ""
-  repeat {
-    running <- 0L; queued <- 0L
-    for (i in which(!done)) {
-      st <- handles[[i]]$task$status(); state <- st[["state"]]
-      if (identical(state, "COMPLETED")) { done[i] <- TRUE; next }
-      if (state %in% c("FAILED", "CANCELLED", "CANCEL_REQUESTED")) {
-        msg <- if (!is.null(st[["error_message"]])) st[["error_message"]] else state
-        stop(sprintf("Async GEE export %s (chunk %d/%d): %s", state, i, n, msg))
-      }
-      if (identical(state, "RUNNING")) running <- running + 1L else queued <- queued + 1L
-    }
-    nd <- sum(done)
-    # Show done / running / queued so it's clear how the batch is progressing on GEE.
-    rpt <- sprintf("%s: %d done, %d running, %d queued (of %d)", label, nd, running, queued, n)
-    if (rpt != last_report) { sdm_info(rpt, indent = 2L); last_report <- rpt }
-    if (all(done)) break
-    if (Sys.time() > deadline) {
-      for (i in which(!done)) try(handles[[i]]$task$cancel(), silent = TRUE)
-      stop(sprintf("Async GEE export exceeded max_minutes = %d (%d/%d chunks done)", max_minutes, nd, n))
-    }
-    Sys.sleep(poll_seconds)
-  }
-  vapply(handles, function(h) h$asset_id, character(1))
 }
 
 #' Show the status of recent AlphaSDM Earth Engine batch tasks
@@ -180,7 +141,7 @@ sdm_gee_status <- function(active_only = TRUE, since_minutes = 180) {
 #' Runs an `Export.table.toAsset` batch task, which runs server-side with no synchronous
 #' compute limit, and polls until it completes. Returns the new asset id. The
 #' caller is responsible for deleting the asset (see `ee_delete_asset_quietly`).
-#' @keywords internal
+#' @noRd
 ee_export_fc_to_asset <- function(fc, project = NULL, select = NULL,
                                   poll_seconds = 15, max_minutes = 60) {
   handle <- ee_start_fc_export(fc, project, select)
@@ -188,7 +149,7 @@ ee_export_fc_to_asset <- function(fc, project = NULL, select = NULL,
 }
 
 #' Delete a GEE asset, ignoring errors
-#' @keywords internal
+#' @noRd
 ee_delete_asset_quietly <- function(asset_id) {
   ee <- reticulate::import("ee")
   try(ee$data$deleteAsset(asset_id), silent = TRUE)
@@ -204,17 +165,13 @@ ee_delete_asset_quietly <- function(asset_id) {
 #' prevents the "Computation timed out" / "out of memory" failures on large,
 #' many-class jobs. Returns the materialised `ee$FeatureCollection` plus its
 #' `asset_id`; the caller should `ee_delete_asset_quietly(asset_id)` when done.
-#' @keywords internal
+#' @noRd
 ee_materialize_fc_async <- function(fc, project = NULL, select = NULL,
                                     poll_seconds = 15, max_minutes = 60) {
   ee <- reticulate::import("ee")
   asset_id <- ee_export_fc_to_asset(fc, project, select, poll_seconds, max_minutes)
   list(fc = ee$FeatureCollection(asset_id), asset_id = asset_id)
 }
-
-#' Classifier types that `Export.classifier.toAsset` supports
-#' @keywords internal
-PERSISTABLE_CLASSIFIERS <- c("rf", "cart")   # smileRandomForest, smileCart (+ decision trees)
 
 #' Persist a trained classifier to a GEE asset and reload it
 #'
@@ -225,7 +182,7 @@ PERSISTABLE_CLASSIFIERS <- c("rf", "cart")   # smileRandomForest, smileCart (+ d
 #' references it as stored data, so the classify graph no longer carries the oversized
 #' training value. Returns the reloaded `ee$Classifier` and the `asset_id` to clean up
 #' with `ee_delete_asset_quietly()`.
-#' @keywords internal
+#' @noRd
 ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_minutes = 60) {
   ee     <- reticulate::import("ee")
   root   <- async_asset_root(project)
@@ -242,51 +199,12 @@ ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_mi
   list(classifier = ee$Classifier$load(asset_id), asset_id = asset_id)
 }
 
-#' Sample 64-band embeddings at many points and materialise them to a GEE asset (chunked)
-#'
-#' Sampling + exporting a very large or continent-wide point set in one task blows
-#' GEE's memory. This samples and exports in independent chunks (each light enough to
-#' fit), starts the chunk exports concurrently, awaits them, then merges the per-chunk
-#' assets into ONE materialised FeatureCollection. Downstream training/classification
-#' then read pre-computed embeddings (no re-sampling), which is what makes heavy,
-#' many-class jobs tractable. Embeddings never leave GEE. Returns the merged
-#' `ee$FeatureCollection` and the `asset_ids` to clean up with `ee_delete_asset_quietly`.
-#'
-#' @param df          data frame with longitude, latitude, year (+ any `properties`).
-#' @param scale       sampling scale (m).
-#' @param properties  point properties to carry through (besides the A00-A63 bands).
-#' @param years       list of years to sample (passed to `get_embeddings_at_fc`).
-#' @param project     GEE project id for the temp asset folder.
-#' @param chunk_size  points per chunk/export task.
-#' @keywords internal
-sample_embeddings_to_asset <- function(df, scale, properties, years, project = NULL,
-                                       chunk_size = 4000L, poll_seconds = 15, max_minutes = 60) {
-  ee  <- reticulate::import("ee")
-  emb <- sprintf("A%02d", 0:63)
-  starts <- seq(1L, nrow(df), by = as.integer(chunk_size))
-
-  # Start every chunk's sample+export (concurrent server-side), then await with progress.
-  sdm_info(sprintf("Sampling embeddings: starting %d chunk export(s) (~%d pts each) ...",
-                   length(starts), as.integer(chunk_size)), indent = 1L)
-  handles <- lapply(starts, function(s) {
-    sub    <- df[s:min(s + chunk_size - 1L, nrow(df)), , drop = FALSE]
-    fc_sub <- get_embeddings_at_fc(upload_points_to_gee(sub), scale,
-                                   properties = properties, geometries = TRUE, years = years)
-    ee_start_fc_export(fc_sub$select(as.list(c(emb, properties))), project = project, announce = FALSE)
-  })
-  asset_ids <- ee_await_exports(handles, poll_seconds, max_minutes, label = "Embedding export")
-
-  merged <- Reduce(function(a, b) a$merge(b),
-                   lapply(asset_ids, function(a) ee$FeatureCollection(a)))
-  list(fc = merged, asset_ids = asset_ids)
-}
-
 #' Materialise a FeatureCollection via a GEE batch export, then read it
 #'
 #' The async alternative to `fc$getInfo()`: export to a temporary asset (batch, no
 #' synchronous compute limit), read the materialised asset back in pages (cheap), and
 #' delete it. Returns a list with a `features` element, matching `getInfo()`'s shape.
-#' @keywords internal
+#' @noRd
 ee_table_to_info_async <- function(fc, project = NULL, select = NULL,
                                    poll_seconds = 15, max_minutes = 60) {
   ee <- reticulate::import("ee")

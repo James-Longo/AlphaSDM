@@ -8,7 +8,6 @@
 "_PACKAGE"
 
 ## namespace imports (kept in one place so roxygen regenerates NAMESPACE correctly)
-#' @importFrom future.apply future_lapply
 #' @importFrom stats na.omit runif sd setNames
-#' @importFrom utils modifyList read.csv
+#' @importFrom utils modifyList
 NULL

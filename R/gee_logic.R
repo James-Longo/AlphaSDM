@@ -1,6 +1,6 @@
 #' Internal helper for retrying GEE operations with exponential backoff
 #'
-#' @keywords internal
+#' @noRd
 retry_curl_download <- function(expr, max_retries = 5, initial_delay = 1) {
   for (i in seq_len(max_retries)) {
     res <- try(expr, silent = TRUE)
@@ -45,7 +45,7 @@ get_embedding_image <- function(year) {
 #' @param properties Optional properties to retain
 #' @param geometries Boolean, retain geometries?
 #' @param years Optional list of years to filter
-#' @keywords internal
+#' @noRd
 get_embeddings_at_fc_raw <- function(fc, scale, properties = NULL, geometries = FALSE, years = NULL) {
   ee <- reticulate::import("ee")
 
@@ -68,76 +68,6 @@ get_embeddings_at_fc_raw <- function(fc, scale, properties = NULL, geometries = 
     sampled_fcs <- c(sampled_fcs, list(sampled))
   }
   return(ee$FeatureCollection(sampled_fcs)$flatten())
-}
-
-#' Download Background Embeddings via Independent-Chunk sampleRegions + computeFeatures
-#'
-#' Generates background points in independent small batches (different seeds),
-#' sampling embeddings for each via ee.data.computeFeatures() pagination.
-#' Each batch is a fresh, isolated server-side expression, with no large FC to count
-#' or slice, no accumulated lazy graph. Repeats until n valid points collected.
-#' Returns an R data frame with longitude, latitude, and A00-A63 columns.
-#' @keywords internal
-get_embeddings_as_df <- function(region, img, n, scale, seed = 42L,
-                                 chunk_size = 5000L, page_size = 500L) {
-  ee      <- reticulate::import("ee")
-  ee_data <- reticulate::import("ee.data")
-  emb_cols <- sprintf("A%02d", 0:63)
-
-  all_dfs   <- list()
-  total     <- 0L
-  s         <- as.integer(seed)
-  max_iters <- ceiling(n / chunk_size) * 5L  # generous safety limit
-
-  for (iter in seq_len(max_iters)) {
-    if (total >= n) break
-
-    chunk_pts <- ee$FeatureCollection$randomPoints(
-      region, as.integer(chunk_size), seed = s
-    )
-    s <- s + 1L
-
-    expr <- img$sampleRegions(
-      collection = chunk_pts,
-      scale      = as.integer(scale),
-      tileScale  = 16L,
-      geometries = TRUE
-    )
-
-    tok <- NULL
-    repeat {
-      params <- list(expression = expr, pageSize = as.integer(page_size))
-      if (!is.null(tok) && nchar(tok) > 0L) params$pageToken <- tok
-
-      r <- retry_curl_download(ee_data$computeFeatures(params))
-
-      feats <- r[["features"]]
-      if (!is.null(feats) && length(feats) > 0L) {
-        mat <- do.call(rbind, lapply(feats, function(f) {
-          coords <- f$geometry$coordinates
-          if (is.null(coords)) return(NULL)
-          vals <- lapply(emb_cols, function(e) f$properties[[e]])
-          if (any(vapply(vals, is.null, logical(1L)))) return(NULL)
-          c(as.numeric(coords[[1L]]), as.numeric(coords[[2L]]), as.numeric(vals))
-        }))
-        if (!is.null(mat) && nrow(mat) > 0L) {
-          df           <- as.data.frame(mat, stringsAsFactors = FALSE)
-          colnames(df) <- c("longitude", "latitude", emb_cols)
-          df           <- df[!is.na(df$A00), , drop = FALSE]
-          total        <- total + nrow(df)
-          all_dfs      <- c(all_dfs, list(df))
-        }
-      }
-
-      tok <- r[["nextPageToken"]]
-      if (is.null(tok) || nchar(tok) == 0L) break
-      if (total >= n) break
-    }
-  }
-
-  if (length(all_dfs) == 0L) return(data.frame())
-  result <- do.call(rbind, all_dfs)
-  result[seq_len(min(n, nrow(result))), , drop = FALSE]
 }
 
 get_embeddings_at_fc <- function(fc, scale, properties = NULL, geometries = FALSE, years = NULL) {
@@ -196,7 +126,7 @@ upload_points_to_gee <- function(df, chunk_size = 5000L) {
 #' Generates pseudo-absence points entirely on GEE. Samples only band A00
 #' for land validation; it never downloads background coordinates to R.
 #' Returns a GEE FeatureCollection (geometry + year + present=0).
-#' @keywords internal
+#' @noRd
 generate_background_fc_gee <- function(aoi_year, count, region) {
   ee <- reticulate::import("ee")
 
@@ -232,46 +162,43 @@ generate_background_fc_gee <- function(aoi_year, count, region) {
 #' embeddings that span [-1, 1]. It is registered for completeness and is not
 #' a sensible choice here.
 GEE_CLASSIFIER_METHODS <- list(
-  rf         = list(fn = "smileRandomForest",      output = "PROBABILITY", score = "classification", transform = "none"),
-  gbt        = list(fn = "smileGradientTreeBoost", output = "PROBABILITY", score = "classification", transform = "none"),
+  rf         = list(fn = "smileRandomForest",      output = "PROBABILITY", score = "classification", transform = "none", pool = "balanced", persistable = TRUE),
+  gbt        = list(fn = "smileGradientTreeBoost", output = "PROBABILITY", score = "classification", transform = "none", pool = "balanced"),
   maxent     = list(fn = "amnhMaxent",             output = "PROBABILITY", score = "probability",    transform = "none"),
   # NOTE: the svm output mode/transform below is the CLASSIFICATION-SVM fallback
   # (C_SVC / NU_SVC). When svmType is a regression SVM (the EPSILON_SVR default, or
   # NU_SVR), resolve_clf_spec() switches this to REGRESSION + transform "none" so the
   # regressed 0/1 score is read directly. See build_gee_clf_params() for the defaults.
   svm        = list(fn = "libsvm",                 output = "PROBABILITY", score = "classification", transform = "invert"),
-  cart       = list(fn = "smileCart",              output = "PROBABILITY", score = "classification", transform = "none"),
-  knn        = list(fn = "smileKNN",               output = "PROBABILITY", score = "classification", transform = "none"),
+  cart       = list(fn = "smileCart",              output = "PROBABILITY", score = "classification", transform = "none", persistable = TRUE),
+  knn        = list(fn = "smileKNN",               output = "PROBABILITY", score = "classification", transform = "none", pool = "balanced"),
   naivebayes = list(fn = "smileNaiveBayes",        output = "PROBABILITY", score = "classification", transform = "none"),
   mindist    = list(fn = "minimumDistance",        output = "RAW",         score = "classification", transform = "mindist_raw")
 )
 
-#' Classifiers that must train on a class-balanced background
+#' The point pool a method trains on
 #'
-#' rf/gbt are balanced explicitly in `fit_gee_models()` (via `bg_ratio`/`balance_trees`):
-#' a tree fit on a heavily skewed pool can minimise its loss by predicting the majority
-#' class nearly everywhere, which costs sensitivity. `knn` needs it for a harder
-#' reason: `smileKNN` in PROBABILITY mode returns the *raw positive-vote fraction*
-#' among the k neighbours, so its output IS the local class frequency. On an
-#' imbalanced pool the score is pinned near the global prevalence and quantized to
-#' multiples of 1/k, which collapses the surface.
-#'
-#' The arithmetic is easy to check: at prevalence p the expected number of positive
-#' neighbours is k * p, so once k * p falls below 1 most neighbourhoods contain no
-#' presence at all and the score is 0 nearly everywhere. Balancing the pool raises p
-#' to 0.5 and restores a usable gradient.
-#'
-#' Not included: `cart` and `svm` emit a fitted score rather than a neighbourhood
-#' frequency, and `maxent` models background contrast by construction, so none of
-#' them read prevalence off the pool the way a vote fraction does.
-#' @keywords internal
-BALANCED_BG_CLASSIFIERS <- c("knn")
+#' Reads the `pool` field of the registry entry, defaulting to the full pool.
+#'   "balanced"  presences plus the class-balanced background. Trees would otherwise
+#'               minimise loss by predicting the majority class, and smileKNN in
+#'               PROBABILITY mode returns the raw positive-vote fraction, so its score
+#'               IS the local class frequency: at prevalence p the expected number of
+#'               positive neighbours is k * p, and once that falls below 1 the score is
+#'               0 nearly everywhere.
+#'   "presence"  presences only (the reducer methods, which have no negative class).
+#'   "full"      presences plus all background.
+#' @noRd
+method_pool <- function(method) {
+  if (method %in% GEE_REDUCER_METHODS) return("presence")
+  pool <- GEE_CLASSIFIER_METHODS[[method]]$pool
+  if (is.null(pool)) "full" else pool
+}
 
 #' Build constructor arguments for a GEE classifier
 #'
 #' Picks only the arguments each `ee.Classifier` factory accepts out of the
 #' shared parameter list, coercing integer-typed arguments and dropping NULLs.
-#' @keywords internal
+#' @noRd
 build_gee_clf_params <- function(method, params) {
   int_or_null <- function(x) if (!is.null(x)) as.integer(x) else NULL
   # RF/GBT-oriented defaults that must not leak into other constructors.
@@ -341,7 +268,7 @@ build_gee_clf_params <- function(method, params) {
 #' `beta` is the regularization multiplier (higher = simpler/smoother) and `features`
 #' is a feature-class string: "auto" keeps GEE's sample-size-based autoFeature, else a
 #' combination of L/Q/H/P/T (e.g. "LQH") turns autoFeature off and toggles those classes.
-#' @keywords internal
+#' @noRd
 maxent_tuning_params <- function(beta = 1, features = "auto") {
   mp <- list(betaMultiplier = beta)
   if (!is.null(features) && !identical(features, "auto")) {
@@ -363,7 +290,7 @@ maxent_tuning_params <- function(beta = 1, features = "auto") {
 #' regression SVM emits a single REGRESSION value that approximates the 0/1 label
 #' (higher = more suitable), so it is read directly (transform "none") rather than
 #' via the C_SVC `1 - p` probability flip.
-#' @keywords internal
+#' @noRd
 resolve_clf_spec <- function(method, filtered_params) {
   spec <- GEE_CLASSIFIER_METHODS[[method]]
   if (method == "svm") {
@@ -377,28 +304,8 @@ resolve_clf_spec <- function(method, filtered_params) {
   spec
 }
 
-#' Re-resolve a classifier spec for an explicit output-mode override (mode tuning)
-#'
-#' Given a target output mode, returns the spec with the correct score band and the
-#' transform needed to read a presence-suitability score from it:
-#'   PROBABILITY/REGRESSION/CLASSIFICATION -> read the scalar directly ("none"),
-#'     except libsvm C_SVC PROBABILITY which keeps its `1 - p` invert;
-#'   MULTIPROBABILITY -> read the last array element (P of the highest = presence class);
-#'   RAW (minimumDistance) -> the `d_absence - d_presence` array transform.
-#' @keywords internal
-override_output_mode <- function(method, spec, output) {
-  spec$output <- output
-  spec$score  <- if (method == "maxent") "probability" else "classification"
-  spec$transform <- if (output == "MULTIPROBABILITY") "multiprob_last"
-    else if (output == "RAW" && method == "mindist") "mindist_raw"
-    else if (output == "PROBABILITY" && method == "svm" &&
-             identical(spec$transform, "invert")) "invert"
-    else "none"
-  spec
-}
-
 #' Methods backed by a reducer rather than an `ee.Classifier`
-#' @keywords internal
+#' @noRd
 GEE_REDUCER_METHODS <- "similarity"
 
 #' Train GEE Model
@@ -409,16 +316,12 @@ GEE_REDUCER_METHODS <- "similarity"
 #' @param params Named list of hyperparameters for the chosen method.
 #' @param class_property Property holding the response (1 = presence, 0 = background).
 #' @param persist When TRUE and the method is a persistable tree classifier
-#'   (`PERSISTABLE_CLASSIFIERS`), the trained model is exported to a temporary GEE
+#'   (one whose registry entry sets `persistable`), the trained model is exported to a GEE
 #'   asset and reloaded, the workaround for "Computed value is too large" on large
 #'   random forests. The returned list then carries the `asset_id` to clean up.
 #' @param project GEE project id for the temporary asset folder.
-#' @param regression When TRUE, the target in `class_property` is treated as a continuous
-#'   value: the label is kept as-is (no integer encoding) and the classifier is put in
-#'   `REGRESSION` output mode. Use for continuous responses (e.g. yield, a proportion);
-#'   the default FALSE preserves the classification path.
 train_gee_model <- function(sampled_fc, method, params = list(), class_property = "present",
-                            persist = FALSE, project = NULL, regression = FALSE) {
+                            persist = FALSE, project = NULL) {
   ee <- reticulate::import("ee")
   emb_cols <- sprintf("A%02d", 0:63)
 
@@ -429,25 +332,16 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
 
   LABEL_COL <- "label"
 
-  # Label Encoding. Classification integer-encodes the class; REGRESSION keeps the
-  #    continuous target as-is (e.g. crop yield, a proportion); toInt() would destroy it.
   sampled_fc <- sampled_fc$map(function(f) {
-    v <- ee$Number(f$get(class_property))
-    f$set(LABEL_COL, if (isTRUE(regression)) v else v$toInt())
+    f$set(LABEL_COL, ee$Number(f$get(class_property))$toInt())
   })
 
   # Training
   if (is_classifier) {
     clf_factory <- ee$Classifier[[GEE_CLASSIFIER_METHODS[[method]]$fn]]
 
-    # An `output` param tunes the GEE output mode; strip it before constructing the
-    # classifier (it is set via setOutputMode, not a constructor argument).
-    output_override <- params[["output"]]; params[["output"]] <- NULL
-    if (isTRUE(regression)) output_override <- "REGRESSION"  # continuous target -> regression output
-
     filtered_params <- build_gee_clf_params(method, params)
     spec <- resolve_clf_spec(method, filtered_params)
-    if (!is.null(output_override)) spec <- override_output_mode(method, spec, output_override)
     clf <- do.call(clf_factory, filtered_params)
     clf <- clf$setOutputMode(spec$output)
 
@@ -464,7 +358,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
     # suitability score (~P(presence)), which SDM ranking/AUC needs. The spec is
     # rewritten so predict reads it as a regression score.
     asset_id <- NULL
-    if (persist && method %in% PERSISTABLE_CLASSIFIERS) {
+    if (persist && isTRUE(GEE_CLASSIFIER_METHODS[[method]]$persistable)) {
       # Persistence is an optimization, not a requirement: it lets a whole-region export
       # apply a STORED forest instead of retraining it on every tile. It relies on GEE's
       # batch scheduler, which under a throttled/restricted tier can be too backlogged to
@@ -484,7 +378,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
       })
       if (!is.null(persisted)) {
         trained_model <- persisted$classifier
-        spec <- list(fn = spec$fn, output = "REGRESSION", score = "classification", transform = "none")
+        spec <- list(output = "REGRESSION", score = spec$score, transform = "none")
         asset_id <- persisted$asset_id
       }
     }
@@ -503,7 +397,16 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
       reducer = ee$Reducer$mean()$`repeat`(64L),
       selectors = emb_cols
     )$getInfo()
+    # Alpha Earth embeddings are unit-length, so a dot product between two of them is
+    # the cosine of the angle between them. The mean of unit vectors is not itself
+    # unit-length, though: its norm falls as the presences spread out, which would
+    # scale every score for that species by an arbitrary constant. Normalising the
+    # centroid makes the score a genuine cosine on [-1, 1] and comparable between
+    # species. Within one species this is a constant rescale, so it leaves the
+    # ranking, and therefore AUC and TSS, unchanged.
     weights <- as.numeric(res$mean)
+    nrm     <- sqrt(sum(weights^2))
+    if (is.finite(nrm) && nrm > 0) weights <- weights / nrm
     
     return(list(
       weights       = weights,
@@ -517,7 +420,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
 #'
 #' @param model_res Result from train_gee_model
 #' @param img Alpha Earth mosaic
-#' @keywords internal
+#' @noRd
 predict_gee_map <- function(model_res, img) {
   ee <- reticulate::import("ee")
   emb_cols <- sprintf("A%02d", 0:63)
@@ -552,7 +455,7 @@ predict_gee_map <- function(model_res, img) {
 #'
 #' @param fc GEE FeatureCollection with embeddings
 #' @param models_list List of model results from AlphaSDM
-#' @keywords internal
+#' @noRd
 predict_all_models_gee <- function(fc, models_list) {
   ee <- reticulate::import("ee")
   emb_cols <- sprintf("A%02d", 0:63)
@@ -610,7 +513,7 @@ predict_all_models_gee <- function(fc, models_list) {
 #' extrapolation that k-means clustering of coordinates produces (k-means makes each
 #' fold one geographic chunk, the most pessimistic spatial CV). Falls back to k-means
 #' if `blockCV`/`sf` are unavailable or fail.
-#' @keywords internal
+#' @noRd
 assign_cv_folds <- function(df, k, method = c("block", "kmeans", "random"), block_size = NULL) {
   method <- match.arg(method)
   if (method == "random") {
@@ -633,7 +536,7 @@ assign_cv_folds <- function(df, k, method = c("block", "kmeans", "random"), bloc
 }
 
 #' blockCV spatial-block fold assignment
-#' @keywords internal
+#' @noRd
 blockcv_folds <- function(df, k, block_size = NULL) {
   sfp <- sf::st_as_sf(df, coords = c("longitude", "latitude"), crs = 4326)
   ctr <- sf::st_coordinates(sf::st_centroid(sf::st_union(sfp)))
@@ -676,7 +579,7 @@ blockcv_folds <- function(df, k, block_size = NULL) {
 #' @param max_tile_px Tile edge length in pixels (request-size budget).
 #' @param tries     Per-tile download retries (exponential backoff).
 #' @return \code{dsn}; writes the GeoTIFF as a side effect.
-#' @keywords internal
+#' @noRd
 export_image_tiled <- function(image, region, scale, dsn,
                                nodata = -9999, max_tile_px = 2048L, tries = 4L) {
   ee <- reticulate::import("ee")

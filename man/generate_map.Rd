@@ -55,8 +55,8 @@ or a path to a vector file readable by [sf::st_read()].}
 \item{count}{Number of background points to generate for presence-only data.}
 
 \item{bg_ratio}{Optional absence:presence ratio for the balanced background pool
-(rf/gbt plus `BALANCED_BG_CLASSIFIERS`, currently knn). Overrides `balance_trees`
-when set.}
+(the methods whose registry entry declares `pool = "balanced"`). Overrides
+`balance_trees` when set.}
 
 \item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
 balanced 1:1 background while svm/maxent use the full background; `FALSE` gives

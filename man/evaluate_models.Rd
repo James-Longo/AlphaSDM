@@ -56,8 +56,8 @@ and a `present` column (1 = presence; include 0 rows to supply real absences).}
 \item{count}{Number of background points to generate for presence-only data.}
 
 \item{bg_ratio}{Optional absence:presence ratio; downsamples the balanced background
-pool (rf/gbt plus `BALANCED_BG_CLASSIFIERS`, currently knn) to `bg_ratio * n_presence`.
-Overrides `balance_trees` when set.}
+pool (the methods whose registry entry declares `pool = "balanced"`) to
+`bg_ratio * n_presence`. Overrides `balance_trees` when set.}
 
 \item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
 balanced 1:1 background while svm/maxent use the full background; set `FALSE`

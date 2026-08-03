@@ -6,7 +6,7 @@
 #'
 #' Every override is conditional on the corresponding argument still holding its
 #' default, so an explicit value from the caller always wins.
-#' @keywords internal
+#' @noRd
 build_method_params <- function(methods, n_trees, min_leaf_population, bag_fraction,
                                 shrinkage, max_nodes, variables_per_split,
                                 svm_type, svm_kernel, svm_cost, svm_gamma,
@@ -59,15 +59,15 @@ build_method_params <- function(methods, n_trees, min_leaf_population, bag_fract
 #' partly correlated and averaging them is worth more than averaging four variations
 #' on one idea. The lighter methods (similarity, knn, cart, mindist) stay available
 #' via `methods=`.
-#' @keywords internal
+#' @noRd
 DEFAULT_METHODS <- c("svm", "rf", "gbt", "maxent")
 
 #' Internal Unified GEE Training Pipeline
-#' @keywords internal
+#' @noRd
 fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, training_params, count = NULL,
                            bg_ratio = NULL, persist_classifier = TRUE, project = NULL) {
   # persist_classifier defaults TRUE: the package decides internally which classifiers
-  # actually persist (only PERSISTABLE_CLASSIFIERS = rf/cart; svm/gbt/maxent ignore it),
+  # actually persist (the registry's `persistable` field; svm/gbt/maxent ignore it),
   # so callers never reason about it. Persisting a whole-region map's tree model to an
   # asset once lets every export tile apply a *stored* forest instead of retraining it
   # server-side per tile, the single biggest export speedup under a throttled tier.
@@ -147,16 +147,12 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
   models <- list()
   for (m in methods) {
     sdm_info(sprintf("Fitting %s ...", toupper(m)), indent = 1L)
-    fc_for_method <- if (m == "similarity") {
-      pres_sampled
-    } else if (m %in% c("rf", "gbt", BALANCED_BG_CLASSIFIERS)) {
-      # Trees take the balanced pool because a skewed pool lets them minimise loss by
-      # predicting the majority class; vote-fraction classifiers need it because they
-      # read prevalence straight off the training pool. See BALANCED_BG_CLASSIFIERS.
-      pres_sampled$merge(bg_balanced)
-    } else {
-      sampled_fc
-    }
+    # Which pool a method trains on is a property of the method, declared in the
+    # registry. See method_pool().
+    fc_for_method <- switch(method_pool(m),
+      presence = pres_sampled,
+      balanced = pres_sampled$merge(bg_balanced),
+      sampled_fc)
     models[[m]]   <- train_gee_model(fc_for_method, m, params = training_params[[m]],
                                      persist = persist_classifier, project = project)
     # Deliberately no post-fit classify probe: map export and scoring both classify
@@ -181,7 +177,7 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
 }
 
 #' Delete temporary classifier assets created by persist_classifier
-#' @keywords internal
+#' @noRd
 cleanup_classifier_assets <- function(train_res) {
   assets <- train_res$metadata$classifier_assets
   if (length(assets) > 0) for (a in assets) ee_delete_asset_quietly(a)
@@ -207,8 +203,8 @@ cleanup_classifier_assets <- function(train_res) {
 #' @param aoi_year Year of the Alpha Earth mosaic to sample (default 2023).
 #' @param count Number of background points to generate for presence-only data.
 #' @param bg_ratio Optional absence:presence ratio for the balanced background pool
-#'   (rf/gbt plus `BALANCED_BG_CLASSIFIERS`, currently knn). Overrides `balance_trees`
-#'   when set.
+#'   (the methods whose registry entry declares `pool = "balanced"`). Overrides
+#'   `balance_trees` when set.
 #' @param balance_trees Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
 #'   balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
 #'   the trees all background points.
@@ -337,13 +333,40 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   return(final_results)
 }
 
+#' Score a pre-sampled embedding FeatureCollection
+#'
+#' Cross-validation scores the same validation background in every fold, and only
+#' the classifier changes between folds. Sampling those embeddings once and then
+#' classifying the stored collection per fold turns `cv_folds` full 64-band
+#' sampleRegions passes into one. Rows are matched back by the 0-based `row_idx`
+#' carried through Earth Engine.
+#' @noRd
+score_sampled_fc <- function(emb_fc, models, methods, n_rows, async = FALSE, project = NULL) {
+  pred_cols <- paste0("pred_", methods)
+  out <- as.data.frame(matrix(NA_real_, nrow = n_rows, ncol = length(methods)))
+  names(out) <- pred_cols
+
+  scored <- predict_all_models_gee(emb_fc, models[methods])$select(as.list(c("row_idx", pred_cols)))
+  feats  <- if (isTRUE(async)) ee_table_to_info_async(scored, project)$features else read_fc_paged(scored)$features
+
+  for (f in feats) {
+    ridx <- suppressWarnings(as.integer(f$properties[["row_idx"]]))
+    if (length(ridx) != 1L || is.na(ridx) || ridx < 0L || ridx >= n_rows) next
+    for (m in methods) {
+      v <- f$properties[[paste0("pred_", m)]]
+      if (!is.null(v)) out[ridx + 1L, paste0("pred_", m)] <- as.numeric(v)
+    }
+  }
+  out
+}
+
 #' Internal: score a coordinate data frame against trained models (FC-first, server-side)
 #'
 #' Samples the embeddings at the eval coordinates into a FeatureCollection, then classifies
 #' that FC with each trained model. Classifying a finite point set this way is light and
 #' scales to high-abundance species, unlike classifying the whole embedding image and
 #' sampleRegions-ing it, whose per-pixel graph runs GEE out of memory for large models.
-#' @keywords internal
+#' @noRd
 predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year,
                                     async = FALSE, project = NULL, chunk_size = 4000L) {
   ee <- reticulate::import("ee")
@@ -422,8 +445,8 @@ predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year
 #' @param aoi_year Year of the Alpha Earth mosaic to sample (default 2023).
 #' @param count Number of background points to generate for presence-only data.
 #' @param bg_ratio Optional absence:presence ratio; downsamples the balanced background
-#'   pool (rf/gbt plus `BALANCED_BG_CLASSIFIERS`, currently knn) to `bg_ratio * n_presence`.
-#'   Overrides `balance_trees` when set.
+#'   pool (the methods whose registry entry declares `pool = "balanced"`) to
+#'   `bg_ratio * n_presence`. Overrides `balance_trees` when set.
 #' @param balance_trees Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
 #'   balanced 1:1 background while svm/maxent use the full background; set `FALSE`
 #'   to train the trees on all background points too.
@@ -544,6 +567,22 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
                  year      = aoi_year)
     }))
 
+    # The validation background is identical in every fold, so sample its embeddings
+    # once and reuse the materialised collection. Falls back to per-fold sampling if
+    # the batch scheduler is unavailable, which it can be on a throttled tier.
+    val_bg_df$row_idx <- seq_len(nrow(val_bg_df)) - 1L
+    bg_emb <- get_embeddings_at_fc(
+      upload_points_to_gee(val_bg_df[, c("longitude", "latitude", "year", "row_idx")]),
+      scale, properties = c("year", "row_idx"), geometries = TRUE,
+      years = list(as.integer(aoi_year)))
+    bg_mat <- tryCatch(ee_materialize_fc_async(bg_emb, project = gee_project, max_minutes = 20),
+                       error = function(e) {
+                         sdm_warn(sprintf("Could not cache the validation background (%s); sampling it per fold.",
+                                          conditionMessage(e)), indent = 1L)
+                         NULL
+                       })
+    if (!is.null(bg_mat)) on.exit(ee_delete_asset_quietly(bg_mat$asset_id), add = TRUE)
+
     cv_fold_aucs <- matrix(NA_real_, nrow = cv_folds, ncol = length(methods),
                            dimnames = list(NULL, methods))
 
@@ -555,7 +594,11 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
 
       res_k        <- fit_gee_models(train_k, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
       pres_scored  <- predict_scores_internal(test_k,    res_k$models, methods, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
-      bg_scored    <- predict_scores_internal(val_bg_df, res_k$models, methods, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
+      bg_scored    <- if (!is.null(bg_mat)) {
+        score_sampled_fc(bg_mat$fc, res_k$models, methods, nrow(val_bg_df), async = async, project = gee_project)
+      } else {
+        predict_scores_internal(val_bg_df, res_k$models, methods, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
+      }
       cleanup_classifier_assets(res_k)   # per-fold temp classifier assets
 
       na_pres_cv <- is.na(pres_scored[[paste0("pred_", methods[1])]])

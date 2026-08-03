@@ -1,7 +1,7 @@
 # ---- Internal Helpers ----
 
 #' Read saved GEE project ID from AlphaSDM config
-#' @keywords internal
+#' @noRd
 .read_saved_project <- function() {
     f <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json")
     if (!file.exists(f)) return(NULL)
@@ -9,7 +9,7 @@
 }
 
 #' Save GEE project ID to AlphaSDM config
-#' @keywords internal
+#' @noRd
 .save_project <- function(project) {
     dir <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM")
     dir.create(dir, showWarnings = FALSE, recursive = TRUE)
@@ -18,13 +18,13 @@
 }
 
 #' Path to the live GEE credentials file (the one the ee client reads)
-#' @keywords internal
+#' @noRd
 .gee_live_cred_path <- function() {
     file.path(Sys.getenv("HOME"), ".config", "earthengine", "credentials")
 }
 
 #' Check if GEE credentials exist on disk
-#' @keywords internal
+#' @noRd
 .gee_credentials_exist <- function() {
     file.exists(.gee_live_cred_path())
 }
@@ -40,7 +40,7 @@
 #' start of every session, so a one-time authentication persists.
 #'
 #' Returns the store directory (NULL if the feature is not enabled).
-#' @keywords internal
+#' @noRd
 .gee_cred_store <- function() {
     d <- Sys.getenv("ALPHASDM_GEE_CRED_STORE", unset = "")
     if (!nzchar(d)) return(NULL)
@@ -48,7 +48,7 @@
 }
 
 #' Copy the live credentials into the durable store (after a successful auth)
-#' @keywords internal
+#' @noRd
 .gee_backup_credentials <- function() {
     store <- .gee_cred_store(); if (is.null(store)) return(invisible(FALSE))
     live <- .gee_live_cred_path(); if (!file.exists(live)) return(invisible(FALSE))
@@ -64,7 +64,7 @@
 #' Runs at session start: if the live credentials are missing but a durable copy
 #' exists, copy it into place (and the saved project id) so the ee client finds
 #' a working token without re-authenticating. No-op when the store is unset or empty.
-#' @keywords internal
+#' @noRd
 .gee_restore_credentials <- function() {
     store <- .gee_cred_store(); if (is.null(store)) return(invisible(FALSE))
     src <- file.path(store, "credentials"); if (!file.exists(src)) return(invisible(FALSE))
@@ -86,7 +86,7 @@
 #' is to monkey-patch _IssueAssetDeprecationWarning to a no-op before Initialize
 #' runs. These are server-side catalog notices about deprecated GEE assets that
 #' are entirely irrelevant to AlphaSDM's embedding pipeline.
-#' @keywords internal
+#' @noRd
 .suppress_gee_deprecation_warnings <- function() {
     tryCatch(
         reticulate::py_run_string(paste0(
@@ -108,7 +108,7 @@
 #' Cheap out-of-process probe: runs `python -c "find_spec('ee')"` and checks the
 #' exit code. Does NOT import via reticulate (which would lock the session to
 #' that interpreter), so it is safe to call against several candidates.
-#' @keywords internal
+#' @noRd
 .py_has_ee <- function(py) {
     if (is.null(py) || !nzchar(py) || !file.exists(py)) return(FALSE)
     code <- "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('ee') else 1)"
@@ -127,7 +127,7 @@
 #' reticulate is already bound to, EARTHENGINE_PYTHON / RETICULATE_PYTHON, the
 #' active conda env, and reticulate's discovered default. Returns the path of
 #' the first match, or NULL if none has earthengine-api.
-#' @keywords internal
+#' @noRd
 .find_ee_python <- function() {
     # Quiet wrapper: reticulate's config probes emit an alarming
     # "Unable to find conda binary" message on systems without conda even when
@@ -164,7 +164,7 @@
 #'
 #' Returns "user account (OAuth)" for the normal personal-Google-account flow,
 #' "service account" for a key file, or NA if no credentials are on disk.
-#' @keywords internal
+#' @noRd
 .gee_auth_type <- function() {
     f <- file.path(Sys.getenv("HOME"), ".config", "earthengine", "credentials")
     if (!file.exists(f)) return(NA_character_)
@@ -183,7 +183,7 @@
 #' requires a display server (X11 or Wayland); a bare SSH shell, container, or
 #' HPC node has neither, so localhost would hang. This lets setup_gee() pick a
 #' working flow automatically instead of silently stalling.
-#' @keywords internal
+#' @noRd
 .gee_is_headless <- function() {
     sysname <- Sys.info()[["sysname"]]
     if (identical(sysname, "Windows") || identical(sysname, "Darwin")) return(FALSE)
@@ -197,7 +197,7 @@
 #' setup_gee() short-circuits and never prompts. Any failure (missing/expired
 #' credentials, refresh error, bad project) returns FALSE so the caller can
 #' fall through to interactive setup.
-#' @keywords internal
+#' @noRd
 .gee_try_init <- function(project) {
     .suppress_gee_deprecation_warnings()
     # rgee frequently re-signals real init failures as warnings, so during this
@@ -506,7 +506,7 @@ gee_status <- function(check_live = TRUE) {
 #' if credentials exist, or triggers setup_gee() if interactive.
 #'
 #' @param project Optional project ID override.
-#' @keywords internal
+#' @noRd
 ensure_gee_authenticated <- function(project = NULL) {
     # Session cache - already initialized this R session
     if (isTRUE(getOption("AlphaSDM.gee_initialized"))) {
