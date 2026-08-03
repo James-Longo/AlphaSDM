@@ -19,15 +19,15 @@ imbalanced pool the score is pinned near the global prevalence and quantized to
 multiples of 1/k, which collapses the surface.
 }
 \details{
-Worked example (an imbalanced dataset, 130 presences / 20,969 absences, k = 5):
-expected positive neighbours = 5 x 0.0062 = 0.03, so the map came back with two
-distinct values (0.0 on 99.98% of cells, 0.2 on 164) and AUC-ROC 0.607 driven
-almost entirely by ties. Training the same classifier on the balanced 1:1 pool
+To see how far this goes, take a prevalence near 0.6% and k = 5: the expected
+number of positive neighbours is 0.03, so almost every cell votes 0 and the few
+that do not vote 0.2. The surface collapses to two values and AUC-ROC is driven
+almost entirely by ties. Training the same classifier on a balanced 1:1 pool
 restores a usable gradient.
 
 Not included: `cart` and `svm` emit a fitted score rather than a neighbourhood
 frequency, and `maxent` models background contrast by construction. Adding them
-here would change published benchmark numbers and should be a deliberate,
-separately-benchmarked decision.
+would change the scores those methods currently produce, so it should be a
+deliberate and separately validated decision.
 }
 \keyword{internal}

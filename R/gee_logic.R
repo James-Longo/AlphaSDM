@@ -256,16 +256,16 @@ GEE_CLASSIFIER_METHODS <- list(
 #' imbalanced pool the score is pinned near the global prevalence and quantized to
 #' multiples of 1/k, which collapses the surface.
 #'
-#' Worked example (an imbalanced dataset, 130 presences / 20,969 absences, k = 5):
-#' expected positive neighbours = 5 x 0.0062 = 0.03, so the map came back with two
-#' distinct values (0.0 on 99.98% of cells, 0.2 on 164) and AUC-ROC 0.607 driven
-#' almost entirely by ties. Training the same classifier on the balanced 1:1 pool
+#' To see how far this goes, take a prevalence near 0.6% and k = 5: the expected
+#' number of positive neighbours is 0.03, so almost every cell votes 0 and the few
+#' that do not vote 0.2. The surface collapses to two values and AUC-ROC is driven
+#' almost entirely by ties. Training the same classifier on a balanced 1:1 pool
 #' restores a usable gradient.
 #'
 #' Not included: `cart` and `svm` emit a fitted score rather than a neighbourhood
 #' frequency, and `maxent` models background contrast by construction. Adding them
-#' here would change published benchmark numbers and should be a deliberate,
-#' separately-benchmarked decision.
+#' would change the scores those methods currently produce, so it should be a
+#' deliberate and separately validated decision.
 #' @keywords internal
 BALANCED_BG_CLASSIFIERS <- c("knn")
 
@@ -318,11 +318,11 @@ build_gee_clf_params <- function(method, params) {
     ),
     svm = {
       sp <- params[setdiff(names(params), tree_core)]
-      # Benchmarked defaults (FD, 5 taxa, spatial CV): an EPSILON_SVR with
-      # an RBF kernel (cost 10, gamma 0.05) is the robust general winner; it beats
-      # the old C_SVC/LINEAR default by ~0.05 AUC because regressing the 0/1 label
-      # yields a smoother, better-ranking suitability score. RBF is O(n^2); for very
-      # large training sets pass kernelType = "LINEAR" to scale O(n x d).
+      # Validated defaults: an EPSILON_SVR with an RBF kernel (cost 10, gamma 0.05)
+      # is the robust general choice; it beats a C_SVC/LINEAR setup by roughly 0.05
+      # AUC under spatial cross-validation, because regressing the 0/1 label yields a
+      # smoother, better-ranking suitability score. RBF is O(n^2); for very large
+      # training sets pass kernelType = "LINEAR" to scale O(n x d).
       if (is.null(sp$svmType))    sp$svmType    <- "EPSILON_SVR"
       if (is.null(sp$kernelType)) sp$kernelType <- "RBF"
       if (is.null(sp$cost))       sp$cost       <- 10
@@ -433,14 +433,14 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
 
   LABEL_COL <- "label"
 
-  # 1. Label Encoding. Classification integer-encodes the class; REGRESSION keeps the
+  # Label Encoding. Classification integer-encodes the class; REGRESSION keeps the
   #    continuous target as-is (e.g. crop yield, a proportion); toInt() would destroy it.
   sampled_fc <- sampled_fc$map(function(f) {
     v <- ee$Number(f$get(class_property))
     f$set(LABEL_COL, if (isTRUE(regression)) v else v$toInt())
   })
 
-  # 2. Training
+  # Training
   if (is_classifier) {
     clf_factory <- ee$Classifier[[GEE_CLASSIFIER_METHODS[[method]]$fn]]
 
@@ -568,7 +568,7 @@ predict_all_models_gee <- function(fc, models_list) {
 
   scored_fc <- fc
 
-  # 1. Chain Classifiers
+  # Chain Classifiers
   for (m in classifiers) {
     model_res  <- models_list[[m]]
     spec       <- if (!is.null(model_res$spec)) model_res$spec else GEE_CLASSIFIER_METHODS[[model_res$method]]
@@ -588,7 +588,7 @@ predict_all_models_gee <- function(fc, models_list) {
     }
   }
 
-  # 2. Handle Reducers (Similarity)
+  # Handle Reducers (Similarity)
   if (length(reducers) > 0) {
     for (m in reducers) {
         model_res <- models_list[[m]]

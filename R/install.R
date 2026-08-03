@@ -255,7 +255,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         stop("The 'rgee' package is required. Install it with: install.packages('rgee')")
     }
 
-    # 1. Python environment.
+    # Python environment.
     #    FAST PATH: if any interpreter reticulate can reach already has
     #    earthengine-api, bind to it and skip installation entirely. This avoids
     #    the slow rgee::ee_install() rebuild, and, on machines where reticulate
@@ -295,7 +295,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         project <- .read_saved_project()
     }
 
-    # 2. Idempotency short-circuit: if we are NOT forcing and credentials on disk
+    # Idempotency short-circuit: if we are NOT forcing and credentials on disk
     #    already produce a live connection, we are done; never prompt again.
     #    This is what makes setup a genuine one-time action.
     #    First restore from the durable store (if configured) in case the live
@@ -319,7 +319,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         need_auth <- TRUE
     }
 
-    # 3. Authenticate with the personal Google account.
+    # Authenticate with the personal Google account.
     #    Default flow is auth_mode = "localhost": the browser opens, the user
     #    clicks Allow, and the token is captured automatically over a loopback
     #    port, with NO code to copy or paste, and the credentials are long-lived.
@@ -350,7 +350,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         .gee_backup_credentials()
     }
 
-    # 4. Get project ID (now that we are authenticated)
+    # Get project ID (now that we are authenticated)
     if ((is.null(project) || project == "") && interactive()) {
         project <- readline("[AlphaSDM] Enter your Earth Engine / Cloud Project ID: ")
     }
@@ -362,7 +362,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
     }
     project <- trimws(project)
 
-    # 5. Verify the connection works
+    # Verify the connection works
     sdm_section("Verifying GEE connection")
     tryCatch({
         rgee::ee_Initialize(project = project, drive = FALSE, gcs = FALSE, quiet = TRUE)
@@ -402,7 +402,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         stop("GEE initialization failed for project '", project, "'.\nError: ", msg, call. = FALSE)
     })
 
-    # 6. Persist project ID for future sessions
+    # Persist project ID for future sessions
     .save_project(project)
     .gee_backup_credentials()   # mirror creds + project id to the durable store, if configured
     options(AlphaSDM.gee_initialized = TRUE)

@@ -24,7 +24,7 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     bg_fc$randomColumn("__bgsel", 42L)$filter(ee$Filter$lt("__bgsel", frac))
   }
 
-  # 1. Upload + background generation (background stays on GEE if presence-only)
+  # Upload + background generation (background stays on GEE if presence-only)
   sdm_section("Uploading training data to Google Earth Engine")
   pb_up <- sdm_progress_start("Uploading and sampling")
 
@@ -82,7 +82,7 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
 
   sdm_progress_done(pb_up)
 
-  # 2. Train all models, forcing each classifier to evaluate immediately (chunked GEE training).
+  # Train all models, forcing each classifier to evaluate immediately (chunked GEE training).
   # GEE classifiers are lazy: clf$train() only builds a computation graph.
   # By calling getInfo() on each classifier right after training, we materialize them
   # one at a time; one getInfo() per model keeps each call within GEE's timeout.
@@ -203,9 +203,10 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  # Default ensemble: the strong, complementary tier validated across the
-  # benchmarks. Lighter models (similarity, knn, cart, mindist) remain available
-  # via `methods=` but trail by ~0.03-0.07 AUC, so they are not in the default.
+  # Default ensemble: the strong, complementary tier, chosen because it held up across
+  # taxa and regions under spatial cross-validation. Lighter models (similarity, knn,
+  # cart, mindist) remain available via `methods=` but trail by roughly 0.03-0.07 AUC,
+  # so they are not in the default.
   if (is.null(methods)) methods <- c("svm", "rf", "gbt", "maxent")
 
   # Balanced 1:1 tree background by default (set balance_trees = FALSE for full background;
@@ -213,7 +214,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   if (is.null(bg_ratio) && isTRUE(balance_trees)) bg_ratio <- 1
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-  # 1. Prepare AOI Geometry
+  # Prepare AOI Geometry
   aoi_geom <- NULL
   if (inherits(aoi, "python.builtin.object")) {
     aoi_geom <- aoi                                   # pre-built ee.Geometry
@@ -224,7 +225,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     aoi_geom <- rgee::sf_as_ee(aoi_sf)$geometry()
   }
 
-  # 2. Method-Specific Optimized Defaults
+  # Method-Specific Optimized Defaults
   base_params <- list(
     numberOfTrees = n_trees, 
     minLeafPopulation = min_leaf_population,
@@ -250,11 +251,11 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     method_params$rf$numberOfTrees <- 250L
   }
   # RF benefits from DEEP trees; the shared default maxNodes=6 / minLeaf=5 are near-stumps
-  # (benchmarked +0.02-0.05 AUC from unlimited depth). RF-specific so gbt/cart stay shallow.
+  # (worth +0.02-0.05 AUC from unlimited depth). RF-specific so gbt/cart stay shallow.
   if ("rf" %in% methods && max_nodes == 6L)            method_params$rf$maxNodes <- NULL
   if ("rf" %in% methods && min_leaf_population == 5L)  method_params$rf$minLeafPopulation <- 1L
 
-  # SVM tuning: benchmarked ε-SVR + RBF defaults (overridable per call)
+  # SVM tuning: validated epsilon-SVR + RBF defaults (overridable per call)
   if ("svm" %in% methods) {
     method_params$svm$svmType    <- svm_type
     method_params$svm$kernelType <- svm_kernel
@@ -278,11 +279,11 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   if ("knn" %in% methods && !is.null(knn_metric))
     method_params$knn$metric <- as.character(knn_metric)
 
-  # 3. Unified Training
+  # Unified Training
   train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
   on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp classifier assets on exit
 
-  # 4. Map Generation
+  # Map Generation
   img_mosaic <- get_embedding_image(aoi_year, scale)
   final_results <- list(methods = methods, model_metadata = train_res$metadata)
   pb_map <- sdm_progress_start("Map generation", total = length(methods))
@@ -453,9 +454,10 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   ee <- reticulate::import("ee")
 
   if (is.null(aoi_year)) aoi_year <- 2023
-  # Default ensemble: the strong, complementary tier validated across the
-  # benchmarks. Lighter models (similarity, knn, cart, mindist) remain available
-  # via `methods=` but trail by ~0.03-0.07 AUC, so they are not in the default.
+  # Default ensemble: the strong, complementary tier, chosen because it held up across
+  # taxa and regions under spatial cross-validation. Lighter models (similarity, knn,
+  # cart, mindist) remain available via `methods=` but trail by roughly 0.03-0.07 AUC,
+  # so they are not in the default.
   if (is.null(methods)) methods <- c("svm", "rf", "gbt", "maxent")
 
   # Tree models (rf/gbt) train on a balanced 1:1 background by default, the main lever for
@@ -481,9 +483,9 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
     maxNodes = max_nodes, variablesPerSplit = variables_per_split
   )
   method_params <- setNames(lapply(methods, function(m) base_params), methods)
-  # Validated defaults: gbt 150 trees @ shrinkage 0.05, maxNodes 6;
-  # rf 500 deep trees, variablesPerSplit 8. Each override only fires when the corresponding
-  # global argument is still at its default, so explicit user values always win.
+  # Validated defaults: gbt 150 trees @ shrinkage 0.05, maxNodes 6; rf 500 deep trees,
+  # variablesPerSplit 8. Each override only fires when the corresponding global argument
+  # is still at its default, so explicit user values always win.
   if ("gbt" %in% methods && n_trees == 100L)    method_params$gbt$numberOfTrees <- 150L
   if ("gbt" %in% methods && shrinkage == 0.005) method_params$gbt$shrinkage     <- 0.05
   if ("rf"  %in% methods && n_trees == 100L)    method_params$rf$numberOfTrees  <- 500L

@@ -71,13 +71,13 @@ calculate_classifier_metrics <- function(scores_pos, scores_neg) {
     ))
   }
   
-  # 1. AUC-ROC (Mann-Whitney U)
+  # AUC-ROC (Mann-Whitney U)
   all_labels <- c(rep(1, n_pos), rep(0, n_neg))
   ranks <- rank(scores_all, ties.method = "average")
   pos_ranks <- ranks[1:n_pos]
   auc_roc <- (sum(pos_ranks) - (n_pos * (n_pos + 1) / 2)) / (n_pos * n_neg)
 
-  # 2. AUC-PRG (Precision-Recall Gain)
+  # AUC-PRG (Precision-Recall Gain)
   ord <- order(scores_all, decreasing = TRUE)
   sorted_labels <- all_labels[ord]
   sorted_scores <- scores_all[ord]
@@ -106,7 +106,7 @@ calculate_classifier_metrics <- function(scores_pos, scores_neg) {
     auc_prg <- 0.0
   }
   
-  # 3. TSS and Balanced Accuracy
+  # TSS and Balanced Accuracy
   # Tie-safe: a valid threshold groups ALL points sharing a score together, so
   # only evaluate sens/spec at boundaries where the next (descending) score
   # differs. Without this, tied/constant scores spuriously hit TSS=1 because the
@@ -117,7 +117,7 @@ calculate_classifier_metrics <- function(scores_pos, scores_neg) {
   tss <- max(sens + spec - 1)
   ba <- max((sens + spec) / 2)
   
-  # 4. Pearson Correlation (COR). A degenerate model can return one constant score
+  # Pearson Correlation (COR). A degenerate model can return one constant score
   # for every point; cor() is undefined there (zero variance) and warns, so report
   # the no-association value directly.
   cor_val <- if (stats::sd(scores_all) < 1e-12) 0 else

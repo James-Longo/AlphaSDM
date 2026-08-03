@@ -24,7 +24,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         stop("Input 'data' must be a data frame.")
     }
 
-    # 1. Coordinate Validation
+    # Coordinate Validation
     if (length(coords) != 2) {
         stop("'coords' must be a character vector of length 2: c(longitude_col, latitude_col)")
     }
@@ -39,22 +39,22 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         sdm_info(sprintf("Validating coordinates: %s, %s", coords[1], coords[2]), indent = 1L)
     }
 
-    # 2. Year Validation
+    # Year Validation
     if (!year %in% names(data)) {
         stop(paste("Year column not found:", year))
     }
 
-    # 3. Presence Validation
+    # Presence Validation
     if (!is.null(presence) && !presence %in% names(data)) {
         stop(paste("Presence column not found:", presence))
     }
 
-    # 4. Species Validation
+    # Species Validation
     if (!is.null(species) && !species %in% names(data)) {
         stop(paste("Species column not found:", species))
     }
 
-    # 5. Build the output data frame with only required columns
+    # Build the output data frame with only required columns
     result <- data.frame(
         longitude = data[[coords[1]]],
         latitude = data[[coords[2]]],
@@ -77,7 +77,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         }
     }
 
-    # 6. Process Year (handle dates)
+    # Process Year (handle dates)
     year_data <- data[[year]]
     if (inherits(year_data, c("Date", "POSIXt"))) {
         result$year <- as.numeric(format(year_data, "%Y"))
@@ -115,7 +115,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         sdm_info(sprintf("Standardizing time/dates using column: %s", year), indent = 1L)
     }
 
-    # 7. Add presence column (lowercase "present")
+    # Add presence column (lowercase "present")
     if (!is.null(presence)) {
         result$present <- as.numeric(data[[presence]])
     } else {
@@ -124,12 +124,12 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         result$present <- 1
     }
 
-    # 8. Add species column (lowercase "species")
+    # Add species column (lowercase "species")
     if (!is.null(species)) {
         result$species <- as.character(data[[species]])
     }
 
-    # 9. Filter to years with Alpha Earth data (2017+)
+    # Filter to years with Alpha Earth data (2017+)
     if (show_info) {
         sdm_info("Filtering for Alpha Earth coverage (2017-2025)", indent = 1L)
         .alphasdm_env$standardization_info_printed <- TRUE
@@ -144,7 +144,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
                          if ((rows_before - rows_after) == 1) "" else "s"))
     }
 
-    # 10. Remove rows with NA values
+    # Remove rows with NA values
     rows_before <- nrow(result)
     result <- na.omit(result)
     rows_after <- nrow(result)
@@ -155,7 +155,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
                          if ((rows_before - rows_after) == 1) "" else "s"))
     }
 
-    # 11. Remove duplicate rows (Prioritize presence: if coords/year collide, take max(present))
+    # Remove duplicate rows (Prioritize presence: if coords/year collide, take max(present))
     #
     # The presence-first sort is also the pipeline's row-order contract: GEE's libsvm
     # assigns its positive class from the FIRST label it sees in the training data, and
