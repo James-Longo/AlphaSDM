@@ -18,12 +18,21 @@ is_gee_timeout <- function(e) {
 #' @noRd
 async_asset_root <- function(project = NULL) {
   ee <- reticulate::import("ee")
+  if (is.null(project) || !nzchar(project)) project <- .read_saved_project()
   if (!is.null(project) && nzchar(project)) return(sprintf("projects/%s/assets", project))
+
+  # Last resort. On a Cloud project ee.data.getAssetRoots() returns the project's
+  # assets rather than its roots, so the first entry is typically an image or table,
+  # not a folder. Writing under it fails with "is neither a folder nor an image
+  # collection", so only accept an entry that really is a folder.
   roots <- try(ee$data$getAssetRoots(), silent = TRUE)
-  if (!inherits(roots, "try-error") && length(roots) > 0 && !is.null(roots[[1]][["id"]])) {
-    return(roots[[1]][["id"]])
+  if (!inherits(roots, "try-error")) {
+    for (r in roots) {
+      if (identical(r[["type"]], "FOLDER") && !is.null(r[["id"]])) return(r[["id"]])
+    }
   }
-  stop("Async export needs a writable GEE asset folder. Pass gee_project = '<your-project>'.")
+  stop("Async export needs a writable GEE asset folder. Pass gee_project = '<your-project>' ",
+       "or run setup_gee() so the project id is saved.", call. = FALSE)
 }
 
 #' Read a FeatureCollection in pages via computeFeatures (no 5000-feature cap)
