@@ -189,6 +189,22 @@ results <- generate_map(
 
 ---
 
+## Citation
+
+If AlphaSDM contributes to work you publish, please cite it. From R:
+
+```r
+citation("AlphaSDM")
+```
+
+The repository also carries a [`CITATION.cff`](CITATION.cff), so GitHub's
+**Cite this repository** button produces BibTeX and APA entries directly.
+
 ## License and Credits
+
+AlphaSDM is released under the [MIT License](LICENSE.md): you are free to use,
+modify and redistribute it, including in commercial work, provided the copyright
+notice is retained. If you use it in research, a citation is asked for as an
+academic courtesy rather than a licence condition.
 
 This package uses the [**Alpha Earth Embedding**](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL) dataset provided by Google.

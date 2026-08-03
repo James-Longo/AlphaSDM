@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use AlphaSDM in your research, please cite it as below."
+title: "AlphaSDM: Species Distribution Modeling using Alpha Earth Embeddings"
+abstract: >-
+  An R package for species distribution modeling at up to 10 m resolution using
+  Google's Alpha Earth satellite embeddings. Data sampling, model training and
+  spatial prediction all run server-side on Google Earth Engine.
+type: software
+authors:
+  - given-names: James
+    family-names: Longo
+    email: james.longo.birds@gmail.com
+    affiliation: University of Maine
+version: 0.1.0
+license: MIT
+repository-code: "https://github.com/James-Longo/AlphaSDM"
+url: "https://github.com/James-Longo/AlphaSDM"
+keywords:
+  - species distribution modeling
+  - google earth engine
+  - satellite embeddings
+  - remote sensing
+  - ecology

@@ -9,6 +9,7 @@
 ^AlphaSDM\.Rcheck
 ^\.\.Rcheck
 ^LICENSE\.md$
+^CITATION\.cff$
 \.Rhistory
 \.RData
 \.Rproj\.user
