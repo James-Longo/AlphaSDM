@@ -23,7 +23,7 @@ retry_curl_download <- function(expr, max_retries = 5, initial_delay = 1) {
   }
 }
 
-get_embedding_image <- function(year, scale = 10) {
+get_embedding_image <- function(year) {
   ee <- reticulate::import("ee")
   asset_path <- "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
   emb_cols <- sprintf("A%02d", 0:63)
@@ -56,7 +56,7 @@ get_embeddings_at_fc_raw <- function(fc, scale, properties = NULL, geometries = 
   sampled_fcs <- list()
   for (yr in years) {
     yr_fc <- fc$filter(ee$Filter$eq("year", as.integer(yr)))
-    yr_img <- get_embedding_image(yr, scale)
+    yr_img <- get_embedding_image(yr)
 
     sampled <- yr_img$sampleRegions(
       collection = yr_fc,
@@ -197,9 +197,8 @@ upload_points_to_gee <- function(df, chunk_size = 5000L) {
 #' for land validation; it never downloads background coordinates to R.
 #' Returns a GEE FeatureCollection (geometry + year + present=0).
 #' @keywords internal
-generate_background_fc_gee <- function(bbox, aoi_year, count, aoi_geom = NULL) {
-  ee     <- reticulate::import("ee")
-  region <- if (!is.null(aoi_geom)) aoi_geom else ee$Geometry$Rectangle(bbox)
+generate_background_fc_gee <- function(aoi_year, count, region) {
+  ee <- reticulate::import("ee")
 
   sdm_info(sprintf("Target: %d background points (server-side, no pre-check)", count), indent = 1L)
 
@@ -398,10 +397,9 @@ override_output_mode <- function(method, spec, output) {
   spec
 }
 
-#' GEE Reducer Methods Registry
-GEE_REDUCER_METHODS <- list(
-  similarity = list(reducer = "mean", encoding = "presence")
-)
+#' Methods backed by a reducer rather than an `ee.Classifier`
+#' @keywords internal
+GEE_REDUCER_METHODS <- "similarity"
 
 #' Train GEE Model
 #'
@@ -425,7 +423,7 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
   emb_cols <- sprintf("A%02d", 0:63)
 
   is_classifier <- method %in% names(GEE_CLASSIFIER_METHODS)
-  is_reducer <- method %in% names(GEE_REDUCER_METHODS)
+  is_reducer <- method %in% GEE_REDUCER_METHODS
 
   if (!is_classifier && !is_reducer) stop("Unsupported method: ", method)
 
@@ -509,7 +507,6 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
     
     return(list(
       weights       = weights,
-      intercept     = 0.0,
       is_classifier = FALSE,
       method        = method
     ))

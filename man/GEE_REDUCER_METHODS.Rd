@@ -3,14 +3,14 @@
 \docType{data}
 \name{GEE_REDUCER_METHODS}
 \alias{GEE_REDUCER_METHODS}
-\title{GEE Reducer Methods Registry}
+\title{Methods backed by a reducer rather than an `ee.Classifier`}
 \format{
-An object of class \code{list} of length 1.
+An object of class \code{character} of length 1.
 }
 \usage{
 GEE_REDUCER_METHODS
 }
 \description{
-GEE Reducer Methods Registry
+Methods backed by a reducer rather than an `ee.Classifier`
 }
-\keyword{datasets}
+\keyword{internal}

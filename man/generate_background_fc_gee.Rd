@@ -4,7 +4,7 @@
 \alias{generate_background_fc_gee}
 \title{Generate Background Points Server-Side}
 \usage{
-generate_background_fc_gee(bbox, aoi_year, count, aoi_geom = NULL)
+generate_background_fc_gee(aoi_year, count, region)
 }
 \description{
 Generates pseudo-absence points entirely on GEE. Samples only band A00

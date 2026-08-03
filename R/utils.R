@@ -67,20 +67,10 @@ sdm_warn <- function(msg, indent = 0L) {
 
 #' Start a named progress tracker and return a handle
 #' @param name Label for this operation.
-#' @param total Total number of steps (integer).
-#' @return A list handle used with \code{sdm_progress_update} and \code{sdm_progress_done}.
+#' @return A list handle used with \code{sdm_progress_done}.
 #' @keywords internal
-sdm_progress_start <- function(name, total = NULL) {
-  list(name = name, n = 0L, total = total, start = proc.time()[["elapsed"]])
-}
-
-#' Advance a progress tracker by one step (prints nothing; step noted in handle)
-#' @param handle Handle returned by \code{sdm_progress_start}.
-#' @keywords internal
-sdm_progress_update <- function(handle) {
-  if (is.null(handle)) return(invisible(handle))
-  handle$n <- handle$n + 1L
-  invisible(handle)
+sdm_progress_start <- function(name) {
+  list(name = name, start = proc.time()[["elapsed"]])
 }
 
 #' Finish a progress tracker and print elapsed time
@@ -91,4 +81,24 @@ sdm_progress_done <- function(handle) {
   elapsed <- proc.time()[["elapsed"]] - handle$start
   .sdm_msg(sprintf("  \u2714 %s complete [%.1fs]", handle$name, elapsed))
   invisible(NULL)
+}
+
+#' Reset the per-run console state
+#'
+#' `format_data()` prints its section header only once per run. Registering this
+#' with `on.exit()` means the state is cleared even when a run aborts, which would
+#' otherwise leave the next `format_data()` in the session silently header-less.
+#' @keywords internal
+reset_sdm_run_state <- function() {
+  .alphasdm_env$standardization_active <- FALSE
+  .alphasdm_env$standardization_info_printed <- FALSE
+  invisible(NULL)
+}
+
+#' Close out a run: elapsed-time line under a closing section header
+#' @keywords internal
+sdm_finish <- function(t_start, title) {
+  sdm_section(title)
+  sdm_done(sprintf("Total elapsed time [%.1fs]", proc.time()[["elapsed"]] - t_start))
+  .sdm_msg("")
 }

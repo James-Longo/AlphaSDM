@@ -65,7 +65,10 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
     sample_lat <- result$latitude[!is.na(result$latitude)][1]
     sample_lon <- result$longitude[!is.na(result$longitude)][1]
 
-    if (!is.null(sample_lat) && !is.null(sample_lon)) {
+    # `x[1]` on an empty vector yields NA, never NULL, so guard on NA: an all-NA
+    # coordinate column would otherwise reach the comparison below and error with
+    # "missing value where TRUE/FALSE needed".
+    if (!is.na(sample_lat) && !is.na(sample_lon)) {
         lat_in_range <- sample_lat >= -90 && sample_lat <= 90
         lon_in_range <- sample_lon >= -180 && sample_lon <= 180
 

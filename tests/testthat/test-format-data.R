@@ -85,3 +85,13 @@ test_that("a species column is carried through when requested", {
   out <- format_data(d, coords = c("lon", "lat"), year = "yr", presence = "occ", species = "sp")
   expect_true("species" %in% names(out))
 })
+
+test_that("an all-NA coordinate column is handled, not fatal", {
+  # x[1] on an empty vector is NA, so the swapped-coordinate guard has to test for
+  # NA rather than NULL or the comparison below it errors.
+  d <- data.frame(lon = c(NA_real_, NA_real_), lat = c(NA_real_, NA_real_),
+                  yr = c(2020, 2021), occ = c(1, 1))
+  expect_message(out <- format_data(d, coords = c("lon", "lat"), year = "yr", presence = "occ"),
+                 "missing \\(NA\\) values")
+  expect_equal(nrow(out), 0)
+})

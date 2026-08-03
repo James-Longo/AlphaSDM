@@ -8,7 +8,6 @@ predict_scores_internal(
   predict_df,
   models,
   methods,
-  img,
   scale,
   aoi_year,
   async = FALSE,

@@ -371,7 +371,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         msg <- conditionMessage(w)
         if (grepl("Billing is disabled", msg, ignore.case = TRUE)) {
             stop(sprintf(
-                "Billing is not enabled for project '%s'.\n",
+                "Billing is not enabled for project '%s'.\n%s%s%s",
                 project,
                 "Even for free-tier GEE usage, a billing account must be linked.\n",
                 "Enable it at: https://console.cloud.google.com/billing/linkedaccount?project=",

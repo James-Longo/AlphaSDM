@@ -110,13 +110,9 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
 
     # Background: server-side randomPoints; the computation graph stays small regardless
     # of n, avoiding the 10 MB payload limit from embedding re-upload.
-    lon_buf   <- max(0.1, (max(lons) - min(lons)) * 0.1)
-    lat_buf   <- max(0.1, (max(lats) - min(lats)) * 0.1)
-    bbox_flat <- c(min(lons)-lon_buf, min(lats)-lat_buf, max(lons)+lon_buf, max(lats)+lat_buf)
-
     n_bg <- min(n_pres, bg_count)
     sdm_info(sprintf("Sampling %d background points (server-side) ...", n_bg), indent = 1L)
-    bg_fc <- generate_background_fc_gee(bbox_flat, aoi_year, n_bg, aoi_geom = aoi_geom)
+    bg_fc <- generate_background_fc_gee(aoi_year, n_bg, aoi_geom)
 
     bg_props   <- c("year", "present")
     bg_sampled <- get_embeddings_at_fc(bg_fc, scale,
@@ -143,14 +139,11 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
 
   sdm_progress_done(pb_up)
 
-  # Train all models, forcing each classifier to evaluate immediately (chunked GEE training).
-  # GEE classifiers are lazy: clf$train() only builds a computation graph.
-  # By calling getInfo() on each classifier right after training, we materialize them
-  # one at a time; one getInfo() per model keeps each call within GEE's timeout.
-  # Similarity is already eager (reduceColumns$getInfo() fires inside train_gee_model).
+  # GEE classifiers are lazy: clf$train() only builds a computation graph, so this loop
+  # is cheap. similarity is the exception, being eager (see train_gee_model).
   sdm_section(sprintf("Training %d model%s on Google Earth Engine",
                       length(methods), if (length(methods) == 1) "" else "s"))
-  pb <- sdm_progress_start("Model training", total = length(methods))
+  pb <- sdm_progress_start("Model training")
   models <- list()
   for (m in methods) {
     sdm_info(sprintf("Fitting %s ...", toupper(m)), indent = 1L)
@@ -170,8 +163,6 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     # independently and surface a malformed classifier on their own, and under a
     # throttled GEE tier the extra synchronous round-trip is the first thing to time
     # out, discarding classifiers that had in fact trained successfully.
-
-    pb <- sdm_progress_update(pb)
   }
   sdm_progress_done(pb)
 
@@ -253,6 +244,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          gee_project = NULL) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)
+  on.exit(reset_sdm_run_state(), add = TRUE)
   t_total_start <- proc.time()[["elapsed"]]
 
   ee <- reticulate::import("ee")
@@ -274,6 +266,9 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   } else if (is.character(aoi) && file.exists(aoi)) {
     aoi_sf <- sf::st_read(aoi, quiet = TRUE)
     aoi_geom <- rgee::sf_as_ee(aoi_sf)$geometry()
+  } else {
+    stop("`aoi` must be an ee.Geometry, a list with lon/lat/radius, or a path to a ",
+         "readable vector file. Got: ", paste(class(aoi), collapse = "/"), call. = FALSE)
   }
 
   method_params <- build_method_params(
@@ -285,15 +280,14 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp classifier assets on exit
 
   # Map Generation
-  img_mosaic <- get_embedding_image(aoi_year, scale)
+  img_mosaic <- get_embedding_image(aoi_year)
   final_results <- list(methods = methods, model_metadata = train_res$metadata)
   want_ensemble <- isTRUE(ensemble) && length(methods) > 1L
-  pb_map <- sdm_progress_start("Map generation", total = length(methods) + as.integer(want_ensemble))
-  pred_imgs <- list()
+  pb_map <- sdm_progress_start("Map generation")
+  member_tifs <- character(0)
   for (m in methods) {
     sdm_info(sprintf("Exporting %s ...", toupper(m)), indent = 1L)
     pred_img <- predict_gee_map(train_res$models[[m]], img_mosaic)
-    pred_imgs <- c(pred_imgs, list(pred_img))   # unnamed: reticulate maps a named list to a dict
     tif_path <- file.path(output_dir, paste0(m, ".tif"))
     # Drive-free, water-robust export: tile getDownloadURL + local mosaic.
     tryCatch(
@@ -301,12 +295,12 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
       error = function(e) sdm_warn(sprintf("Export of %s failed: %s", m, conditionMessage(e)))
     )
     final_results[[paste0(m, "_map")]] <- tif_path
-    pb_map <- sdm_progress_update(pb_map)
+    member_tifs <- c(member_tifs, tif_path)
   }
 
-  # Ensemble map: the per-pixel mean of the member predictions, reduced server-side so
-  # the members are never downloaded just to be averaged. Equal weights, matching the
-  # ensemble evaluate_models() scores.
+  # Ensemble map: the per-pixel mean of the members. The member rasters have just been
+  # written to output_dir on an identical grid, so average them locally rather than
+  # asking Earth Engine to re-classify every pixel with every model a second time.
   #
   # The members are averaged on their own scales, and those scales do not agree.
   # rf/gbt/maxent/knn emit probabilities on [0, 1]; similarity is a dot product against
@@ -317,26 +311,28 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   # pull the mean around, and the result is not on a probability scale. Averaging
   # within one family (the default svm/rf/gbt/maxent tier) is the well-behaved case.
   if (want_ensemble) {
-    sdm_info("Exporting ENSEMBLE ...", indent = 1L)
-    ens_img  <- ee$ImageCollection(pred_imgs)$mean()$rename("similarity")
-    tif_path <- file.path(output_dir, "ensemble.tif")
-    tryCatch(
-      export_image_tiled(ens_img, aoi_geom, scale, tif_path),
-      error = function(e) sdm_warn(sprintf("Export of ensemble failed: %s", conditionMessage(e)))
-    )
-    final_results$ensemble_map <- tif_path
-    pb_map <- sdm_progress_update(pb_map)
+    written <- Filter(function(p) file.exists(p) && file.info(p)$size > 0, member_tifs)
+    if (length(written) < 2L) {
+      sdm_warn("Ensemble skipped: fewer than two member maps were exported.", indent = 1L)
+    } else {
+      sdm_info("Writing ENSEMBLE ...", indent = 1L)
+      tif_path <- file.path(output_dir, "ensemble.tif")
+      ok <- tryCatch({
+        layers <- lapply(written, function(p) stars::read_stars(p, proxy = FALSE))
+        acc    <- layers[[1]]
+        vals   <- lapply(layers, function(r) r[[1]])
+        # NA-skipping mean, matching the masked-pixel semantics of the member exports.
+        stacked   <- simplify2array(vals)
+        acc[[1]][] <- apply(stacked, seq_len(length(dim(stacked)) - 1L), mean, na.rm = TRUE)
+        stars::write_stars(acc, tif_path)
+        TRUE
+      }, error = function(e) { sdm_warn(sprintf("Ensemble failed: %s", conditionMessage(e))); FALSE })
+      if (ok) final_results$ensemble_map <- tif_path
+    }
   }
   sdm_progress_done(pb_map)
   
-  t_total_end <- proc.time()[["elapsed"]]
-  sdm_section("Species processing finished")
-  sdm_done(sprintf("Total elapsed time [%.1fs]", t_total_end - t_total_start))
-  cat("\n")
-  
-  # Reset standardization trackers for next run
-  .alphasdm_env$standardization_active <- FALSE
-  .alphasdm_env$standardization_info_printed <- FALSE
+  sdm_finish(t_total_start, "Species processing finished")
   
   return(final_results)
 }
@@ -348,7 +344,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
 #' scales to high-abundance species, unlike classifying the whole embedding image and
 #' sampleRegions-ing it, whose per-pixel graph runs GEE out of memory for large models.
 #' @keywords internal
-predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi_year,
+predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year,
                                     async = FALSE, project = NULL, chunk_size = 4000L) {
   ee <- reticulate::import("ee")
   if (!"year" %in% names(predict_df)) predict_df$year <- aoi_year
@@ -476,6 +472,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
                             options = list()) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)
+  on.exit(reset_sdm_run_state(), add = TRUE)
   t_total_start <- proc.time()[["elapsed"]]
 
   ee <- reticulate::import("ee")
@@ -513,9 +510,6 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
                 max(ref_df$longitude), max(ref_df$latitude))
   aoi_geom <- ee$Geometry$Rectangle(bbox)
 
-  # Embedding image: lazy GEE object, shared across training and prediction.
-  img <- get_embedding_image(aoi_year, scale)
-
   # --- Cross-validation ---
   cv_metrics       <- NULL
   ensemble_weights <- NULL
@@ -542,7 +536,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
 
     # Generate validation background on GEE, download coordinates once before the CV loop
     val_bg_n  <- if (is.null(count)) n_pres else as.integer(count)
-    bg_fc_gee <- generate_background_fc_gee(bbox, aoi_year, val_bg_n)
+    bg_fc_gee <- generate_background_fc_gee(aoi_year, val_bg_n, aoi_geom)
     bg_info   <- retry_curl_download(bg_fc_gee$getInfo())
     val_bg_df <- do.call(rbind, lapply(bg_info$features, function(f) {
       data.frame(longitude = f$geometry$coordinates[[1]],
@@ -560,8 +554,8 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
       test_k  <- pres_df[pres_df$cv_fold == k, c("longitude", "latitude", "year"),             drop = FALSE]
 
       res_k        <- fit_gee_models(train_k, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
-      pres_scored  <- predict_scores_internal(test_k,    res_k$models, methods, img, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
-      bg_scored    <- predict_scores_internal(val_bg_df, res_k$models, methods, img, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
+      pres_scored  <- predict_scores_internal(test_k,    res_k$models, methods, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
+      bg_scored    <- predict_scores_internal(val_bg_df, res_k$models, methods, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
       cleanup_classifier_assets(res_k)   # per-fold temp classifier assets
 
       na_pres_cv <- is.na(pres_scored[[paste0("pred_", methods[1])]])
@@ -602,12 +596,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
 
   # --- Pure CV mode: return without predict_coords ---
   if (is.null(predict_coords)) {
-    t_total_end <- proc.time()[["elapsed"]]
-    sdm_section("Species evaluation finished")
-    sdm_done(sprintf("Total elapsed time [%.1fs]", t_total_end - t_total_start))
-    cat("\n")
-    .alphasdm_env$standardization_active <- FALSE
-    .alphasdm_env$standardization_info_printed <- FALSE
+    sdm_finish(t_total_start, "Species evaluation finished")
     return(list(
       methods          = c(methods, "ensemble"),
       model_metadata   = train_res$metadata,
@@ -619,7 +608,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
   # --- Prediction ---
   sdm_section(sprintf("Predicting at %d coordinates (server-side)", nrow(predict_coords)))
   pb_pred    <- sdm_progress_start("Prediction")
-  final_pred <- predict_scores_internal(predict_coords, train_res$models, methods, img, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
+  final_pred <- predict_scores_internal(predict_coords, train_res$models, methods, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
   sdm_progress_done(pb_pred)
 
   # --- Ensemble ---
@@ -670,13 +659,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
     }
   }
 
-  t_total_end <- proc.time()[["elapsed"]]
-  sdm_section("Species evaluation finished")
-  sdm_done(sprintf("Total elapsed time [%.1fs]", t_total_end - t_total_start))
-  cat("\n")
-
-  .alphasdm_env$standardization_active <- FALSE
-  .alphasdm_env$standardization_info_printed <- FALSE
+  sdm_finish(t_total_start, "Species evaluation finished")
 
   return(final_results)
 }
