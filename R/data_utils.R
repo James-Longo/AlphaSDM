@@ -1,8 +1,8 @@
 #' Format Data for AlphaSDM
 #'
-#' This function standardizes input data frames for use in the AlphaSDM pipeline.
-#' It renames coordinate/year/presence columns to standard lowercase names,
-#' preserves Alpha Earth embeddings if present, and removes all other columns.
+#' Standardizes an input data frame for the AlphaSDM pipeline: renames the
+#' coordinate, year and presence columns to the package's lowercase names, drops
+#' everything else, and filters to the years Alpha Earth covers.
 #'
 #' @param data A data frame containing your survey data.
 #' @param coords A character vector of length 2 specifying the longitude and latitude columns IN ORDER: c(longitude_col, latitude_col). Note: Longitude first, then Latitude!
@@ -115,7 +115,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         sdm_info(sprintf("Standardizing time/dates using column: %s", year), indent = 1L)
     }
 
-    # 8. Add presence column (lowercase "present")
+    # 7. Add presence column (lowercase "present")
     if (!is.null(presence)) {
         result$present <- as.numeric(data[[presence]])
     } else {
@@ -124,17 +124,14 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         result$present <- 1
     }
 
-    # 9. Add species column (lowercase "species")
+    # 8. Add species column (lowercase "species")
     if (!is.null(species)) {
         result$species <- as.character(data[[species]])
     }
 
-    # 11. (REMOVED) Local preservation of Alpha Earth Embeddings is disabled per security policy.
-    # Prediction and training always happen server-side on GEE.
-
-    # 12. Filter to years with Alpha Earth data (2017+)
+    # 9. Filter to years with Alpha Earth data (2017+)
     if (show_info) {
-        sdm_info("Filtering for Alpha Earth coverage (2017\u20132025)", indent = 1L)
+        sdm_info("Filtering for Alpha Earth coverage (2017-2025)", indent = 1L)
         .alphasdm_env$standardization_info_printed <- TRUE
     }
     rows_before <- nrow(result)
@@ -142,23 +139,23 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        sdm_warn(sprintf("%d row%s removed \u2014 outside Alpha Earth temporal coverage (2017\u20132025)",
+        sdm_warn(sprintf("%d row%s removed: outside Alpha Earth temporal coverage (2017-2025)",
                          rows_before - rows_after,
                          if ((rows_before - rows_after) == 1) "" else "s"))
     }
 
-    # 13. Remove rows with NA values
+    # 10. Remove rows with NA values
     rows_before <- nrow(result)
     result <- na.omit(result)
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        sdm_warn(sprintf("%d row%s removed \u2014 contains missing (NA) values",
+        sdm_warn(sprintf("%d row%s removed: contains missing (NA) values",
                          rows_before - rows_after,
                          if ((rows_before - rows_after) == 1) "" else "s"))
     }
 
-    # 14. Remove duplicate rows (Prioritize presence: if coords/year collide, take max(present))
+    # 11. Remove duplicate rows (Prioritize presence: if coords/year collide, take max(present))
     #
     # The presence-first sort is also the pipeline's row-order contract: GEE's libsvm
     # assigns its positive class from the FIRST label it sees in the training data, and
@@ -174,7 +171,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        sdm_warn(sprintf("%d row%s removed \u2014 duplicate or conflicting records (presence prioritized)",
+        sdm_warn(sprintf("%d row%s removed: duplicate or conflicting records (presence prioritized)",
                          rows_before - rows_after,
                          if ((rows_before - rows_after) == 1) "" else "s"))
     }

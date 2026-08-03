@@ -34,7 +34,7 @@ test_that("records outside Alpha Earth coverage are dropped", {
 })
 
 test_that("date columns are reduced to their year", {
-  # All presences, so the presence-first reordering below cannot shuffle the rows.
+  # All presences, so format_data's presence-first sort cannot reorder the rows.
   d <- raw(yr = as.Date(c("2020-05-01", "2021-06-15", "2022-07-30")), occ = c(1, 1, 1))
   out <- format_data(d, coords = c("lon", "lat"), year = "yr", presence = "occ")
   expect_equal(out$year, c(2020, 2021, 2022))

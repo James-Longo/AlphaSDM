@@ -108,10 +108,10 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     }
     models[[m]]   <- train_gee_model(fc_for_method, m, params = training_params[[m]],
                                      persist = persist_classifier, project = project)
-    # (No post-fit one-point classify probe here: it was a redundant synchronous getInfo()
-    # round-trip (the map-export and scoring steps classify independently and surface any
-    # malformed classifier on their own), and under a throttled GEE tier it was the failure
-    # chokepoint, timing out and discarding classifiers that had trained successfully.)
+    # Deliberately no post-fit classify probe: map export and scoring both classify
+    # independently and surface a malformed classifier on their own, and under a
+    # throttled GEE tier the extra synchronous round-trip is the first thing to time
+    # out, discarding classifiers that had in fact trained successfully.
 
     pb <- sdm_progress_update(pb)
   }
@@ -278,11 +278,11 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   if ("knn" %in% methods && !is.null(knn_metric))
     method_params$knn$metric <- as.character(knn_metric)
 
-  # 4. Unified Training
+  # 3. Unified Training
   train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
   on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp classifier assets on exit
 
-  # 5. Map Generation
+  # 4. Map Generation
   img_mosaic <- get_embedding_image(aoi_year, scale)
   final_results <- list(methods = methods, model_metadata = train_res$metadata)
   pb_map <- sdm_progress_start("Map generation", total = length(methods))

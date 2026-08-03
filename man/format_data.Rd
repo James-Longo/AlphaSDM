@@ -25,7 +25,7 @@ A standardized data frame with `longitude`, `latitude`, `year` and
   `present` columns, ready for [evaluate_models()] or [generate_map()].
 }
 \description{
-This function standardizes input data frames for use in the AlphaSDM pipeline.
-It renames coordinate/year/presence columns to standard lowercase names,
-preserves Alpha Earth embeddings if present, and removes all other columns.
+Standardizes an input data frame for the AlphaSDM pipeline: renames the
+coordinate, year and presence columns to the package's lowercase names, drops
+everything else, and filters to the years Alpha Earth covers.
 }

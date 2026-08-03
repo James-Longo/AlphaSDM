@@ -402,7 +402,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         stop("GEE initialization failed for project '", project, "'.\nError: ", msg, call. = FALSE)
     })
 
-    # 5. Persist project ID for future sessions
+    # 6. Persist project ID for future sessions
     .save_project(project)
     .gee_backup_credentials()   # mirror creds + project id to the durable store, if configured
     options(AlphaSDM.gee_initialized = TRUE)

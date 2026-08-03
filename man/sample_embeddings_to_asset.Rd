@@ -20,7 +20,7 @@ sample_embeddings_to_asset(
 
 \item{scale}{sampling scale (m).}
 
-\item{properties}{point properties to carry through (besides the A00–A63 bands).}
+\item{properties}{point properties to carry through (besides the A00-A63 bands).}
 
 \item{years}{list of years to sample (passed to `get_embeddings_at_fc`).}
 

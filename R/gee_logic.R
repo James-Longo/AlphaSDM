@@ -258,7 +258,7 @@ GEE_CLASSIFIER_METHODS <- list(
 #'
 #' Worked example (an imbalanced dataset, 130 presences / 20,969 absences, k = 5):
 #' expected positive neighbours = 5 x 0.0062 = 0.03, so the map came back with two
-#' distinct values — 0.0 on 99.98% of cells and 0.2 on 164 — and AUC-ROC 0.607 driven
+#' distinct values (0.0 on 99.98% of cells, 0.2 on 164) and AUC-ROC 0.607 driven
 #' almost entirely by ties. Training the same classifier on the balanced 1:1 pool
 #' restores a usable gradient.
 #'

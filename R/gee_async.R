@@ -254,7 +254,7 @@ ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_mi
 #'
 #' @param df          data frame with longitude, latitude, year (+ any `properties`).
 #' @param scale       sampling scale (m).
-#' @param properties  point properties to carry through (besides the A00–A63 bands).
+#' @param properties  point properties to carry through (besides the A00-A63 bands).
 #' @param years       list of years to sample (passed to `get_embeddings_at_fc`).
 #' @param project     GEE project id for the temp asset folder.
 #' @param chunk_size  points per chunk/export task.
