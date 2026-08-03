@@ -59,9 +59,8 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     bg_sampled <- get_embeddings_at_fc(bg_fc, scale,
                                        properties = bg_props, years = list(as.integer(aoi_year)))
 
-    bg_rf      <- balance_bg(bg_sampled, n_pres, n_bg)
-    bg_gbt     <- bg_rf
-    sampled_fc <- pres_sampled$merge(bg_sampled)
+    bg_balanced <- balance_bg(bg_sampled, n_pres, n_bg)
+    sampled_fc  <- pres_sampled$merge(bg_sampled)
     n_background <- n_bg
   } else {
     upload_df    <- train_df[, c("longitude", "latitude", "year", "present")]
@@ -72,12 +71,11 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
                                          properties = c("year", "present"),
                                          years      = as.list(unique(as.integer(upload_df$year))))
     pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
-    # When real absences are supplied, RF/GBT use them as background (merged back
-    # with presences below), mirroring the presence-only branch's bg_rf/bg_gbt.
+    # When real absences are supplied they serve as the background pool, mirroring
+    # the presence-only branch.
     n_pres       <- sum(train_df$present == 1)
     n_background <- sum(train_df$present == 0)
-    bg_rf        <- balance_bg(sampled_fc$filter(ee$Filter$eq("present", 0L)), n_pres, n_background)
-    bg_gbt       <- bg_rf
+    bg_balanced  <- balance_bg(sampled_fc$filter(ee$Filter$eq("present", 0L)), n_pres, n_background)
   }
 
   sdm_progress_done(pb_up)
@@ -95,14 +93,11 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     sdm_info(sprintf("Fitting %s ...", toupper(m)), indent = 1L)
     fc_for_method <- if (m == "similarity") {
       pres_sampled
-    } else if (m == "rf") {
-      pres_sampled$merge(bg_rf)
-    } else if (m == "gbt") {
-      pres_sampled$merge(bg_gbt)
-    } else if (m %in% BALANCED_BG_CLASSIFIERS) {
-      # Vote-fraction classifiers read prevalence directly off the training pool, so
-      # they need the same balanced background rf/gbt get. See BALANCED_BG_CLASSIFIERS.
-      pres_sampled$merge(bg_rf)
+    } else if (m %in% c("rf", "gbt", BALANCED_BG_CLASSIFIERS)) {
+      # Trees take the balanced pool because balancing is the main TSS lever for them;
+      # vote-fraction classifiers need it because they read prevalence straight off the
+      # training pool. See BALANCED_BG_CLASSIFIERS.
+      pres_sampled$merge(bg_balanced)
     } else {
       sampled_fc
     }
@@ -180,10 +175,8 @@ cleanup_classifier_assets <- function(train_res) {
 #'   ignores it for methods that cannot persist (SVM/GBT/MaxEnt), so most callers should
 #'   leave it unset.
 #' @param gee_project Optional Earth Engine project override (normally set via [setup_gee()]).
-#' @param python_path Optional path to the Python/Earth Engine environment.
-#' @param options Named list of advanced options.
 #' @return A named list of output file paths, with one `<method>_map` entry per
-#'   model (and the ensemble) pointing to the exported GeoTIFF.
+#'   model, plus `ensemble_map` when more than one method is requested.
 #' @export
 generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          methods = NULL, ensemble = TRUE, aoi_year = NULL, count = NULL, bg_ratio = NULL,
@@ -194,8 +187,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          maxent_beta = 1, maxent_features = "auto",
                          knn_k = NULL, knn_search_method = NULL, knn_metric = NULL,
                          persist_classifier = TRUE,
-                         gee_project = NULL, python_path = NULL,
-                         options = list()) {
+                         gee_project = NULL) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)
   t_total_start <- proc.time()[["elapsed"]]
@@ -286,10 +278,13 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   # Map Generation
   img_mosaic <- get_embedding_image(aoi_year, scale)
   final_results <- list(methods = methods, model_metadata = train_res$metadata)
-  pb_map <- sdm_progress_start("Map generation", total = length(methods))
+  want_ensemble <- isTRUE(ensemble) && length(methods) > 1L
+  pb_map <- sdm_progress_start("Map generation", total = length(methods) + as.integer(want_ensemble))
+  pred_imgs <- list()
   for (m in methods) {
     sdm_info(sprintf("Exporting %s ...", toupper(m)), indent = 1L)
     pred_img <- predict_gee_map(train_res$models[[m]], img_mosaic)
+    pred_imgs <- c(pred_imgs, list(pred_img))   # unnamed: reticulate maps a named list to a dict
     tif_path <- file.path(output_dir, paste0(m, ".tif"))
     # Drive-free, water-robust export: tile getDownloadURL + local mosaic.
     tryCatch(
@@ -297,6 +292,23 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
       error = function(e) sdm_warn(sprintf("Export of %s failed: %s", m, conditionMessage(e)))
     )
     final_results[[paste0(m, "_map")]] <- tif_path
+    pb_map <- sdm_progress_update(pb_map)
+  }
+
+  # Ensemble map: the per-pixel mean of the member predictions, reduced server-side so
+  # the members are never downloaded just to be averaged. Equal weights, matching the
+  # ensemble evaluate_models() scores. Note the members are averaged on their own
+  # scales: rf/gbt/maxent emit probabilities, while similarity and mindist emit
+  # unbounded scores, so mixing those families lets the wider-ranged member dominate.
+  if (want_ensemble) {
+    sdm_info("Exporting ENSEMBLE ...", indent = 1L)
+    ens_img  <- ee$ImageCollection(pred_imgs)$mean()$rename("similarity")
+    tif_path <- file.path(output_dir, "ensemble.tif")
+    tryCatch(
+      export_image_tiled(ens_img, aoi_geom, scale, tif_path),
+      error = function(e) sdm_warn(sprintf("Export of ensemble failed: %s", conditionMessage(e)))
+    )
+    final_results$ensemble_map <- tif_path
     pb_map <- sdm_progress_update(pb_map)
   }
   sdm_progress_done(pb_map)
@@ -321,7 +333,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
 #' sampleRegions-ing it, whose per-pixel graph runs GEE out of memory for large models.
 #' @keywords internal
 predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi_year,
-                                    async = FALSE, project = NULL) {
+                                    async = FALSE, project = NULL, chunk_size = 4000L) {
   ee <- reticulate::import("ee")
   if (!"year" %in% names(predict_df)) predict_df$year <- aoi_year
 
@@ -360,7 +372,7 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
 
   # Chunk the eval points; each chunk is one classify graph (read paged, so no 5000-feature
   # cap). Fall back to batch export for any chunk that hits a compute timeout.
-  chunk_size <- 4000L
+  chunk_size <- as.integer(chunk_size)
   n_rows     <- nrow(predict_df)
   for (i in seq(1L, n_rows, by = chunk_size)) {
     sub   <- predict_df[i:min(i + chunk_size - 1L, n_rows), , drop = FALSE]
@@ -392,7 +404,6 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
 #' @param predict_coords Optional data frame of coordinates to score. Include a
 #'   `present` column to compute evaluation metrics on it.
 #' @param scale Embedding resolution in metres (default 10, the native resolution).
-#' @param output_dir Directory for any written outputs.
 #' @param methods Character vector of models to ensemble. Defaults to the validated
 #'   tier `c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`,
 #'   `cart`, `mindist`.
@@ -427,14 +438,14 @@ predict_scores_internal <- function(predict_df, models, methods, img, scale, aoi
 #'   to a temporary GEE asset. Defaults to `FALSE` here: cross-validation refits per fold,
 #'   where per-fold persistence is pure overhead. (Map generation defaults it `TRUE`.)
 #' @param gee_project Optional Earth Engine project override (normally set via [setup_gee()]).
-#' @param python_path Optional path to the Python/Earth Engine environment.
-#' @param options Named list of advanced options.
+#' @param options Named list of advanced options; `batch_size` sets how many
+#'   coordinates are scored per Earth Engine request (default 4000).
 #' @return A list containing `methods`, `model_metadata`, `cv_metrics` and
 #'   `ensemble_weights`; when `predict_coords` is supplied it also includes
 #'   `point_predictions` and (if a `present` column is present) per-model and
 #'   ensemble `metrics`.
 #' @export
-evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir = getwd(),
+evaluate_models <- function(data, predict_coords = NULL, scale = 10,
                             methods = NULL, aoi_year = NULL, count = NULL, bg_ratio = NULL,
                             balance_trees = TRUE,
                             n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
@@ -445,7 +456,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
                             cv_folds = 5L, cv_method = "block", block_size = NULL,
                             weighted_ensemble = FALSE, async = FALSE,
                             persist_classifier = FALSE,
-                            gee_project = NULL, python_path = NULL,
+                            gee_project = NULL,
                             options = list()) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)
@@ -467,6 +478,10 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   if (is.null(bg_ratio) && isTRUE(balance_trees)) bg_ratio <- 1
 
   # --- Parameter validation ---
+  # Points scored per Earth Engine request. Lower it when a large or high-dimensional
+  # job trips the synchronous compute budget mid-chunk.
+  score_chunk <- if (!is.null(options$batch_size)) as.integer(options$batch_size) else 4000L
+
   cv_folds <- as.integer(cv_folds)
   if (weighted_ensemble && cv_folds == 0L) {
     cv_folds <- 5L
@@ -569,8 +584,8 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
       test_k  <- pres_df[pres_df$cv_fold == k, c("longitude", "latitude", "year"),             drop = FALSE]
 
       res_k        <- fit_gee_models(train_k, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
-      pres_scored  <- predict_scores_internal(test_k,    res_k$models, methods, img, scale, aoi_year, async = async, project = gee_project)
-      bg_scored    <- predict_scores_internal(val_bg_df, res_k$models, methods, img, scale, aoi_year, async = async, project = gee_project)
+      pres_scored  <- predict_scores_internal(test_k,    res_k$models, methods, img, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
+      bg_scored    <- predict_scores_internal(val_bg_df, res_k$models, methods, img, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
       cleanup_classifier_assets(res_k)   # per-fold temp classifier assets
 
       na_pres_cv <- is.na(pres_scored[[paste0("pred_", methods[1])]])
@@ -628,7 +643,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10, output_dir 
   # --- Prediction ---
   sdm_section(sprintf("Predicting at %d coordinates (server-side)", nrow(predict_coords)))
   pb_pred    <- sdm_progress_start("Prediction")
-  final_pred <- predict_scores_internal(predict_coords, train_res$models, methods, img, scale, aoi_year, async = async, project = gee_project)
+  final_pred <- predict_scores_internal(predict_coords, train_res$models, methods, img, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
   sdm_progress_done(pb_pred)
 
   # --- Ensemble ---

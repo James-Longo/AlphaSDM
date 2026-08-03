@@ -157,8 +157,7 @@ metrics <- evaluate_models(
   predict_coords = test_data,
   scale = 10,
   aoi_year = 2024,
-  methods = c("gbt", "maxent"),
-  output_dir = "eval/run_1"
+  methods = c("gbt", "maxent")
 )
 
 # Access metrics like AUC, TSS, and CBI

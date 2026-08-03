@@ -31,9 +31,7 @@ generate_map(
   knn_search_method = NULL,
   knn_metric = NULL,
   persist_classifier = TRUE,
-  gee_project = NULL,
-  python_path = NULL,
-  options = list()
+  gee_project = NULL
 )
 }
 \arguments{
@@ -87,14 +85,10 @@ ignores it for methods that cannot persist (SVM/GBT/MaxEnt), so most callers sho
 leave it unset.}
 
 \item{gee_project}{Optional Earth Engine project override (normally set via [setup_gee()]).}
-
-\item{python_path}{Optional path to the Python/Earth Engine environment.}
-
-\item{options}{Named list of advanced options.}
 }
 \value{
 A named list of output file paths, with one `<method>_map` entry per
-  model (and the ensemble) pointing to the exported GeoTIFF.
+  model, plus `ensemble_map` when more than one method is requested.
 }
 \description{
 Trains the model ensemble on Google Earth Engine and exports a continuous

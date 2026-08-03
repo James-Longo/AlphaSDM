@@ -8,7 +8,6 @@ evaluate_models(
   data,
   predict_coords = NULL,
   scale = 10,
-  output_dir = getwd(),
   methods = NULL,
   aoi_year = NULL,
   count = NULL,
@@ -36,7 +35,6 @@ evaluate_models(
   async = FALSE,
   persist_classifier = FALSE,
   gee_project = NULL,
-  python_path = NULL,
   options = list()
 )
 }
@@ -48,8 +46,6 @@ and a `present` column (1 = presence; include 0 rows to supply real absences).}
 `present` column to compute evaluation metrics on it.}
 
 \item{scale}{Embedding resolution in metres (default 10, the native resolution).}
-
-\item{output_dir}{Directory for any written outputs.}
 
 \item{methods}{Character vector of models to ensemble. Defaults to the validated
 tier `c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`,
@@ -102,9 +98,8 @@ where per-fold persistence is pure overhead. (Map generation defaults it `TRUE`.
 
 \item{gee_project}{Optional Earth Engine project override (normally set via [setup_gee()]).}
 
-\item{python_path}{Optional path to the Python/Earth Engine environment.}
-
-\item{options}{Named list of advanced options.}
+\item{options}{Named list of advanced options; `batch_size` sets how many
+coordinates are scored per Earth Engine request (default 4000).}
 }
 \value{
 A list containing `methods`, `model_metadata`, `cv_metrics` and

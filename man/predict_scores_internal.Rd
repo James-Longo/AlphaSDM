@@ -12,7 +12,8 @@ predict_scores_internal(
   scale,
   aoi_year,
   async = FALSE,
-  project = NULL
+  project = NULL,
+  chunk_size = 4000L
 )
 }
 \description{
