@@ -80,6 +80,7 @@ get_embeddings_at_fc <- function(fc, scale, properties = NULL, geometries = FALS
 #' @param df Data frame with longitude, latitude, and optional columns.
 #' @param chunk_size Max rows per GeoJSON payload (default 5000 ≈ 4 MB).
 #' @return ee$FeatureCollection
+#' @noRd
 upload_points_to_gee <- function(df, chunk_size = 5000L) {
   ee       <- reticulate::import("ee")
   json_mod <- reticulate::import("json")
@@ -161,6 +162,7 @@ generate_background_fc_gee <- function(aoi_year, count, region) {
 #' positive-integer features and discards negative inputs, so it cannot use
 #' embeddings that span [-1, 1]. It is registered for completeness and is not
 #' a sensible choice here.
+#' @noRd
 GEE_CLASSIFIER_METHODS <- list(
   rf         = list(fn = "smileRandomForest",      output = "PROBABILITY", score = "classification", transform = "none", pool = "balanced", persistable = TRUE),
   gbt        = list(fn = "smileGradientTreeBoost", output = "PROBABILITY", score = "classification", transform = "none", pool = "balanced"),
@@ -320,6 +322,7 @@ GEE_REDUCER_METHODS <- "similarity"
 #'   asset and reloaded, the workaround for "Computed value is too large" on large
 #'   random forests. The returned list then carries the `asset_id` to clean up.
 #' @param project GEE project id for the temporary asset folder.
+#' @noRd
 train_gee_model <- function(sampled_fc, method, params = list(), class_property = "present",
                             persist = FALSE, project = NULL) {
   ee <- reticulate::import("ee")
