@@ -1,16 +1,16 @@
 # AlphaSDM
 
 > [!IMPORTANT]
-> **AlphaSDM is in active development.** Function arguments, defaults and outputs may
+> AlphaSDM is in active development. Function arguments, defaults and outputs may
 > still change between versions.
 >
-> **If something doesn't work, or if it does, please email
-> [james.longo@maine.edu](mailto:james.longo@maine.edu).** Bugs and feature requests
+> If something doesn't work, or if it does, please email
+> [james.longo@maine.edu](mailto:james.longo@maine.edu). Bugs and feature requests
 > are also welcome as [GitHub issues](https://github.com/James-Longo/AlphaSDM/issues).
 
-An R package for species distribution modeling at up to 10m resolution. AlphaSDM uses **Google's Alpha Earth satellite embeddings**, 64-dimensional vectors that capture the environmental characteristics of any location on Earth, so you don't need to find, download, or align environmental layers yourself.
+An R package for species distribution modeling at up to 10m resolution. AlphaSDM uses Google's Alpha Earth satellite embeddings, 64-dimensional vectors that capture the environmental characteristics of any location on Earth, so you don't need to find, download, or align environmental layers yourself.
 
-Everything runs on **Google Earth Engine**, from data extraction to model training to spatial prediction.
+Everything runs on Google Earth Engine, from data extraction to model training to spatial prediction.
 
 ---
 
@@ -25,19 +25,19 @@ devtools::install_github("James-Longo/AlphaSDM")
 
 ## Google Earth Engine Setup
 
-AlphaSDM connects to Earth Engine with your **personal Google account**. You set
-this up **once per machine**. After that, every R session connects automatically.
+AlphaSDM connects to Earth Engine with your personal Google account. You set
+this up once per machine. After that, every R session connects automatically.
 
 ### Prerequisites (one-time, free)
 
-1. **Register for Earth Engine.** Go to
+1. Register for Earth Engine. Go to
    [earthengine.google.com/signup](https://earthengine.google.com/signup/) and
-   sign in with your Google account. Earth Engine is **free for noncommercial
-   use** in research, education, and nonprofit projects. Registration links your
-   account to a Cloud project and gives you its **Project ID** (e.g.
+   sign in with your Google account. Earth Engine is free for noncommercial
+   use in research, education, and nonprofit projects. Registration links your
+   account to a Cloud project and gives you its Project ID (e.g.
    `"my-ee-project"`), which is the only thing you need to pass to AlphaSDM.
 
-That's the only prerequisite. You do **not** need to create a service account,
+That's the only prerequisite. You do not need to create a service account,
 manage a JSON key, or set up billing for standard noncommercial use.
 
 ### One-Time Setup
@@ -48,18 +48,18 @@ library(AlphaSDM)
 setup_gee(project = "your-project-id")
 ```
 
-`setup_gee()` is designed to be run **once and never thought about again**:
+`setup_gee()` is designed to be run once and never thought about again:
 
-1. **Finds your Python automatically.** If any Python on your machine already has
+1. Finds your Python automatically. If any Python on your machine already has
    `earthengine-api` (a conda env, a virtualenv, or a system Python with
    `pip install earthengine-api`), AlphaSDM uses it directly, with no downloads.
    It only builds a new environment as a last resort.
-2. **Authenticates with one browser click, no code to paste.** On a desktop or
-   laptop your browser opens, you click **Allow**, and the credential is captured
+2. Authenticates with one browser click, no code to paste. On a desktop or
+   laptop your browser opens, you click "Allow", and the credential is captured
    automatically. The saved credentials are long-lived; you are not asked again.
-3. **Remembers your project.** The Project ID is saved locally.
+3. Remembers your project. The Project ID is saved locally.
 
-**Re-running `setup_gee()` is safe.** If you are already connected it detects the
+Re-running `setup_gee()` is safe: if you are already connected it detects the
 working credentials and returns immediately with *"Already connected to Earth
 Engine. Nothing to do."*
 
@@ -98,9 +98,9 @@ setup_gee(project = "your-project-id")   # re-authenticate
 
 ## Key Features
 
-*   **10m Resolution**: Model habitat at up to 10m resolution, anywhere on the globe, using Google's 64-band Alpha Earth satellite embeddings.
-*   **Fully Server-Side**: No environmental data to download. All data extraction, model training, and prediction happens on Google Earth Engine.
-*   **Built-in Models**: Nine modeling methods plus an ensemble, all trained and
+*   Resolution: model habitat at up to 10m, anywhere on the globe, using Google's 64-band Alpha Earth satellite embeddings.
+*   Fully server-side: no environmental data to download. All data extraction, model training, and prediction happens on Google Earth Engine.
+*   Built-in models: nine modeling methods plus an ensemble, all trained and
     applied server-side. See [Built-in Models](#built-in-models) below.
 
 ---
@@ -124,7 +124,7 @@ averaging four variations on the same idea.
 | `"naivebayes"` | Naive Bayes (see note below) | [`ee.Classifier.smileNaiveBayes`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilenaivebayes) |
 | `"similarity"` | Dot product against the mean presence embedding | `ee.Reducer.mean` |
 
-Selecting more than one method also produces an **ensemble** map and score. It is
+Selecting more than one method also produces an ensemble map and score. It is
 equal-weighted by default; `evaluate_models(weighted_ensemble = TRUE)` weights
 members by their cross-validated AUC instead.
 
@@ -208,7 +208,7 @@ citation("AlphaSDM")
 ```
 
 The repository also carries a [`CITATION.cff`](CITATION.cff), so GitHub's
-**Cite this repository** button produces BibTeX and APA entries directly.
+"Cite this repository" button produces BibTeX and APA entries directly.
 
 ## License and Credits
 
@@ -217,4 +217,4 @@ modify and redistribute it, including in commercial work, provided the copyright
 notice is retained. If you use it in research, a citation is asked for as an
 academic courtesy rather than a licence condition.
 
-This package uses the [**Alpha Earth Embedding**](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL) dataset provided by Google.
+This package uses the [Alpha Earth Embedding](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL) dataset provided by Google.
