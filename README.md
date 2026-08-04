@@ -8,7 +8,7 @@
 > [james.longo@maine.edu](mailto:james.longo@maine.edu). Bugs and feature requests
 > are also welcome as [GitHub issues](https://github.com/James-Longo/AlphaSDM/issues).
 
-An R package for species distribution modeling at up to 10m resolution. AlphaSDM uses Google's Alpha Earth satellite embeddings, 64-dimensional vectors that capture the environmental characteristics of any location on Earth, so you don't need to find, download, or align environmental layers yourself.
+An R package for species distribution modeling at up to 10m resolution. AlphaSDM uses Google's [Alpha Earth satellite embeddings](https://arxiv.org/abs/2507.22291), 64-dimensional vectors that capture the environmental characteristics of any location on Earth, so you don't need to find, download, or align environmental layers yourself.
 
 Everything runs on Google Earth Engine, from data extraction to model training to spatial prediction.
 
@@ -146,7 +146,7 @@ Two caveats worth knowing:
 
 Get your presence/absence records into the expected format. A year column is required so each record is matched to the embedding for the year it was recorded.
 
-The Alpha Earth embeddings are annual and currently cover 2017 to 2025. `format_data()` drops any record dated outside that window and reports how many it removed, so a dataset reaching further back will come out of this step smaller than it went in. Historical occurrence records are the usual case: a species with a century of observations may keep only the last several years. Check the count it reports before going on, and if too little survives, the embeddings are not the right covariates for that dataset.
+The Alpha Earth embeddings are annual and currently cover 2017 to 2025. `format_data()` drops any record dated outside that window and reports how many it removed. If the temporal gap does not matter for your question, set those records to 2017 to keep them and match them against the earliest available embedding.
 
 ```r
 library(AlphaSDM)

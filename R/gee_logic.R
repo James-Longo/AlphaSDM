@@ -23,14 +23,46 @@ retry_curl_download <- function(expr, max_retries = 5, initial_delay = 1) {
   }
 }
 
+#' The Alpha Earth annual embedding collection
+#' @noRd
+ALPHAEARTH_ASSET <- "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
+
+#' Years the Alpha Earth collection covers
+#'
+#' The annual embedding collection grows by a year at a time, so the window is read
+#' from the collection itself rather than pinned in the source. `ALPHAEARTH_YEARS`
+#' is only the offline answer: it is used when Earth Engine has not been connected
+#' yet, so that `format_data()` still works before `setup_gee()` and without a
+#' network. A successful live lookup is cached for the session; a fallback is not,
+#' so the first call after connecting picks up the real range.
+#' @noRd
+ALPHAEARTH_YEARS <- c(2017L, 2025L)
+
+#' @noRd
+alphaearth_year_range <- function() {
+  if (!is.null(.alphasdm_env$year_range)) return(.alphasdm_env$year_range)
+  if (!isTRUE(getOption("AlphaSDM.gee_initialized"))) return(ALPHAEARTH_YEARS)
+
+  live <- tryCatch({
+    ee <- reticulate::import("ee")
+    ic <- ee$ImageCollection(ALPHAEARTH_ASSET)
+    r  <- ee$List(list(ee$Date(ic$aggregate_min("system:time_start"))$get("year"),
+                       ee$Date(ic$aggregate_max("system:time_start"))$get("year")))$getInfo()
+    as.integer(unlist(r))
+  }, error = function(e) NULL)
+
+  if (length(live) != 2L || anyNA(live) || live[1] > live[2]) return(ALPHAEARTH_YEARS)
+  .alphasdm_env$year_range <- live
+  live
+}
+
 get_embedding_image <- function(year) {
   ee <- reticulate::import("ee")
-  asset_path <- "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
   emb_cols <- sprintf("A%02d", 0:63)
 
   # No scale arguments, no reprojection. Just the raw, composited 10m image.
   # GEE will handle resampling automatically during sampling or export.
-  img <- ee$ImageCollection(asset_path)$
+  img <- ee$ImageCollection(ALPHAEARTH_ASSET)$
     filter(ee$Filter$calendarRange(as.integer(year), as.integer(year), "year"))$
     mosaic()$
     select(emb_cols)

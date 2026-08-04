@@ -4,14 +4,15 @@
 #' coordinate, year and presence columns to the package's lowercase names, drops
 #' everything else, and filters to the years Alpha Earth covers.
 #'
-#' The embeddings are annual and currently span 2017 to 2025. Records dated outside
-#' that window are dropped and the number removed is reported, so a data set of
-#' historical occurrences can shrink substantially here. Check the reported count.
+#' The embeddings are annual. Records dated outside the covered window are dropped
+#' and the number removed is reported; set them to the first covered year to keep
+#' them instead. The window is read from the Earth Engine collection when it is
+#' connected, so it tracks each annual release.
 #'
 #' @param data A data frame containing your survey data.
 #' @param coords A character vector of length 2 specifying the longitude and latitude columns IN ORDER: c(longitude_col, latitude_col). Note: Longitude first, then Latitude!
 #' @param year A character string naming the year or date column. Dates are reduced
-#'   to their year. Records outside the Alpha Earth window (2017 to 2025) are dropped.
+#'   to their year. Records outside the Alpha Earth window are dropped.
 #' @param presence Optional. A character string specifying the presence/absence column (values should be 0 or 1).
 #' @param species Optional. A character string specifying the species name column.
 #' @param label Optional. A short name for this dataset, used only to label the
@@ -137,19 +138,22 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         result$species <- as.character(data[[species]])
     }
 
-    # Filter to years with Alpha Earth data (2017+)
+    # Filter to the years Alpha Earth covers. The window is read from the collection
+    # when Earth Engine is connected, so it follows the annual releases.
+    yrs <- alphaearth_year_range()
     if (show_info) {
-        sdm_info("Filtering for Alpha Earth coverage (2017-2025)", indent = 1L)
+        sdm_info(sprintf("Filtering for Alpha Earth coverage (%d-%d)", yrs[1], yrs[2]), indent = 1L)
         .alphasdm_env$standardization_info_printed <- TRUE
     }
     rows_before <- nrow(result)
-    result <- result[result$year >= 2017 & result$year <= 2025, ]
+    result <- result[result$year >= yrs[1] & result$year <= yrs[2], ]
     rows_after <- nrow(result)
 
     if (rows_before != rows_after) {
-        sdm_warn(sprintf("%d row%s removed: outside Alpha Earth temporal coverage (2017-2025)",
+        sdm_warn(sprintf("%d row%s removed: outside Alpha Earth temporal coverage (%d-%d). Set them to %d to keep them.",
                          rows_before - rows_after,
-                         if ((rows_before - rows_after) == 1) "" else "s"))
+                         if ((rows_before - rows_after) == 1) "" else "s",
+                         yrs[1], yrs[2], yrs[1]))
     }
 
     # Remove rows with NA values

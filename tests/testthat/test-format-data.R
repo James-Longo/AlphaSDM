@@ -95,3 +95,30 @@ test_that("an all-NA coordinate column is handled, not fatal", {
                  "missing \\(NA\\) values")
   expect_equal(nrow(out), 0)
 })
+
+test_that("the coverage window falls back offline and does not force a connection", {
+  # format_data() must work before setup_gee() and without a network, so the range
+  # lookup only goes to Earth Engine when a connection already exists.
+  old <- getOption("AlphaSDM.gee_initialized")
+  on.exit(options(AlphaSDM.gee_initialized = old), add = TRUE)
+  options(AlphaSDM.gee_initialized = NULL)
+  .alphasdm_env$year_range <- NULL
+
+  r <- alphaearth_year_range()
+  expect_equal(r, ALPHAEARTH_YEARS)
+  # a fallback must not be cached, or a later call after connecting would keep it
+  expect_null(.alphasdm_env$year_range)
+})
+
+test_that("a cached window is reused and drives the filter", {
+  old <- getOption("AlphaSDM.gee_initialized")
+  on.exit({ options(AlphaSDM.gee_initialized = old); .alphasdm_env$year_range <- NULL }, add = TRUE)
+  .alphasdm_env$year_range <- c(2019L, 2021L)   # pretend Earth Engine reported this
+  expect_equal(alphaearth_year_range(), c(2019L, 2021L))
+
+  d <- data.frame(lon = rep(-71.5, 4), lat = rep(44.5, 4),
+                  yr = c(2018, 2019, 2021, 2022), occ = rep(1, 4))
+  expect_message(out <- format_data(d, coords = c("lon", "lat"), year = "yr", presence = "occ"),
+                 "2019-2021")
+  expect_true(all(out$year >= 2019 & out$year <= 2021))
+})
