@@ -5,10 +5,8 @@
 > still change between versions.
 >
 > **If something doesn't work, or if it does, please email
-> [james.longo@maine.edu](mailto:james.longo@maine.edu).** Reports of both kinds are
-> genuinely useful: knowing where it works is as informative as knowing where it
-> breaks. Bugs and feature requests are also welcome as
-> [GitHub issues](https://github.com/James-Longo/AlphaSDM/issues).
+> [james.longo@maine.edu](mailto:james.longo@maine.edu).** Bugs and feature requests
+> are also welcome as [GitHub issues](https://github.com/James-Longo/AlphaSDM/issues).
 
 An R package for species distribution modeling at up to 10m resolution. AlphaSDM uses **Google's Alpha Earth satellite embeddings**, 64-dimensional vectors that capture the environmental characteristics of any location on Earth, so you don't need to find, download, or align environmental layers yourself.
 
