@@ -144,7 +144,9 @@ Two caveats worth knowing:
 
 ### 1. Format your data
 
-Get your presence/absence records into the expected format. A year column is required for temporal alignment with the embeddings.
+Get your presence/absence records into the expected format. A year column is required so each record is matched to the embedding for the year it was recorded.
+
+The Alpha Earth embeddings are annual and currently cover 2017 to 2025. `format_data()` drops any record dated outside that window and reports how many it removed, so a dataset reaching further back will come out of this step smaller than it went in. Historical occurrence records are the usual case: a species with a century of observations may keep only the last several years. Check the count it reports before going on, and if too little survives, the embeddings are not the right covariates for that dataset.
 
 ```r
 library(AlphaSDM)

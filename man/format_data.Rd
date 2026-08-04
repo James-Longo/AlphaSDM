@@ -11,7 +11,8 @@ format_data(data, coords, year, presence = NULL, species = NULL, label = NULL)
 
 \item{coords}{A character vector of length 2 specifying the longitude and latitude columns IN ORDER: c(longitude_col, latitude_col). Note: Longitude first, then Latitude!}
 
-\item{year}{A character string specifying the year or date column.}
+\item{year}{A character string naming the year or date column. Dates are reduced
+to their year. Records outside the Alpha Earth window (2017 to 2025) are dropped.}
 
 \item{presence}{Optional. A character string specifying the presence/absence column (values should be 0 or 1).}
 
@@ -28,4 +29,9 @@ A standardized data frame with `longitude`, `latitude`, `year` and
 Standardizes an input data frame for the AlphaSDM pipeline: renames the
 coordinate, year and presence columns to the package's lowercase names, drops
 everything else, and filters to the years Alpha Earth covers.
+}
+\details{
+The embeddings are annual and currently span 2017 to 2025. Records dated outside
+that window are dropped and the number removed is reported, so a data set of
+historical occurrences can shrink substantially here. Check the reported count.
 }
