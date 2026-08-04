@@ -33,6 +33,7 @@ everything else, and filters to the years Alpha Earth covers.
 \details{
 The embeddings are annual. Records dated outside the covered window are dropped
 and the number removed is reported; set them to the first covered year to keep
-them instead. The window is read from the Earth Engine collection when it is
-connected, so it tracks each annual release.
+them instead. The window is read from the Earth Engine collection, so it tracks
+each annual release. This means `format_data()` needs a connection: run
+[setup_gee()] first.
 }

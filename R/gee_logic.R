@@ -29,31 +29,27 @@ ALPHAEARTH_ASSET <- "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
 
 #' Years the Alpha Earth collection covers
 #'
-#' The annual embedding collection grows by a year at a time, so the window is read
-#' from the collection itself rather than pinned in the source. `ALPHAEARTH_YEARS`
-#' is only the offline answer: it is used when Earth Engine has not been connected
-#' yet, so that `format_data()` still works before `setup_gee()` and without a
-#' network. A successful live lookup is cached for the session; a fallback is not,
-#' so the first call after connecting picks up the real range.
-#' @noRd
-ALPHAEARTH_YEARS <- c(2017L, 2025L)
-
+#' Read from the collection's own image dates, so the window follows each annual
+#' release instead of being pinned in the source. Cached for the session. Requires
+#' a connection, like everything else in the package: there is no offline answer,
+#' because a hardcoded one silently goes stale the moment Google publishes a year.
 #' @noRd
 alphaearth_year_range <- function() {
   if (!is.null(.alphasdm_env$year_range)) return(.alphasdm_env$year_range)
-  if (!isTRUE(getOption("AlphaSDM.gee_initialized"))) return(ALPHAEARTH_YEARS)
+  ensure_gee_authenticated()
 
-  live <- tryCatch({
-    ee <- reticulate::import("ee")
-    ic <- ee$ImageCollection(ALPHAEARTH_ASSET)
-    r  <- ee$List(list(ee$Date(ic$aggregate_min("system:time_start"))$get("year"),
-                       ee$Date(ic$aggregate_max("system:time_start"))$get("year")))$getInfo()
-    as.integer(unlist(r))
-  }, error = function(e) NULL)
+  ee <- reticulate::import("ee")
+  ic <- ee$ImageCollection(ALPHAEARTH_ASSET)
+  r  <- retry_curl_download(
+    ee$List(list(ee$Date(ic$aggregate_min("system:time_start"))$get("year"),
+                 ee$Date(ic$aggregate_max("system:time_start"))$get("year")))$getInfo())
 
-  if (length(live) != 2L || anyNA(live) || live[1] > live[2]) return(ALPHAEARTH_YEARS)
-  .alphasdm_env$year_range <- live
-  live
+  yrs <- suppressWarnings(as.integer(unlist(r)))
+  if (length(yrs) != 2L || anyNA(yrs) || yrs[1] > yrs[2]) {
+    stop("Could not read the Alpha Earth coverage window from ", ALPHAEARTH_ASSET, ".", call. = FALSE)
+  }
+  .alphasdm_env$year_range <- yrs
+  yrs
 }
 
 get_embedding_image <- function(year) {

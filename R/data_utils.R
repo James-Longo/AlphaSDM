@@ -6,8 +6,9 @@
 #'
 #' The embeddings are annual. Records dated outside the covered window are dropped
 #' and the number removed is reported; set them to the first covered year to keep
-#' them instead. The window is read from the Earth Engine collection when it is
-#' connected, so it tracks each annual release.
+#' them instead. The window is read from the Earth Engine collection, so it tracks
+#' each annual release. This means `format_data()` needs a connection: run
+#' [setup_gee()] first.
 #'
 #' @param data A data frame containing your survey data.
 #' @param coords A character vector of length 2 specifying the longitude and latitude columns IN ORDER: c(longitude_col, latitude_col). Note: Longitude first, then Latitude!
@@ -138,8 +139,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         result$species <- as.character(data[[species]])
     }
 
-    # Filter to the years Alpha Earth covers. The window is read from the collection
-    # when Earth Engine is connected, so it follows the annual releases.
+    # Filter to the years Alpha Earth covers, read from the collection itself.
     yrs <- alphaearth_year_range()
     if (show_info) {
         sdm_info(sprintf("Filtering for Alpha Earth coverage (%d-%d)", yrs[1], yrs[2]), indent = 1L)
