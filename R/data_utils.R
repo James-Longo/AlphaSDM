@@ -1,4 +1,4 @@
-#' Format Data for AlphaSDM
+#' Standardize occurrence records for AlphaSDM
 #'
 #' Standardizes an input data frame for the AlphaSDM pipeline: renames the
 #' coordinate, year and presence columns to the package's lowercase names, drops
@@ -10,16 +10,21 @@
 #' each annual release. This means `format_data()` needs a connection: run
 #' [setup_gee()] first.
 #'
-#' @param data A data frame containing your survey data.
-#' @param coords A character vector of length 2 specifying the longitude and latitude columns IN ORDER: c(longitude_col, latitude_col). Note: Longitude first, then Latitude!
+#' @param data A data frame of survey records.
+#' @param coords Character vector of length 2 naming the longitude and latitude
+#'   columns, longitude first: `c(longitude_col, latitude_col)`. The order matters
+#'   and is not checked beyond a range test on the first non-missing row.
 #' @param year A character string naming the year or date column. Dates are reduced
 #'   to their year. Records outside the Alpha Earth window are dropped.
-#' @param presence Optional. A character string specifying the presence/absence column (values should be 0 or 1).
-#' @param species Optional. A character string specifying the species name column.
-#' @param label Optional. A short name for this dataset, used only to label the
-#'   console summary line (e.g. "Training" or "Evaluation").
-#' @return A standardized data frame with `longitude`, `latitude`, `year` and
-#'   `present` columns, ready for [evaluate_models()] or [generate_map()].
+#' @param presence Optional. Name of the presence column, holding 1 for presence
+#'   and 0 for absence. Omit it to treat every record as a presence.
+#' @param species Optional. Name of the species column.
+#' @param label Optional. Short name for this data set, used only to label the
+#'   console summary line, for example "Training" or "Evaluation".
+#' @return A data frame with `longitude`, `latitude`, `year` and `present` columns,
+#'   ready for [evaluate_models()] or [generate_map()]. Rows are ordered presences
+#'   first. Fewer rows come back than went in whenever records are dropped for
+#'   coverage, missing values or duplication; each drop is reported as a message.
 #' @export
 format_data <- function(data, coords, year, presence = NULL, species = NULL, label = NULL) {
     if (!isTRUE(.alphasdm_env$standardization_active)) {
@@ -31,7 +36,6 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         stop("Input 'data' must be a data frame.")
     }
 
-    # Coordinate Validation
     if (length(coords) != 2) {
         stop("'coords' must be a character vector of length 2: c(longitude_col, latitude_col)")
     }
@@ -46,34 +50,31 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         sdm_info(sprintf("Validating coordinates: %s, %s", coords[1], coords[2]), indent = 1L)
     }
 
-    # Year Validation
     if (!year %in% names(data)) {
         stop(paste("Year column not found:", year))
     }
 
-    # Presence Validation
     if (!is.null(presence) && !presence %in% names(data)) {
         stop(paste("Presence column not found:", presence))
     }
 
-    # Species Validation
     if (!is.null(species) && !species %in% names(data)) {
         stop(paste("Species column not found:", species))
     }
 
-    # Build the output data frame with only required columns
     result <- data.frame(
         longitude = data[[coords[1]]],
         latitude = data[[coords[2]]],
         stringsAsFactors = FALSE
     )
 
-    # Sanity check: Warn if coordinates appear swapped
+    # Catch swapped coordinates: a latitude outside [-90, 90] beside a plausible
+    # longitude almost always means the two columns were given the wrong way round.
     sample_lat <- result$latitude[!is.na(result$latitude)][1]
     sample_lon <- result$longitude[!is.na(result$longitude)][1]
 
-    # `x[1]` on an empty vector yields NA, never NULL, so guard on NA: an all-NA
-    # coordinate column would otherwise reach the comparison below and error with
+    # Guard on NA, not NULL: `x[1]` on an empty vector gives NA. An all-NA
+    # coordinate column would otherwise reach the comparison below and fail with
     # "missing value where TRUE/FALSE needed".
     if (!is.na(sample_lat) && !is.na(sample_lon)) {
         lat_in_range <- sample_lat >= -90 && sample_lat <= 90
@@ -87,16 +88,14 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         }
     }
 
-    # Process Year (handle dates)
     year_data <- data[[year]]
     if (inherits(year_data, c("Date", "POSIXt"))) {
         result$year <- as.numeric(format(year_data, "%Y"))
     } else {
-        # Try numeric conversion
         val <- suppressWarnings(as.numeric(year_data))
 
         if (all(is.na(val) & !is.na(year_data))) {
-            # Likely date strings - try common formats
+            # Nothing parsed as a number, so treat the column as date strings.
             formats <- c("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d")
             parsed <- as.Date(rep(NA, nrow(data)))
 
@@ -108,7 +107,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
                 }
             }
 
-            # Fallback to standard as.Date
+            # None of the explicit formats matched, so let as.Date guess.
             if (all(is.na(parsed))) {
                 try_date <- try(as.Date(year_data), silent = TRUE)
                 if (!inherits(try_date, "try-error")) {
@@ -125,7 +124,6 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         sdm_info(sprintf("Standardizing time/dates using column: %s", year), indent = 1L)
     }
 
-    # Add presence column (lowercase "present")
     if (!is.null(presence)) {
         result$present <- as.numeric(data[[presence]])
     } else {
@@ -134,7 +132,6 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         result$present <- 1
     }
 
-    # Add species column (lowercase "species")
     if (!is.null(species)) {
         result$species <- as.character(data[[species]])
     }
@@ -156,7 +153,6 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
                          yrs[1], yrs[2], yrs[1]))
     }
 
-    # Remove rows with NA values
     rows_before <- nrow(result)
     result <- na.omit(result)
     rows_after <- nrow(result)
@@ -167,13 +163,15 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
                          if ((rows_before - rows_after) == 1) "" else "s"))
     }
 
-    # Remove duplicate rows (Prioritize presence: if coords/year collide, take max(present))
+    # Drop duplicates, keeping the presence when a coordinate and year appear as
+    # both presence and absence.
     #
-    # The presence-first sort is also the pipeline's row-order contract: GEE's libsvm
-    # assigns its positive class from the FIRST label it sees in the training data, and
-    # predict_gee_map's SVM flip assumes presence (1) is positive. Emitting presences
-    # first here keeps that invariant at the data boundary, so no downstream stage needs
-    # to re-sort. (order() is stable, so original order is preserved within each class.)
+    # The presence-first sort is also the pipeline's row-order contract. GEE's libsvm
+    # takes its positive class from the first label it sees in the training data, and
+    # the SVM score flip in predict_gee_map() assumes that class is presence (1).
+    # Emitting presences first here holds that invariant at the data boundary, so no
+    # later stage has to re-sort. order() is stable, so the original order survives
+    # within each class.
     rows_before <- nrow(result)
 
     key_cols <- setdiff(names(result), "present")
@@ -188,7 +186,6 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
                          if ((rows_before - rows_after) == 1) "" else "s"))
     }
 
-    # List final columns
     cols_desc <- paste(names(result), collapse = ", ")
     prefix <- if (!is.null(label)) paste0(label, " data") else "Data"
     sdm_done(sprintf("%s ready: %d rows \u00d7 %d columns (%s)", prefix, nrow(result), ncol(result), cols_desc))

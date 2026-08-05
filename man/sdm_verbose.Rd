@@ -2,13 +2,17 @@
 % Please edit documentation in R/utils.R
 \name{sdm_verbose}
 \alias{sdm_verbose}
-\title{Control AlphaSDM console output verbosity}
+\title{Turn AlphaSDM console output on or off}
 \usage{
 sdm_verbose(verbose = TRUE)
 }
 \arguments{
-\item{verbose}{Logical. Set FALSE to suppress all non-error messages.}
+\item{verbose}{Logical. FALSE suppresses all non-error output.}
+}
+\value{
+`verbose`, invisibly. Called for its effect on package state.
 }
 \description{
-Control AlphaSDM console output verbosity
+Every progress line the package prints is a message, not a warning or a print,
+so this suppresses all of them at once. Errors are unaffected.
 }

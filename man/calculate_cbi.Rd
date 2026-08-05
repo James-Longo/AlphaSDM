@@ -2,19 +2,28 @@
 % Please edit documentation in R/metrics.R
 \name{calculate_cbi}
 \alias{calculate_cbi}
-\title{Calculate Continuous Boyce Index (CBI)}
+\title{Calculate the Continuous Boyce Index}
 \usage{
 calculate_cbi(pos_scores, all_scores, window_width = 0.1, n_bins = 100)
 }
 \arguments{
-\item{pos_scores}{Scores for presence points}
+\item{pos_scores}{Numeric suitability scores at presence points. NA is dropped.}
 
-\item{all_scores}{Scores for all points (presence + background)}
+\item{all_scores}{Numeric suitability scores at all points, presence and
+background together. NA is dropped.}
 
-\item{window_width}{Width of the moving window (proportion of score range)}
+\item{window_width}{Width of the moving window, as a proportion of the score
+range.}
 
-\item{n_bins}{Number of bins for evaluation}
+\item{n_bins}{Number of window positions to evaluate.}
+}
+\value{
+A single number in [-1, 1], the Spearman correlation between window
+  position and the predicted-to-expected ratio. Returns 0 when there are no
+  presence scores, when all scores are equal, or when the correlation is
+  undefined.
 }
 \description{
-Calculate Continuous Boyce Index (CBI)
+Measures how far the ratio of predicted to expected presences rises with
+suitability. A well calibrated model gives a value near 1, a random one near 0.
 }

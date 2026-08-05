@@ -1,4 +1,4 @@
-# ---- Internal Helpers ----
+# ---- Configuration and credential helpers ----
 
 #' Read saved GEE project ID from AlphaSDM config
 #' @noRd
@@ -101,7 +101,7 @@
     )
 }
 
-# ---- Internal Connection Helpers ----
+# ---- Connection probes ----
 
 #' Test whether a Python interpreter already has the earthengine-api module
 #'
@@ -129,9 +129,9 @@
 #' the first match, or NULL if none has earthengine-api.
 #' @noRd
 .find_ee_python <- function() {
-    # Quiet wrapper: reticulate's config probes emit an alarming
-    # "Unable to find conda binary" message on systems without conda even when
-    # they still return a usable interpreter path. We only want the path.
+    # Quieten the probe. On a machine without conda, reticulate's config lookup
+    # prints "Unable to find conda binary" even when it still returns a usable
+    # interpreter. Only the path is wanted here.
     quiet <- function(expr) suppressWarnings(suppressMessages(tryCatch(
         utils::capture.output(val <- expr, type = "message"),
         error = function(e) NULL)))
@@ -145,7 +145,7 @@
         quiet({ cfg <- reticulate::py_discover_config();  val <<- cfg$python })
         val
     }
-    # Cheapest, most reliable candidates first; reticulate probes last.
+    # Cheapest and most reliable candidates first, reticulate's own probes last.
     cands <- c(
         Sys.getenv("EARTHENGINE_PYTHON", ""),
         Sys.getenv("RETICULATE_PYTHON", ""),
@@ -187,7 +187,7 @@
 .gee_is_headless <- function() {
     sysname <- Sys.info()[["sysname"]]
     if (identical(sysname, "Windows") || identical(sysname, "Darwin")) return(FALSE)
-    # Linux: viable only if a graphical display is present
+    # On Linux a browser is reachable only when a graphical display is present.
     Sys.getenv("DISPLAY", "") == "" && Sys.getenv("WAYLAND_DISPLAY", "") == ""
 }
 
@@ -200,19 +200,19 @@
 #' @noRd
 .gee_try_init <- function(project) {
     .suppress_gee_deprecation_warnings()
-    # rgee frequently re-signals real init failures as warnings, so during this
-    # silent probe we treat any warning as a failure (fall through to setup).
+    # rgee often re-signals a real initialisation failure as a warning, so treat
+    # any warning here as a failure and fall through to setup.
     ok <- tryCatch({
         rgee::ee_Initialize(project = project, drive = FALSE, gcs = FALSE, quiet = TRUE)
-        # Confirm the connection is actually live, not just locally configured:
-        # a trivial server round-trip forces a token refresh + API call.
+        # Confirm the connection is live rather than merely configured locally. A
+        # trivial round trip forces a token refresh and a real API call.
         ee <- reticulate::import("ee")
         identical(as.integer(ee$Number(1L)$getInfo()), 1L)
     }, error = function(e) FALSE, warning = function(w) FALSE)
     isTRUE(ok)
 }
 
-# ---- Exported Functions ----
+# ---- Exported functions ----
 
 #' Set Up Google Earth Engine for AlphaSDM (one-time)
 #'
@@ -255,20 +255,19 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         stop("The 'rgee' package is required. Install it with: install.packages('rgee')")
     }
 
-    # Python environment.
-    #    FAST PATH: if any interpreter reticulate can reach already has
-    #    earthengine-api, bind to it and skip installation entirely. This avoids
-    #    the slow rgee::ee_install() rebuild, and, on machines where reticulate
-    #    cannot find a conda binary, the ~100 MB Miniconda download it falls back
-    #    to. Most users already have a suitable Python (conda env, venv, or a
-    #    system Python with `pip install earthengine-api`).
+    # Python environment. If any interpreter reticulate can reach already has
+    # earthengine-api, bind to it and install nothing. That skips the slow
+    # rgee::ee_install() rebuild, and on a machine where reticulate cannot find a
+    # conda binary it also skips the roughly 100 MB Miniconda download that rebuild
+    # falls back to. Most users already have a suitable Python: a conda environment,
+    # a virtualenv, or a system Python with earthengine-api installed by pip.
     ee_py <- .find_ee_python()
     if (!is.null(ee_py)) {
         Sys.setenv(EARTHENGINE_PYTHON = ee_py, RETICULATE_PYTHON = ee_py)
         sdm_done(sprintf("Using existing Python with earthengine-api: %s", ee_py))
     } else if (Sys.getenv("EARTHENGINE_PYTHON") != "" && !force) {
-        # A Python was previously configured but earthengine-api isn't importable
-        # from it: install just the package into it, no full env rebuild.
+        # A Python is configured but earthengine-api cannot be imported from it.
+        # Install the one package into it rather than rebuilding the environment.
         sdm_section("Installing earthengine-api into your Python environment")
         ok <- tryCatch({ reticulate::py_install("earthengine-api", pip = TRUE); TRUE },
                        error = function(e) { sdm_warn(conditionMessage(e)); FALSE })
@@ -279,8 +278,8 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         }
         sdm_done("earthengine-api installed")
     } else {
-        # No suitable Python found: build rgee's environment as a last resort.
-        # This is the only path that may download Miniconda; we surface that.
+        # No suitable Python found, so build rgee's own environment as a last
+        # resort. This is the only path that may download Miniconda, so say so.
         sdm_section("Setting up a Python environment for Earth Engine")
         sdm_info("No Python with earthengine-api was found. Building one now")
         sdm_info("(first time only; this can take a few minutes).")
@@ -290,16 +289,17 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         return(invisible(FALSE))
     }
 
-    # Resolve project up front: argument > saved config > interactive prompt.
+    # Resolve the project: the argument first, then saved config, then a prompt.
     if (is.null(project) || project == "") {
         project <- .read_saved_project()
     }
 
-    # Idempotency short-circuit: if we are NOT forcing and credentials on disk
-    #    already produce a live connection, we are done; never prompt again.
-    #    This is what makes setup a genuine one-time action.
-    #    First restore from the durable store (if configured) in case the live
-    #    ~/.config copy was wiped since last session (ephemeral-home platforms).
+    # Stop early when not forcing and the credentials on disk already give a live
+    # connection. This is what makes setup a genuine one-time action.
+    #
+    # Restore from the durable store first, in case the live copy under ~/.config
+    # was wiped since the last session, which happens where the home directory does
+    # not persist.
     .gee_restore_credentials()
     need_auth <- force || !.gee_credentials_exist()
     if (!force && .gee_credentials_exist()) {
@@ -312,19 +312,18 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
                              .gee_auth_type()))
             return(invisible(TRUE))
         }
-        # Credentials are present but do not produce a live connection (expired
-        # or revoked). Force a fresh authentication rather than falling through
-        # to ee_Initialize with stale credentials and a confusing error.
+        # Credentials are present but do not give a live connection, so they have
+        # expired or been revoked. Authenticate again rather than continuing to
+        # ee_Initialize with stale credentials and a confusing error.
         sdm_info("Stored credentials are missing or expired; re-authenticating.")
         need_auth <- TRUE
     }
 
-    # Authenticate with the personal Google account.
-    #    Default flow is auth_mode = "localhost": the browser opens, the user
-    #    clicks Allow, and the token is captured automatically over a loopback
-    #    port, with NO code to copy or paste, and the credentials are long-lived.
-    #    On a detected headless/remote session (no browser reachable) we fall
-    #    back to "notebook" so the flow still completes instead of hanging.
+    # Authenticate with the user's own Google account. The default flow is
+    # auth_mode = "localhost": the browser opens, the user clicks Allow, and the
+    # token arrives over a loopback port with no code to copy. The credentials are
+    # long-lived. Where no browser is reachable, fall back to "notebook" so the flow
+    # completes instead of hanging.
     if (need_auth) {
         chosen_mode <- auth_mode
         if (is.null(chosen_mode)) {
@@ -345,12 +344,12 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         }
         ee <- reticulate::import("ee")
         ee$Authenticate(auth_mode = chosen_mode, force = force)
-        # Mirror the freshly written token to the durable store (if configured)
-        # so it survives an ephemeral home directory on the next session.
+        # Copy the new token to the durable store, where one is configured, so it
+        # survives a home directory that does not persist between sessions.
         .gee_backup_credentials()
     }
 
-    # Get project ID (now that we are authenticated)
+    # Read the project id, now that the account is authenticated.
     if ((is.null(project) || project == "") && interactive()) {
         project <- readline("[AlphaSDM] Enter your Earth Engine / Cloud Project ID: ")
     }
@@ -362,12 +361,12 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
     }
     project <- trimws(project)
 
-    # Verify the connection works
     sdm_section("Verifying GEE connection")
     tryCatch({
         rgee::ee_Initialize(project = project, drive = FALSE, gcs = FALSE, quiet = TRUE)
     }, warning = function(w) {
-        # rgee wraps the real GEE error as a warning; catch and re-raise clearly
+        # rgee wraps the real Earth Engine error as a warning. Catch it and
+        # re-raise it in a form the user can act on.
         msg <- conditionMessage(w)
         if (grepl("Billing is disabled", msg, ignore.case = TRUE)) {
             stop(sprintf(
@@ -386,7 +385,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
                 "Make sure the Earth Engine API is enabled in your Google Cloud Console."
             ), call. = FALSE)
         }
-        # For other warnings, re-raise the original error
+        # Any other warning: re-raise the original.
         warning(w)
     }, error = function(e) {
         msg <- conditionMessage(e)
@@ -402,7 +401,7 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
         stop("GEE initialization failed for project '", project, "'.\nError: ", msg, call. = FALSE)
     })
 
-    # Persist project ID for future sessions
+    # Save the project id for later sessions.
     .save_project(project)
     .gee_backup_credentials()   # mirror creds + project id to the durable store, if configured
     options(AlphaSDM.gee_initialized = TRUE)
@@ -419,26 +418,27 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
 #'
 #' @export
 clear_gee_credentials <- function() {
-    # Clear rgee's internal credentials
+    # WARNING: the four steps below delete stored credentials and configuration.
+    # Clear rgee's own credentials.
     if (requireNamespace("rgee", quietly = TRUE)) {
         try(rgee::ee_clean_user_credentials(), silent = TRUE)
     }
 
-    # Clear earthengine config directory
+    # Clear the earthengine configuration directory.
     ee_cfg <- file.path(Sys.getenv("HOME"), ".config", "earthengine")
     if (dir.exists(ee_cfg)) {
         unlink(ee_cfg, recursive = TRUE)
         sdm_done(sprintf("Removed: %s", ee_cfg))
     }
 
-    # Clear our saved config
+    # Clear the project id saved by this package.
     config_file <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json")
     if (file.exists(config_file)) {
         unlink(config_file)
         sdm_done(sprintf("Removed: %s", config_file))
     }
 
-    # Clear session cache
+    # Clear the session flag.
     options(AlphaSDM.gee_initialized = NULL)
 
     sdm_done("All GEE credentials cleared. Run setup_gee() to reconfigure.")
@@ -498,7 +498,7 @@ gee_status <- function(check_live = TRUE) {
                    project = project, live = live))
 }
 
-# ---- Internal Authentication Gate ----
+# ---- Authentication gate ----
 
 #' Ensure GEE is authenticated and initialized (internal)
 #'
@@ -508,7 +508,7 @@ gee_status <- function(check_live = TRUE) {
 #' @param project Optional project ID override.
 #' @noRd
 ensure_gee_authenticated <- function(project = NULL) {
-    # Session cache - already initialized this R session
+    # Already initialised in this R session.
     if (isTRUE(getOption("AlphaSDM.gee_initialized"))) {
         return(TRUE)
     }
@@ -517,12 +517,13 @@ ensure_gee_authenticated <- function(project = NULL) {
         stop("The 'rgee' package is required. Install it with: install.packages('rgee')")
     }
 
-    # Restore credentials from the durable store if the live copy was wiped
-    # (ephemeral-home platforms); a no-op when the store is unset or the live
-    # copy is already present.
+    # Restore credentials from the durable store when the live copy has been wiped,
+    # which happens where the home directory does not persist. Does nothing when the
+    # store is unset or the live copy is already there.
     .gee_restore_credentials()
 
-    # Resolve project: argument > saved config > env var
+    # Resolve the project: the argument first, then saved config, then the
+    # EARTHENGINE_PROJECT environment variable.
     if (is.null(project) || project == "") {
         project <- .read_saved_project()
     }
@@ -531,11 +532,10 @@ ensure_gee_authenticated <- function(project = NULL) {
     }
     if (project == "") project <- NULL
 
-    # Make sure reticulate is pointed at a Python that actually has
-    # earthengine-api. reticulate's default discovery can bind to an unrelated
-    # interpreter (e.g. a project-local .venv) that lacks `ee`; setting the env
-    # var before the first import avoids that. We set the env var rather than
-    # calling use_python() to sidestep reticulate's conda-binary lookup.
+    # Point reticulate at a Python that has earthengine-api. Its own discovery can
+    # bind to an unrelated interpreter, such as a project-local .venv without `ee`.
+    # Setting the environment variable before the first import avoids that, and it
+    # avoids use_python(), which triggers reticulate's conda-binary lookup.
     if (Sys.getenv("EARTHENGINE_PYTHON") == "") {
         ee_py <- .find_ee_python()
         if (!is.null(ee_py)) Sys.setenv(EARTHENGINE_PYTHON = ee_py, RETICULATE_PYTHON = ee_py)

@@ -7,17 +7,17 @@
 sdm_gee_status(active_only = TRUE, since_minutes = 180)
 }
 \arguments{
-\item{active_only}{If `TRUE` (default), show only pending/running tasks; `FALSE` also
-lists recently finished ones.}
+\item{active_only}{TRUE shows only pending and running tasks. FALSE also lists
+recently finished ones.}
 
-\item{since_minutes}{Only include tasks created within this many minutes (default 180).}
+\item{since_minutes}{Only include tasks created within this many minutes.}
 }
 \value{
-(invisibly) a data frame of tasks (description, state, age in minutes); also printed.
+A data frame of tasks with `description`, `state` and `age_min`,
+  invisibly. Also prints them.
 }
 \description{
-Lists the async export / classifier tasks AlphaSDM has started (fallback scoring in
-[evaluate_models()], map export, and embedding materialisation) with each task's
-current state and age, so you can see what Earth Engine is doing at any time. Call it
-from another session while a long run is in progress.
+Lists the export and classifier tasks AlphaSDM has started, with each task's state
+and age. Call it from a second session to see what Earth Engine is doing while a
+long run is in progress.
 }

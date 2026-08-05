@@ -1,9 +1,12 @@
 #' Detect a Google Earth Engine synchronous-compute limit error
 #'
-#' GEE's interactive `getInfo()` has a compute-time budget (and a 5000-feature
-#' page cap). Heavy jobs (large point sets, many classes, expensive classifiers)
-#' blow that budget and surface as one of the messages matched here. These are
-#' exactly the cases the async (batch-export) path is designed for.
+#' Earth Engine's interactive `getInfo()` has a compute-time budget and a
+#' 5000-feature page cap. Large point sets, many classes and expensive classifiers
+#' exceed that budget and surface as one of the messages matched here. These are
+#' the cases the batch-export path exists for.
+#'
+#' @param e A condition or a string.
+#' @return TRUE when the message looks like a synchronous-compute limit.
 #' @noRd
 is_gee_timeout <- function(e) {
   msg <- if (inherits(e, "condition")) conditionMessage(e) else as.character(e)
@@ -14,7 +17,9 @@ is_gee_timeout <- function(e) {
     grepl("computation took too long", msg, ignore.case = TRUE)
 }
 
-#' Resolve a writable GEE asset folder for temporary async exports
+#' Resolve a writable Earth Engine folder for temporary exports
+#' @param project Earth Engine project id, or NULL to use the saved one.
+#' @return An asset folder path. Errors when no writable folder can be found.
 #' @noRd
 async_asset_root <- function(project = NULL) {
   ee <- reticulate::import("ee")
@@ -35,10 +40,15 @@ async_asset_root <- function(project = NULL) {
        "or run setup_gee() so the project id is saved.", call. = FALSE)
 }
 
-#' Read a FeatureCollection in pages via computeFeatures (no 5000-feature cap)
+#' Read a FeatureCollection in pages, avoiding the 5000-feature cap
 #'
-#' Used to read a materialised asset; because the asset is already computed, each
-#' page is cheap and won't hit the synchronous compute limit.
+#' Intended for a materialised asset. The values are already computed, so each page
+#' is cheap and stays inside the synchronous compute limit. Paging a lazy collection
+#' instead re-evaluates its graph once per page.
+#'
+#' @param fc An `ee$FeatureCollection`.
+#' @param page_size Features per request.
+#' @return A list with a `features` element, matching the shape `getInfo()` returns.
 #' @noRd
 read_fc_paged <- function(fc, page_size = 5000L) {
   ee_data <- reticulate::import("ee.data")
@@ -54,10 +64,15 @@ read_fc_paged <- function(fc, page_size = 5000L) {
   list(features = feats)
 }
 
-#' Start (without waiting for) an Export.table.toAsset batch task
+#' Start an Export.table.toAsset batch task without waiting for it
 #'
-#' Returns the running task handle and its target asset id. Starting many exports
-#' before awaiting any of them lets independent chunks run concurrently server-side.
+#' Start several exports before awaiting any of them and the chunks run
+#' concurrently server-side.
+#'
+#' @param fc An `ee$FeatureCollection` to export.
+#' @param project Earth Engine project id, or NULL to use the saved one.
+#' @param select Optional property names to keep.
+#' @return A list with the running `task` and its `asset_id`.
 #' @noRd
 ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
   ee <- reticulate::import("ee")
@@ -76,10 +91,15 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
   list(task = task, asset_id = asset_id)
 }
 
-#' Poll a started export task until it completes (or fail/timeout)
+#' Poll an export task until it finishes
 #'
-#' Emits a periodic heartbeat (every ~minute) so a long server-side export shows
-#' progress instead of sitting silent.
+#' Prints roughly one line a minute so a long export shows progress rather than
+#' sitting silent.
+#'
+#' @param handle A handle from `ee_start_fc_export()`.
+#' @param poll_seconds Seconds between status checks.
+#' @param max_minutes Give up after this long and cancel the task.
+#' @return The asset id. Errors when the task fails, is cancelled, or times out.
 #' @noRd
 ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60) {
   deadline <- Sys.time() + max_minutes * 60
@@ -96,8 +116,9 @@ ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60) {
       try(handle$task$cancel(), silent = TRUE)
       stop(sprintf("Async GEE export exceeded max_minutes = %d (asset %s)", max_minutes, handle$asset_id))
     }
-    # Report the real task state (READY = queued vs RUNNING) on every change, plus a
-    # ~per-minute heartbeat, so it's clear whether GEE is queuing or actually working.
+    # Report the task's own state on every change, plus a heartbeat about once a
+    # minute. READY means queued and RUNNING means working, and on a throttled tier
+    # the difference between them is most of the wait.
     elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
     if (!identical(state, last_state) || elapsed - last_beat >= 60) {
       lbl <- switch(state, READY = "queued", RUNNING = "running", tolower(state))
@@ -111,15 +132,15 @@ ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60) {
 
 #' Show the status of recent AlphaSDM Earth Engine batch tasks
 #'
-#' Lists the async export / classifier tasks AlphaSDM has started (fallback scoring in
-#' [evaluate_models()], map export, and embedding materialisation) with each task's
-#' current state and age, so you can see what Earth Engine is doing at any time. Call it
-#' from another session while a long run is in progress.
+#' Lists the export and classifier tasks AlphaSDM has started, with each task's state
+#' and age. Call it from a second session to see what Earth Engine is doing while a
+#' long run is in progress.
 #'
-#' @param active_only If `TRUE` (default), show only pending/running tasks; `FALSE` also
-#'   lists recently finished ones.
-#' @param since_minutes Only include tasks created within this many minutes (default 180).
-#' @return (invisibly) a data frame of tasks (description, state, age in minutes); also printed.
+#' @param active_only TRUE shows only pending and running tasks. FALSE also lists
+#'   recently finished ones.
+#' @param since_minutes Only include tasks created within this many minutes.
+#' @return A data frame of tasks with `description`, `state` and `age_min`,
+#'   invisibly. Also prints them.
 #' @export
 sdm_gee_status <- function(active_only = TRUE, since_minutes = 180) {
   ee  <- reticulate::import("ee")
@@ -145,11 +166,20 @@ sdm_gee_status <- function(active_only = TRUE, since_minutes = 180) {
   invisible(df)
 }
 
-#' Export a FeatureCollection to a temporary GEE asset (batch) and wait
+#' Export a FeatureCollection to a temporary Earth Engine asset and wait for it
 #'
-#' Runs an `Export.table.toAsset` batch task, which runs server-side with no synchronous
-#' compute limit, and polls until it completes. Returns the new asset id. The
-#' caller is responsible for deleting the asset (see `ee_delete_asset_quietly`).
+#' A batch task has no synchronous compute limit, so this path carries work that
+#' `getInfo()` cannot.
+#'
+#' WARNING: this writes an asset and does not remove it. The caller has to delete
+#' it with `ee_delete_asset_quietly()`.
+#'
+#' @param fc An `ee$FeatureCollection` to export.
+#' @param project Earth Engine project id, or NULL to use the saved one.
+#' @param select Optional property names to keep.
+#' @param poll_seconds Seconds between status checks.
+#' @param max_minutes Give up after this long.
+#' @return The new asset id.
 #' @noRd
 ee_export_fc_to_asset <- function(fc, project = NULL, select = NULL,
                                   poll_seconds = 15, max_minutes = 60) {
@@ -157,7 +187,9 @@ ee_export_fc_to_asset <- function(fc, project = NULL, select = NULL,
   ee_await_export(handle, poll_seconds, max_minutes)
 }
 
-#' Delete a GEE asset, ignoring errors
+#' Delete an Earth Engine asset, ignoring failure
+#' @param asset_id Asset to delete.
+#' @return Nothing. Deletes the asset if it exists.
 #' @noRd
 ee_delete_asset_quietly <- function(asset_id) {
   ee <- reticulate::import("ee")
@@ -165,15 +197,24 @@ ee_delete_asset_quietly <- function(asset_id) {
   invisible(NULL)
 }
 
-#' Materialise a FeatureCollection to a GEE asset and return it (kept server-side)
+#' Compute a FeatureCollection once into an asset and return it
 #'
-#' The key primitive for heavy pipelines: a lazy FeatureCollection (e.g. a
-#' `sampleRegions` of the 64-band embeddings at many points) is exported once to an
-#' asset, so every downstream op (train, classify, score) reads PRE-COMPUTED values
-#' instead of re-running the sampling/training graph per request. That is what
-#' prevents the "Computation timed out" / "out of memory" failures on large,
-#' many-class jobs. Returns the materialised `ee$FeatureCollection` plus its
-#' `asset_id`; the caller should `ee_delete_asset_quietly(asset_id)` when done.
+#' An Earth Engine collection is lazy, so a `sampleRegions` over the 64 embedding
+#' bands is re-run on every request that touches it. Exporting it once to an asset
+#' means training, classifying and scoring all read stored values instead. This is
+#' what keeps large jobs inside the compute and memory limits.
+#'
+#' The data stays on Earth Engine throughout.
+#'
+#' WARNING: this writes an asset and does not remove it. The caller has to delete
+#' it with `ee_delete_asset_quietly()`.
+#'
+#' @param fc An `ee$FeatureCollection` to materialise.
+#' @param project Earth Engine project id, or NULL to use the saved one.
+#' @param select Optional property names to keep.
+#' @param poll_seconds Seconds between status checks.
+#' @param max_minutes Give up after this long.
+#' @return A list with the materialised `fc` and its `asset_id`.
 #' @noRd
 ee_materialize_fc_async <- function(fc, project = NULL, select = NULL,
                                     poll_seconds = 15, max_minutes = 60) {
@@ -182,15 +223,22 @@ ee_materialize_fc_async <- function(fc, project = NULL, select = NULL,
   list(fc = ee$FeatureCollection(asset_id), asset_id = asset_id)
 }
 
-#' Persist a trained classifier to a GEE asset and reload it
+#' Store a trained classifier in an asset and load it back
 #'
-#' Large tree models (deep / many-class / huge training sets) fail with "Computed
-#' value is too large" when used inline, because the whole model lives as one value
-#' in the same graph as `classify`. `Export.classifier.toAsset` runs the training as
-#' its own batch task and writes the model to an asset; `ee.Classifier.load()` then
-#' references it as stored data, so the classify graph no longer carries the oversized
-#' training value. Returns the reloaded `ee$Classifier` and the `asset_id` to clean up
-#' with `ee_delete_asset_quietly()`.
+#' Used inline, a large tree model lives as one value in the same graph as
+#' `classify`, and deep or many-class forests fail there with "Computed value is too
+#' large". `Export.classifier.toAsset` trains as its own batch task and writes the
+#' model to an asset, and `ee.Classifier.load()` then refers to it as stored data, so
+#' the classify graph no longer carries the model itself.
+#'
+#' WARNING: this writes an asset and does not remove it. The caller has to delete
+#' it with `ee_delete_asset_quietly()`.
+#'
+#' @param clf A trained `ee$Classifier`.
+#' @param project Earth Engine project id, or NULL to use the saved one.
+#' @param poll_seconds Seconds between status checks.
+#' @param max_minutes Give up after this long.
+#' @return A list with the reloaded `classifier` and its `asset_id`.
 #' @noRd
 ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_minutes = 60) {
   ee     <- reticulate::import("ee")
@@ -208,11 +256,20 @@ ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_mi
   list(classifier = ee$Classifier$load(asset_id), asset_id = asset_id)
 }
 
-#' Materialise a FeatureCollection via a GEE batch export, then read it
+#' Read a FeatureCollection through a batch export instead of getInfo()
 #'
-#' The async alternative to `fc$getInfo()`: export to a temporary asset (batch, no
-#' synchronous compute limit), read the materialised asset back in pages (cheap), and
-#' delete it. Returns a list with a `features` element, matching `getInfo()`'s shape.
+#' Export to a temporary asset, read it back in pages, then delete it. Slower than
+#' `getInfo()` but under no synchronous compute limit, so it carries work that
+#' `getInfo()` refuses.
+#'
+#' Unlike the other export helpers here, this one deletes the asset it creates.
+#'
+#' @param fc An `ee$FeatureCollection` to read.
+#' @param project Earth Engine project id, or NULL to use the saved one.
+#' @param select Optional property names to keep.
+#' @param poll_seconds Seconds between status checks.
+#' @param max_minutes Give up after this long.
+#' @return A list with a `features` element, matching the shape `getInfo()` returns.
 #' @noRd
 ee_table_to_info_async <- function(fc, project = NULL, select = NULL,
                                    poll_seconds = 15, max_minutes = 60) {

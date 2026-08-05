@@ -35,18 +35,19 @@ build_method_params <- function(methods, n_trees, min_leaf_population, bag_fract
     p$svm$cost       <- svm_cost
     p$svm$gamma      <- svm_gamma
   }
-  # MaxEnt (ENMeval-style): regularization multiplier + feature classes.
+  # MaxEnt, in the style of ENMeval: a regularisation multiplier and feature classes.
   if (has("maxent")) p$maxent <- modifyList(p$maxent, maxent_tuning_params(maxent_beta, maxent_features))
 
-  # k is kNN's output RESOLUTION knob, not just a smoothing knob: PROBABILITY mode
-  # returns the positive-vote fraction, so the surface can take only k + 1 distinct
-  # values. Raise it together with bg_ratio -- k should stay a small share of the
-  # balanced pool or the vote over-smooths.
+  # k sets the resolution of the kNN surface, not just its smoothness. In PROBABILITY
+  # mode the score is the positive-vote fraction, so it can take only k + 1 distinct
+  # values. Raise it alongside bg_ratio: k should stay a small share of the balanced
+  # pool, or the vote smooths away the signal.
   if (has("knn") && !is.null(knn_k)) p$knn$k <- as.integer(knn_k)
-  # searchMethod/metric are unset by default, so GEE picks them. Both matter here:
-  # the docs warn results vary by search method "for distance ties and probability
-  # values", and KD_TREE (plus AUTO at low dimensions) IGNORES the metric -- so pin
-  # searchMethod to LINEAR_SEARCH or COVER_TREE whenever the metric is meant to apply.
+  # searchMethod and metric are unset by default, so Earth Engine chooses them. Both
+  # matter. The documentation warns that results vary by search method "for distance
+  # ties and probability values", and KD_TREE ignores the metric, as does AUTO at low
+  # dimensions. Set searchMethod to LINEAR_SEARCH or COVER_TREE whenever the metric
+  # is meant to apply.
   if (has("knn") && !is.null(knn_search_method)) p$knn$searchMethod <- as.character(knn_search_method)
   if (has("knn") && !is.null(knn_metric))        p$knn$metric       <- as.character(knn_metric)
 
@@ -66,18 +67,18 @@ DEFAULT_METHODS <- c("svm", "rf", "gbt", "maxent")
 #' @noRd
 fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, training_params, count = NULL,
                            bg_ratio = NULL, persist_classifier = TRUE, project = NULL) {
-  # persist_classifier defaults TRUE: the package decides internally which classifiers
-  # actually persist (the registry's `persistable` field; svm/gbt/maxent ignore it),
-  # so callers never reason about it. Persisting a whole-region map's tree model to an
-  # asset once lets every export tile apply a *stored* forest instead of retraining it
-  # server-side per tile, the single biggest export speedup under a throttled tier.
-  # The cross-validation path passes FALSE explicitly (per-fold persistence is overhead).
+  # persist_classifier defaults to TRUE. Which methods actually store a model is a
+  # property of the method, held in the registry's `persistable` field, so a caller
+  # never has to reason about it: svm, gbt and maxent ignore the argument. Storing a
+  # whole-region map's tree model once lets every export tile apply the stored forest
+  # instead of retraining it, which is the largest export saving on a throttled tier.
+  # Cross-validation passes FALSE, since a model stored per fold is pure overhead.
   ee <- reticulate::import("ee")
 
-  # Optional class balancing: downsample an absence/background FeatureCollection to
-  # a target absence:presence ratio, entirely server-side (no embeddings egressed).
-  # This keeps the tree methods from collapsing onto the majority class and keeps knn's
-  # vote fraction off the prevalence floor. Only downsamples, never upsamples, so a
+  # Optional class balancing: thin the background collection to a target
+  # absence-to-presence ratio. Runs on Earth Engine, so no embeddings are downloaded.
+  # This keeps the tree methods from collapsing onto the majority class, and keeps
+  # the kNN vote fraction off the prevalence floor. It only ever removes points, so a
   # ratio looser than the data already is leaves the pool untouched.
   balance_bg <- function(bg_fc, n_pos, n_neg) {
     if (is.null(bg_ratio) || n_pos <= 0L || n_neg <= 0L) return(bg_fc)
@@ -87,7 +88,8 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     bg_fc$randomColumn("__bgsel", 42L)$filter(ee$Filter$lt("__bgsel", frac))
   }
 
-  # Upload + background generation (background stays on GEE if presence-only)
+  # Upload the points and, for presence-only input, generate the background. The
+  # background is created and kept on Earth Engine.
   sdm_section("Uploading training data to Google Earth Engine")
   pb_up <- sdm_progress_start("Uploading and sampling")
 
@@ -108,8 +110,9 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
                                          properties = c("year", "present"),
                                          years      = all_years)
 
-    # Background: server-side randomPoints; the computation graph stays small regardless
-    # of n, avoiding the 10 MB payload limit from embedding re-upload.
+    # Draw the background with randomPoints on Earth Engine. The graph stays the same
+    # size whatever n is, which avoids the 10 MB payload limit that uploading sampled
+    # embeddings would hit.
     n_bg <- min(n_pres, bg_count)
     sdm_info(sprintf("Sampling %d background points (server-side) ...", n_bg), indent = 1L)
     bg_fc <- generate_background_fc_gee(aoi_year, n_bg, aoi_geom)
@@ -130,8 +133,7 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
                                          properties = c("year", "present"),
                                          years      = as.list(unique(as.integer(upload_df$year))))
     pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
-    # When real absences are supplied they serve as the background pool, mirroring
-    # the presence-only branch.
+    # Supplied absences serve as the background pool, as in the branch above.
     n_pres       <- sum(train_df$present == 1)
     n_background <- sum(train_df$present == 0)
     bg_balanced  <- balance_bg(sampled_fc$filter(ee$Filter$eq("present", 0L)), n_pres, n_background)
@@ -139,8 +141,9 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
 
   sdm_progress_done(pb_up)
 
-  # GEE classifiers are lazy: clf$train() only builds a computation graph, so this loop
-  # is cheap. similarity is the exception, being eager (see train_gee_model).
+  # Earth Engine classifiers are lazy: clf$train() only builds a graph, so this loop
+  # costs little. similarity is the exception and evaluates eagerly, in
+  # train_gee_model().
   sdm_section(sprintf("Training %d model%s on Google Earth Engine",
                       length(methods), if (length(methods) == 1) "" else "s"))
   pb <- sdm_progress_start("Model training")
@@ -155,10 +158,10 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
       sampled_fc)
     models[[m]]   <- train_gee_model(fc_for_method, m, params = training_params[[m]],
                                      persist = persist_classifier, project = project)
-    # Deliberately no post-fit classify probe: map export and scoring both classify
-    # independently and surface a malformed classifier on their own, and under a
-    # throttled GEE tier the extra synchronous round-trip is the first thing to time
-    # out, discarding classifiers that had in fact trained successfully.
+    # No post-fit probe here, on purpose. Map export and scoring both classify on
+    # their own and surface a malformed classifier anyway, and on a throttled tier
+    # the extra synchronous round trip is the first thing to time out. That discarded
+    # classifiers which had in fact trained.
   }
   sdm_progress_done(pb)
 
@@ -169,8 +172,8 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
       n_background     = n_background,
       methods          = methods,
       scale            = scale,
-      # temporary classifier assets created by persist_classifier (NULL if none),
-      # to be removed with cleanup_classifier_assets() once prediction is done.
+      # Temporary classifier assets written by persist_classifier, empty if none.
+      # Remove them with cleanup_classifier_assets() once prediction is finished.
       classifier_assets = Filter(Negate(is.null), lapply(models, function(x) x$asset_id))
     )
   ))
@@ -248,12 +251,11 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   if (is.null(aoi_year)) aoi_year <- 2023
   if (is.null(methods)) methods <- DEFAULT_METHODS
 
-  # Balanced 1:1 tree background by default (set balance_trees = FALSE for full background;
-  # an explicit numeric bg_ratio overrides). See evaluate_models() for details.
+  # Balanced 1:1 background by default. Set balance_trees = FALSE for the full
+  # background, or pass a numeric bg_ratio to override both. See evaluate_models().
   if (is.null(bg_ratio) && isTRUE(balance_trees)) bg_ratio <- 1
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-  # Prepare AOI Geometry
   aoi_geom <- NULL
   if (inherits(aoi, "python.builtin.object")) {
     aoi_geom <- aoi                                   # pre-built ee.Geometry
@@ -271,11 +273,9 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     methods, n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes,
     variables_per_split, svm_type, svm_kernel, svm_cost, svm_gamma,
     maxent_beta, maxent_features, knn_k, knn_search_method, knn_metric)
-  # Unified Training
   train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
   on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp classifier assets on exit
 
-  # Map Generation
   img_mosaic <- get_embedding_image(aoi_year)
   final_results <- list(methods = methods, model_metadata = train_res$metadata)
   want_ensemble <- isTRUE(ensemble) && length(methods) > 1L
@@ -285,7 +285,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     sdm_info(sprintf("Exporting %s ...", toupper(m)), indent = 1L)
     pred_img <- predict_gee_map(train_res$models[[m]], img_mosaic)
     tif_path <- file.path(output_dir, paste0(m, ".tif"))
-    # Drive-free, water-robust export: tile getDownloadURL + local mosaic.
+    # Export without Google Drive: tile through getDownloadURL, mosaic locally.
     tryCatch(
       export_image_tiled(pred_img, aoi_geom, scale, tif_path),
       error = function(e) sdm_warn(sprintf("Export of %s failed: %s", m, conditionMessage(e)))
@@ -294,18 +294,18 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     member_tifs <- c(member_tifs, tif_path)
   }
 
-  # Ensemble map: the per-pixel mean of the members. The member rasters have just been
-  # written to output_dir on an identical grid, so average them locally rather than
-  # asking Earth Engine to re-classify every pixel with every model a second time.
+  # Ensemble map: the per-pixel mean of the members. The member rasters were just
+  # written to output_dir on the same grid, so average them here rather than ask
+  # Earth Engine to classify every pixel with every model a second time.
   #
   # The members are averaged on their own scales, and those scales do not agree.
-  # rf/gbt/maxent/knn emit probabilities on [0, 1]; similarity is a dot product against
-  # the presence centroid, so it is signed and capped at that centroid's norm; mindist
-  # is a difference of distances, signed and roughly twice as wide; and svm in its
-  # EPSILON_SVR default regresses the 0/1 label without clamping, so it can fall
-  # outside [0, 1] entirely. Mixing families therefore lets the widest-spread member
-  # pull the mean around, and the result is not on a probability scale. Averaging
-  # within one family (the default svm/rf/gbt/maxent tier) is the well-behaved case.
+  # rf, gbt, maxent and knn return probabilities on [0, 1]. similarity is a dot
+  # product against the presence centroid, so it is signed and capped at that
+  # centroid's norm. mindist is a difference of distances, signed and about twice as
+  # wide. svm under its EPSILON_SVR default regresses the 0/1 label without clamping,
+  # so it can fall outside [0, 1] altogether. Mixing these lets the widest-spread
+  # member pull the mean around, and the result is then not on a probability scale.
+  # Averaging within one family, such as the default svm/rf/gbt/maxent tier, behaves.
   if (want_ensemble) {
     written <- Filter(function(p) file.exists(p) && file.info(p)$size > 0, member_tifs)
     if (length(written) < 2L) {
@@ -317,7 +317,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
         layers <- lapply(written, function(p) stars::read_stars(p, proxy = FALSE))
         acc    <- layers[[1]]
         vals   <- lapply(layers, function(r) r[[1]])
-        # NA-skipping mean, matching the masked-pixel semantics of the member exports.
+        # Skip NA, so a pixel masked in one member still averages the rest.
         stacked   <- simplify2array(vals)
         acc[[1]][] <- apply(stacked, seq_len(length(dim(stacked)) - 1L), mean, na.rm = TRUE)
         stars::write_stars(acc, tif_path)
@@ -388,13 +388,13 @@ predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year
     }
   }
 
-  # FC-first scoring: sample embeddings AT the eval points, then classify the resulting
-  # FeatureCollection. Classifying a few thousand feature vectors is light and scales to
-  # high-abundance species, unlike classifying the whole embedding image and then
-  # sampleRegions-ing it (the per-pixel classify graph of a large trained model runs GEE
-  # out of memory). Map export still uses the image path (predict_gee_map); this is only
-  # for scoring a finite point set. On a genuine compute timeout, retry that chunk via a
-  # batch export (larger server-side budget).
+  # Sample the embeddings at the evaluation points first, then classify the resulting
+  # collection. Classifying a few thousand feature vectors is light, and it scales to
+  # species with many records. The alternative, classifying the whole embedding image
+  # and sampling that, builds a per-pixel graph that runs Earth Engine out of memory
+  # for a large model. Map export still takes the image path, in predict_gee_map();
+  # this function only scores a finite set of points. A chunk that hits a genuine
+  # compute timeout is retried through a batch export, which has a larger budget.
   score_features <- function(sub_df, use_async) {
     chunk <- sub_df[, c("longitude", "latitude", "year", ".row_idx"), drop = FALSE]
     names(chunk)[names(chunk) == ".row_idx"] <- "row_idx"
@@ -405,8 +405,8 @@ predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year
     if (use_async) ee_table_to_info_async(scored, project)$features else read_fc_paged(scored)$features
   }
 
-  # Chunk the eval points; each chunk is one classify graph (read paged, so no 5000-feature
-  # cap). Fall back to batch export for any chunk that hits a compute timeout.
+  # One classify graph per chunk, read in pages so the 5000-feature cap does not
+  # apply. A chunk that hits a compute timeout falls back to a batch export.
   chunk_size <- as.integer(chunk_size)
   n_rows     <- nrow(predict_df)
   for (i in seq(1L, n_rows, by = chunk_size)) {
@@ -503,15 +503,14 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
   if (is.null(aoi_year)) aoi_year <- 2023
   if (is.null(methods)) methods <- DEFAULT_METHODS
 
-  # Tree models (rf/gbt) train on a balanced 1:1 background by default, the main lever for
-  # tree performance on imbalanced presence/background data (svm/maxent always see the full
-  # background). Set balance_trees = FALSE to give the trees all background instead; an
-  # explicit numeric bg_ratio (absence:presence) overrides both.
+  # Tree models train on a balanced 1:1 background by default, which matters most on
+  # imbalanced presence and background data. svm and maxent always see the full
+  # background. Set balance_trees = FALSE to give the trees all of it, or pass a
+  # numeric bg_ratio, an absence-to-presence ratio, to override both.
   if (is.null(bg_ratio) && isTRUE(balance_trees)) bg_ratio <- 1
 
-  # --- Parameter validation ---
-  # Points scored per Earth Engine request. Lower it when a large or high-dimensional
-  # job trips the synchronous compute budget mid-chunk.
+  # Points scored per Earth Engine request. Lower it when a large job trips the
+  # synchronous compute budget partway through a chunk.
   score_chunk <- if (!is.null(options$batch_size)) as.integer(options$batch_size) else 4000L
 
   cv_folds <- as.integer(cv_folds)
@@ -527,13 +526,13 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
     methods, n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes,
     variables_per_split, svm_type, svm_kernel, svm_cost, svm_gamma,
     maxent_beta, maxent_features, knn_k, knn_search_method, knn_metric)
-  # --- AOI geometry (bounding box of prediction target or training data) ---
+  # Area of interest: the bounding box of the prediction targets, or of the training
+  # data when no prediction coordinates were given.
   ref_df   <- if (!is.null(predict_coords)) predict_coords else data
   bbox     <- c(min(ref_df$longitude), min(ref_df$latitude),
                 max(ref_df$longitude), max(ref_df$latitude))
   aoi_geom <- ee$Geometry$Rectangle(bbox)
 
-  # --- Cross-validation ---
   cv_metrics       <- NULL
   ensemble_weights <- NULL
 
@@ -550,14 +549,16 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
       ))
     }
 
-    # Spatial folds: blockCV blocks by default (controls spatial autocorrelation
-    # better than contiguous k-means clusters); falls back to k-means if unavailable.
+    # Spatial folds from blockCV by default. Its blocks control spatial
+    # autocorrelation better than the contiguous regions k-means produces. Falls back
+    # to k-means when blockCV is not installed.
     pres_df$cv_fold <- assign_cv_folds(pres_df, cv_folds, method = cv_method, block_size = block_size)
     sdm_info(sprintf("CV folds: %s (%d folds)",
                      switch(cv_method, block = "blockCV blocks", kmeans = "k-means clusters",
                             random = "random k-fold", cv_method), cv_folds), indent = 1L)
 
-    # Generate validation background on GEE, download coordinates once before the CV loop
+    # Generate the validation background and download its coordinates once, before
+    # the fold loop.
     val_bg_n  <- if (is.null(count)) n_pres else as.integer(count)
     bg_fc_gee <- generate_background_fc_gee(aoi_year, val_bg_n, aoi_geom)
     bg_info   <- retry_curl_download(bg_fc_gee$getInfo())
@@ -567,9 +568,10 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
                  year      = aoi_year)
     }))
 
-    # The validation background is identical in every fold, so sample its embeddings
-    # once and reuse the materialised collection. Falls back to per-fold sampling if
-    # the batch scheduler is unavailable, which it can be on a throttled tier.
+    # The validation background is the same in every fold, and only the classifier
+    # changes, so sample its embeddings once and reuse the stored collection. Falls
+    # back to sampling per fold when the batch scheduler is unavailable, which it can
+    # be on a throttled tier.
     val_bg_df$row_idx <- seq_len(nrow(val_bg_df)) - 1L
     bg_emb <- get_embeddings_at_fc(
       upload_points_to_gee(val_bg_df[, c("longitude", "latitude", "year", "row_idx")]),
@@ -633,11 +635,11 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
     }
   }
 
-  # --- Final model trained on all data ---
+  # Final model, trained on all the data.
   train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, count = count, bg_ratio = bg_ratio, persist_classifier = persist_classifier, project = gee_project)
   on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp assets on any exit
 
-  # --- Pure CV mode: return without predict_coords ---
+  # Cross-validation only: return without scoring any prediction coordinates.
   if (is.null(predict_coords)) {
     sdm_finish(t_total_start, "Species evaluation finished")
     return(list(
@@ -648,13 +650,11 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
     ))
   }
 
-  # --- Prediction ---
   sdm_section(sprintf("Predicting at %d coordinates (server-side)", nrow(predict_coords)))
   pb_pred    <- sdm_progress_start("Prediction")
   final_pred <- predict_scores_internal(predict_coords, train_res$models, methods, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
   sdm_progress_done(pb_pred)
 
-  # --- Ensemble ---
   pred_cols <- paste0("pred_", methods)
   if (weighted_ensemble && !is.null(ensemble_weights)) {
     wts <- ensemble_weights[methods]
@@ -663,7 +663,6 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
     final_pred$pred_ensemble <- rowMeans(final_pred[, pred_cols, drop = FALSE], na.rm = TRUE)
   }
 
-  # --- Metrics ---
   final_results <- list(
     methods           = c(methods, "ensemble"),
     metrics           = list(),
@@ -674,8 +673,8 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
   )
 
   if ("present" %in% names(final_pred)) {
-    # Warn about eval points dropped due to missing satellite coverage.
-    # All models share the same image mask, so NA in any one model means NA in all.
+    # Report evaluation points dropped for want of satellite coverage. Every model
+    # reads the same image mask, so an NA in one model means NA in all of them.
     na_mask <- is.na(final_pred[[paste0("pred_", methods[1])]])
     if (any(na_mask)) {
       na_pres <- sum(na_mask & final_pred$present == 1)

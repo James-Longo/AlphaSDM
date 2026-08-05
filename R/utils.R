@@ -1,80 +1,85 @@
-# ============================================================
-#  AlphaSDM: Internal Logging & Progress Utilities (base R)
-# ============================================================
+# Console output and per-run state. Base R only, so the package pulls in no
+# printing dependency.
 
 # ---- Package-level state ----
+
 .alphasdm_env <- new.env(parent = emptyenv())
 .alphasdm_env$verbose <- TRUE
 .alphasdm_env$standardization_active <- FALSE
 .alphasdm_env$standardization_info_printed <- FALSE
 
-# ---- Verbosity control ----
-
-#' Control AlphaSDM console output verbosity
+#' Turn AlphaSDM console output on or off
 #'
-#' @param verbose Logical. Set FALSE to suppress all non-error messages.
+#' Every progress line the package prints is a message, not a warning or a print,
+#' so this suppresses all of them at once. Errors are unaffected.
+#'
+#' @param verbose Logical. FALSE suppresses all non-error output.
+#' @return `verbose`, invisibly. Called for its effect on package state.
 #' @export
 sdm_verbose <- function(verbose = TRUE) {
   .alphasdm_env$verbose <- isTRUE(verbose)
   invisible(verbose)
 }
 
-# ---- Internal helper ----
-
 .sdm_msg <- function(text) {
   if (!isTRUE(.alphasdm_env$verbose)) return(invisible(NULL))
   message(text)
 }
 
-# ============================================================
-#  Public logging API
-# ============================================================
-
-#' Print a top-level section header
-#' @param title Section title string.
+#' Print a section header
+#' @param title Section title.
+#' @return Nothing. Prints a message.
 #' @noRd
 sdm_section <- function(title) {
   rule <- strrep("\u2500", max(0, 60 - nchar(title) - 2))
   .sdm_msg(sprintf("\n\u250c\u2500 %s %s", title, rule))
 }
 
-#' Print an informational status line
-#' @param msg Message string.
-#' @param indent Integer indent level (0 = top-level, 1 = nested).
+#' Print a status line
+#' @param msg Message text.
+#' @param indent Indent level: 0 is top level, 1 is nested under a section.
+#' @return Nothing. Prints a message.
 #' @noRd
 sdm_info <- function(msg, indent = 0L) {
   pad <- strrep("  ", indent)
   .sdm_msg(sprintf("%s  \u2023 %s", pad, msg))
 }
 
-#' Print a success / completion note
-#' @param msg Message string.
-#' @param indent Integer indent level.
+#' Print a completion note
+#' @param msg Message text.
+#' @param indent Indent level: 0 is top level, 1 is nested under a section.
+#' @return Nothing. Prints a message.
 #' @noRd
 sdm_done <- function(msg, indent = 0L) {
   pad <- strrep("  ", indent)
   .sdm_msg(sprintf("%s  \u2714 %s", pad, msg))
 }
 
-#' Print a warning / advisory note (non-fatal)
-#' @param msg Message string.
-#' @param indent Integer indent level.
+#' Print an advisory note
+#'
+#' Advisory only: this prints a message and does not signal a condition, so it
+#' does not collect in `warnings()` and `suppressMessages()` hides it.
+#'
+#' @param msg Message text.
+#' @param indent Indent level: 0 is top level, 1 is nested under a section.
+#' @return Nothing. Prints a message.
 #' @noRd
 sdm_warn <- function(msg, indent = 0L) {
   pad <- strrep("  ", indent)
   .sdm_msg(sprintf("%s  ! %s", pad, msg))
 }
 
-#' Start a named progress tracker and return a handle
-#' @param name Label for this operation.
-#' @return A list handle used with \code{sdm_progress_done}.
+#' Start a progress timer
+#' @param name Label for the operation being timed.
+#' @return A handle to pass to \code{sdm_progress_done}.
 #' @noRd
 sdm_progress_start <- function(name) {
   list(name = name, start = proc.time()[["elapsed"]])
 }
 
-#' Finish a progress tracker and print elapsed time
-#' @param handle Handle returned by \code{sdm_progress_start}.
+#' Stop a progress timer and print how long it ran
+#' @param handle Handle from \code{sdm_progress_start}.
+#' @return Nothing. Prints a message.
 #' @noRd
 sdm_progress_done <- function(handle) {
   if (is.null(handle) || !isTRUE(.alphasdm_env$verbose)) return(invisible(NULL))
@@ -85,9 +90,10 @@ sdm_progress_done <- function(handle) {
 
 #' Reset the per-run console state
 #'
-#' `format_data()` prints its section header only once per run. Registering this
-#' with `on.exit()` means the state is cleared even when a run aborts, which would
-#' otherwise leave the next `format_data()` in the session silently header-less.
+#' `format_data()` prints its section header once per run, so the run tracks
+#' whether it has printed yet. Register this with `on.exit()`. A run that aborts
+#' would otherwise leave the flag set, and the next `format_data()` in that
+#' session would print no header.
 #' @noRd
 reset_sdm_run_state <- function() {
   .alphasdm_env$standardization_active <- FALSE
@@ -95,7 +101,10 @@ reset_sdm_run_state <- function() {
   invisible(NULL)
 }
 
-#' Close out a run: elapsed-time line under a closing section header
+#' Close a run with a section header and the elapsed time
+#' @param t_start Elapsed-time reading taken at the start of the run, in seconds.
+#' @param title Section title to close with.
+#' @return Nothing. Prints messages.
 #' @noRd
 sdm_finish <- function(t_start, title) {
   sdm_section(title)

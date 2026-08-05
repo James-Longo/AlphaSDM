@@ -1,9 +1,18 @@
-#' Calculate Continuous Boyce Index (CBI)
-#' 
-#' @param pos_scores Scores for presence points
-#' @param all_scores Scores for all points (presence + background)
-#' @param window_width Width of the moving window (proportion of score range)
-#' @param n_bins Number of bins for evaluation
+#' Calculate the Continuous Boyce Index
+#'
+#' Measures how far the ratio of predicted to expected presences rises with
+#' suitability. A well calibrated model gives a value near 1, a random one near 0.
+#'
+#' @param pos_scores Numeric suitability scores at presence points. NA is dropped.
+#' @param all_scores Numeric suitability scores at all points, presence and
+#'   background together. NA is dropped.
+#' @param window_width Width of the moving window, as a proportion of the score
+#'   range.
+#' @param n_bins Number of window positions to evaluate.
+#' @return A single number in [-1, 1], the Spearman correlation between window
+#'   position and the predicted-to-expected ratio. Returns 0 when there are no
+#'   presence scores, when all scores are equal, or when the correlation is
+#'   undefined.
 #' @export
 calculate_cbi <- function(pos_scores, all_scores, window_width = 0.1, n_bins = 100) {
   pos_scores <- pos_scores[!is.na(pos_scores)]
@@ -39,17 +48,21 @@ calculate_cbi <- function(pos_scores, all_scores, window_width = 0.1, n_bins = 1
   
   p_e <- f_obs[valid] / f_exp[valid]
   
-  # Spearman correlation
   correlation <- stats::cor(eval_points[valid], p_e, method = "spearman")
   
   if (is.na(correlation)) return(0.0)
   return(as.numeric(correlation))
 }
 
-#' Calculate Classifier Metrics
-#' 
-#' @param scores_pos Scores for presence points
-#' @param scores_neg Scores for background/absence points
+#' Calculate discrimination and calibration metrics
+#'
+#' @param scores_pos Numeric suitability scores at presence points. NA is dropped.
+#' @param scores_neg Numeric suitability scores at background or absence points.
+#'   NA is dropped.
+#' @return A named list: `cbi`, `auc_roc`, `auc_prg`, `tss`, `ba` and `cor`, each a
+#'   single number. Scores need only be on a common scale within one call, since
+#'   every metric except `cor` depends on the ranking alone. When either class is
+#'   empty the list is filled with the no-skill values.
 #' @export
 calculate_classifier_metrics <- function(scores_pos, scores_neg) {
   scores_pos <- scores_pos[!is.na(scores_pos)]
@@ -85,41 +98,39 @@ calculate_classifier_metrics <- function(scores_pos, scores_neg) {
   tp <- cumsum(sorted_labels)
   fp <- cumsum(1 - sorted_labels)
   
-  # Formula: PrecGain = 1 - (fp/tp) / (n_neg/n_pos), RecGain = 1 - (fn/tp) / (n_neg/n_pos)
+  # PrecGain = 1 - (fp/tp) / (n_neg/n_pos), RecGain = 1 - (fn/tp) / (n_neg/n_pos)
   fn <- n_pos - tp
   prec_gain <- 1 - (fp / tp) / (n_neg / n_pos)
   rec_gain <- 1 - (fn / tp) / (n_neg / n_pos)
   
-  # Filter for non-negative gains (random classifier is 0)
+  # Keep only non-negative gains: precision-recall-gain space is defined so a
+  # random classifier sits at 0, and negative values fall outside the unit square.
   valid_idx <- which(prec_gain >= 0 & rec_gain >= 0)
   if (length(valid_idx) > 0) {
-    # Add origin (0,0)
     pg <- c(0, prec_gain[valid_idx])
     rg <- c(0, rec_gain[valid_idx])
-    # Sort for integration
     ord_prg <- order(rg)
     pg <- pg[ord_prg]
     rg <- rg[ord_prg]
-    # Trapezoidal rule
+    # Trapezoidal rule over the gain curve.
     auc_prg <- sum(diff(rg) * (pg[-1] + pg[-length(pg)]) / 2)
   } else {
     auc_prg <- 0.0
   }
   
-  # TSS and Balanced Accuracy
-  # Tie-safe: a valid threshold groups ALL points sharing a score together, so
-  # only evaluate sens/spec at boundaries where the next (descending) score
-  # differs. Without this, tied/constant scores spuriously hit TSS=1 because the
-  # presences (listed first in scores_all) are counted before the tied absences.
+  # Evaluate sensitivity and specificity only at score boundaries. A threshold has
+  # to put every point sharing a score on the same side of it, so a sweep that
+  # splits a run of tied scores is not a threshold any model could apply. Without
+  # this, tied or constant scores reach TSS = 1, because presences come first in
+  # scores_all and are counted before the absences they are tied with.
   keep <- c(sorted_scores[-length(sorted_scores)] != sorted_scores[-1], TRUE)
   sens <- tp[keep] / n_pos
   spec <- (n_neg - fp[keep]) / n_neg
   tss <- max(sens + spec - 1)
   ba <- max((sens + spec) / 2)
   
-  # Pearson Correlation (COR). A degenerate model can return one constant score
-  # for every point; cor() is undefined there (zero variance) and warns, so report
-  # the no-association value directly.
+  # A degenerate model can return one constant score for every point. Pearson
+  # correlation is undefined at zero variance and warns, so report no association.
   cor_val <- if (stats::sd(scores_all) < 1e-12) 0 else
     stats::cor(all_labels, scores_all, method = "pearson")
   

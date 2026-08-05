@@ -2,28 +2,33 @@
 % Please edit documentation in R/data_utils.R
 \name{format_data}
 \alias{format_data}
-\title{Format Data for AlphaSDM}
+\title{Standardize occurrence records for AlphaSDM}
 \usage{
 format_data(data, coords, year, presence = NULL, species = NULL, label = NULL)
 }
 \arguments{
-\item{data}{A data frame containing your survey data.}
+\item{data}{A data frame of survey records.}
 
-\item{coords}{A character vector of length 2 specifying the longitude and latitude columns IN ORDER: c(longitude_col, latitude_col). Note: Longitude first, then Latitude!}
+\item{coords}{Character vector of length 2 naming the longitude and latitude
+columns, longitude first: `c(longitude_col, latitude_col)`. The order matters
+and is not checked beyond a range test on the first non-missing row.}
 
 \item{year}{A character string naming the year or date column. Dates are reduced
 to their year. Records outside the Alpha Earth window are dropped.}
 
-\item{presence}{Optional. A character string specifying the presence/absence column (values should be 0 or 1).}
+\item{presence}{Optional. Name of the presence column, holding 1 for presence
+and 0 for absence. Omit it to treat every record as a presence.}
 
-\item{species}{Optional. A character string specifying the species name column.}
+\item{species}{Optional. Name of the species column.}
 
-\item{label}{Optional. A short name for this dataset, used only to label the
-console summary line (e.g. "Training" or "Evaluation").}
+\item{label}{Optional. Short name for this data set, used only to label the
+console summary line, for example "Training" or "Evaluation".}
 }
 \value{
-A standardized data frame with `longitude`, `latitude`, `year` and
-  `present` columns, ready for [evaluate_models()] or [generate_map()].
+A data frame with `longitude`, `latitude`, `year` and `present` columns,
+  ready for [evaluate_models()] or [generate_map()]. Rows are ordered presences
+  first. Fewer rows come back than went in whenever records are dropped for
+  coverage, missing values or duplication; each drop is reported as a message.
 }
 \description{
 Standardizes an input data frame for the AlphaSDM pipeline: renames the

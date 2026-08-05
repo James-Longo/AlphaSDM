@@ -2,15 +2,22 @@
 % Please edit documentation in R/metrics.R
 \name{calculate_classifier_metrics}
 \alias{calculate_classifier_metrics}
-\title{Calculate Classifier Metrics}
+\title{Calculate discrimination and calibration metrics}
 \usage{
 calculate_classifier_metrics(scores_pos, scores_neg)
 }
 \arguments{
-\item{scores_pos}{Scores for presence points}
+\item{scores_pos}{Numeric suitability scores at presence points. NA is dropped.}
 
-\item{scores_neg}{Scores for background/absence points}
+\item{scores_neg}{Numeric suitability scores at background or absence points.
+NA is dropped.}
+}
+\value{
+A named list: `cbi`, `auc_roc`, `auc_prg`, `tss`, `ba` and `cor`, each a
+  single number. Scores need only be on a common scale within one call, since
+  every metric except `cor` depends on the ranking alone. When either class is
+  empty the list is filled with the no-skill values.
 }
 \description{
-Calculate Classifier Metrics
+Calculate discrimination and calibration metrics
 }
