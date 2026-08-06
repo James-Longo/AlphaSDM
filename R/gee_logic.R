@@ -404,12 +404,11 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
         # a regression score.
         reg_clf <- do.call(clf_factory, filtered_params)$setOutputMode("REGRESSION")$train(
           features = sampled_fc, classProperty = LABEL_COL, inputProperties = emb_cols)
-        # Give up quickly if the scheduler never starts the task, but let one that is
-        # running finish however long it takes. A large training set takes longer to
-        # write than a small one, and cutting it off there is what loses the speedup
-        # on exactly the jobs that need it.
-        ee_persist_classifier(reg_clf, project = project,
-                              max_queue_minutes = 5)
+        # No limit. Every number tried here was a guess, and each one eventually cut
+        # off a task that was working: a large training set takes longer to write than
+        # a small one, and the write is what keeps the classify graph small enough to
+        # serve a tile at all. Losing it is what forces the expensive path.
+        ee_persist_classifier(reg_clf, project = project)
       }, error = function(e) {
         sdm_warn(sprintf("Classifier persistence unavailable (%s); falling back to the inline %s classifier.",
                          conditionMessage(e), toupper(method)), indent = 1L)

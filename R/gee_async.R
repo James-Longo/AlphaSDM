@@ -104,9 +104,10 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
 #'   kept doing. Earth Engine ends its own tasks, so this does not wait forever.
 #'   Set ALPHASDM_MAX_WAIT_MINUTES for an unattended run that must not block.
 #' @param max_queue_minutes Give up if the task has not started within this long.
-#'   A backlogged scheduler and a task doing real work are different waits: the
-#'   first is worth abandoning quickly, the second is not. NULL applies no separate
-#'   limit on queueing.
+#'   NULL, the default, waits. Queueing is how Earth Engine schedules work, not a
+#'   sign that something is wrong, and a task that has not started yet has cost
+#'   nothing to keep waiting for. Provided for an unattended run that would rather
+#'   fall back than sit in a queue.
 #' @return The asset id. Errors when the task fails, is cancelled, or gives up.
 #' @noRd
 ee_await_export <- function(handle, poll_seconds = 15, max_minutes = NULL,
