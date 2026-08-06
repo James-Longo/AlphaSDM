@@ -618,14 +618,13 @@ export_image_tiled <- function(image, region, scale, dsn,
   ee <- reticulate::import("ee")
   MIN_TILE_PX <- 128L
 
-  # A tile that renders slowly is not a tile that failed. R's default download
-  # timeout is 60 seconds, which a 10 m tile carrying a fitted model exceeds
-  # routinely. Two budgets are used: a short one while probing for a workable tile
-  # size, so an over-large tile is found in a couple of minutes rather than after the
-  # full budget, and a long one for the tiles themselves.
-  PROBE_TIMEOUT <- 180L
-  TILE_TIMEOUT  <- 900L
+  # No download deadline. R's default is 60 seconds, and options(timeout) is
+  # libcurl's total transfer time rather than an idle timeout, so any value at all
+  # eventually cuts off a download that is healthy but slow. A tile at fine scale
+  # takes as long as Earth Engine takes. Let the server decide when a request is
+  # finished or refused; 0 removes the limit.
   old_timeout <- getOption("timeout")
+  options(timeout = 0)
   on.exit(options(timeout = old_timeout), add = TRUE)
 
   # Set ALPHASDM_MAX_TILE_PX to pin the tile size. Otherwise the size is found by
@@ -736,7 +735,6 @@ export_image_tiled <- function(image, region, scale, dsn,
   # backstop for an early exit only.
   staged <- NULL
   on.exit(if (!is.null(staged)) ee_delete_asset_quietly(staged), add = TRUE)
-  options(timeout = PROBE_TIMEOUT)
   repeat {
     grid   <- build_grid(max_tile_px)
     tmpdir <- tile_dir(max_tile_px)
@@ -746,10 +744,9 @@ export_image_tiled <- function(image, region, scale, dsn,
     # budget here still separates a server refusal from a transient network failure.
     res  <- fetch_tile(geom, first_path, attempts = tries, stop_when_hopeless = TRUE)
     if (isTRUE(res)) break
-    # Shrink on a server refusal, and on a tile that will not render inside the probe
-    # budget. Both mean this tile size is unworkable here: the first because the
-    # server says so, the second because a whole grid of tiles this slow would never
-    # finish. Any other failure is a network problem a smaller tile will not fix.
+    # Shrink only when the server refused the request. A slow tile is not a tile that
+    # is too large, and treating it as one used to quadruple the tile count over a
+    # whole region on the strength of one slow download.
     too_big <- hopeless(res)
     if (!too_big) {
       stop(sprintf("export_image_tiled: tile download failed at %d px. %s",
@@ -786,7 +783,6 @@ export_image_tiled <- function(image, region, scale, dsn,
     sdm_info(sprintf("Tile of %d px did not render; retrying at %d px.",
                      max_tile_px * 2L, max_tile_px), indent = 2L)
   }
-  options(timeout = max(as.integer(old_timeout), TILE_TIMEOUT))
   if (!nzchar(cache_root)) on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
 
   nx <- grid$nx; ny <- grid$ny; xb <- grid$xb; yb <- grid$yb
