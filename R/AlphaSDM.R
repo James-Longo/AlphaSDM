@@ -285,13 +285,19 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     sdm_info(sprintf("Exporting %s ...", toupper(m)), indent = 1L)
     pred_img <- predict_gee_map(train_res$models[[m]], img_mosaic)
     tif_path <- file.path(output_dir, paste0(m, ".tif"))
-    # Export without Google Drive: tile through getDownloadURL, mosaic locally.
-    tryCatch(
+    # Export without Google Drive. The export gives back a single raster when the
+    # region is one tile and a directory of tiles otherwise, so record what it
+    # actually produced rather than the name it was asked for.
+    produced <- tryCatch(
       export_image_tiled(pred_img, aoi_geom, scale, tif_path),
-      error = function(e) sdm_warn(sprintf("Export of %s failed: %s", m, conditionMessage(e)))
+      error = function(e) {
+        sdm_warn(sprintf("Export of %s failed: %s", m, conditionMessage(e))); NULL
+      }
     )
-    final_results[[paste0(m, "_map")]] <- tif_path
-    member_tifs <- c(member_tifs, tif_path)
+    if (!is.null(produced)) {
+      final_results[[paste0(m, "_map")]] <- produced
+      member_tifs <- c(member_tifs, produced)
+    }
   }
 
   # Ensemble map: the per-pixel mean of the members. The member rasters were just
@@ -307,25 +313,48 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   # member pull the mean around, and the result is then not on a probability scale.
   # Averaging within one family, such as the default svm/rf/gbt/maxent tier, behaves.
   if (want_ensemble) {
-    written <- Filter(function(p) file.exists(p) && file.info(p)$size > 0, member_tifs)
+    written <- Filter(function(p) file.exists(p), member_tifs)
     if (length(written) < 2L) {
       sdm_warn("Ensemble skipped: fewer than two member maps were exported.", indent = 1L)
-    } else {
+    } else if (all(!dir.exists(written))) {
+      # Single-raster members: average them directly.
       sdm_info("Writing ENSEMBLE ...", indent = 1L)
       tif_path <- file.path(output_dir, "ensemble.tif")
       ok <- tryCatch({
         layers <- lapply(written, function(p) stars::read_stars(p, proxy = FALSE))
-        acc    <- layers[[1]]
-        vals   <- lapply(layers, function(r) r[[1]])
-        # Skip NA, so a pixel masked in one member still averages the rest.
-        stacked   <- simplify2array(vals)
+        acc <- layers[[1]]
+        stacked <- simplify2array(lapply(layers, function(r) r[[1]]))
         acc[[1]][] <- apply(stacked, seq_len(length(dim(stacked)) - 1L), mean, na.rm = TRUE)
-        stars::write_stars(acc, tif_path)
-        TRUE
+        stars::write_stars(acc, tif_path); TRUE
       }, error = function(e) { sdm_warn(sprintf("Ensemble failed: %s", conditionMessage(e))); FALSE })
       if (ok) final_results$ensemble_map <- tif_path
+    } else {
+      # Tiled members: average tile by tile, so the whole region is never in memory
+      # at once. Only tiles present for every member are combined.
+      sdm_info("Writing ENSEMBLE tiles ...", indent = 1L)
+      ens_dir <- file.path(output_dir, "ensemble_tiles")
+      dir.create(ens_dir, showWarnings = FALSE, recursive = TRUE)
+      common <- Reduce(intersect, lapply(written, function(d) basename(list.files(d, "\\.tif$"))))
+      n_ok <- 0L
+      for (nm in common) {
+        ok <- tryCatch({
+          layers <- lapply(written, function(d) stars::read_stars(file.path(d, nm), proxy = FALSE))
+          acc <- layers[[1]]
+          stacked <- simplify2array(lapply(layers, function(r) r[[1]]))
+          acc[[1]][] <- apply(stacked, seq_len(length(dim(stacked)) - 1L), mean, na.rm = TRUE)
+          stars::write_stars(acc, file.path(ens_dir, nm)); TRUE
+        }, error = function(e) FALSE)
+        if (isTRUE(ok)) n_ok <- n_ok + 1L
+      }
+      if (n_ok > 0L) {
+        final_results$ensemble_map <- ens_dir
+        sdm_info(sprintf("%d ensemble tiles written.", n_ok), indent = 2L)
+      } else {
+        sdm_warn("Ensemble tiles could not be written.", indent = 1L)
+      }
     }
   }
+
   sdm_progress_done(pb_map)
   
   sdm_finish(t_total_start, "Species processing finished")

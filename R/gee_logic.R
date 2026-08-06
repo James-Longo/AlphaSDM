@@ -858,13 +858,46 @@ export_image_tiled <- function(image, region, scale, dsn,
     sdm_warn(sprintf("%d of %d export tiles failed after %d retries; the raster has gaps there. Last error: %s",
                      failed, n_total, tries, last_msg))
 
-  if (length(tiles) == 1L) {
-    r <- stars::read_stars(tiles[[1]], proxy = FALSE)
-  } else {
-    moz <- stars::st_mosaic(tiles)               # GDAL mosaic -> temp GeoTIFF
-    r   <- stars::read_stars(moz, proxy = FALSE)
+  # Deliver the tiles rather than one mosaicked raster. A whole-region raster at fine
+  # scale does not fit in memory: the Greater Antilles at 10 m is 62 GB, and reading
+  # that to substitute a nodata value would fail on any ordinary machine. Each tile is
+  # bounded, so the same work per tile always fits.
+  #
+  # The sentinel written for masked pixels is turned into NA here, one tile at a time,
+  # so the tiles are usable as they are. Mosaic them with gdalbuildvrt or terra::vrt
+  # if a single raster is wanted.
+  out_dir <- file.path(dirname(dsn), paste0(tools::file_path_sans_ext(basename(dsn)), "_tiles"))
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+  written <- character(0)
+  for (k in seq_along(tiles)) {
+    dest <- file.path(out_dir, basename(tiles[k]))
+    ok <- tryCatch({
+      r <- stars::read_stars(tiles[k], proxy = FALSE)
+      r[[1]][r[[1]] == nodata] <- NA
+      stars::write_stars(r, dest)
+      TRUE
+    }, error = function(e) FALSE)
+    if (isTRUE(ok)) {
+      written <- c(written, dest)
+      # Release the downloaded copy as soon as it has been converted. Holding both
+      # doubles peak disk, which at fine scale over a large region is tens of GB.
+      # Tiles in the resumable cache are kept, since that is what makes a killed run
+      # restartable.
+      if (!nzchar(cache_root)) unlink(tiles[k])
+    }
+    if (n_total > 50L && k %% max(10L, length(tiles) %/% 10L) == 0L)
+      sdm_info(sprintf("wrote %d/%d tiles", k, length(tiles)), indent = 2L)
   }
-  r[[1]][r[[1]] == nodata] <- NA                  # sentinel (water) -> NA
-  stars::write_stars(r, dsn)
-  dsn
+  if (length(written) == 0L) stop("export_image_tiled: no tile could be written.", call. = FALSE)
+
+  # A single tile is the whole region, so hand back the raster itself rather than a
+  # directory holding one file.
+  if (length(written) == 1L && n_total == 1L) {
+    file.copy(written[1], dsn, overwrite = TRUE)
+    unlink(out_dir, recursive = TRUE)
+    return(dsn)
+  }
+  sdm_info(sprintf("%d tiles written to %s", length(written), out_dir), indent = 2L)
+  out_dir
 }
