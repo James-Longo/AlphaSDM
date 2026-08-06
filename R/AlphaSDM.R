@@ -606,7 +606,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
       upload_points_to_gee(val_bg_df[, c("longitude", "latitude", "year", "row_idx")]),
       scale, properties = c("year", "row_idx"), geometries = TRUE,
       years = list(as.integer(aoi_year)))
-    bg_mat <- tryCatch(ee_materialize_fc_async(bg_emb, project = gee_project, max_minutes = 20),
+    bg_mat <- tryCatch(ee_materialize_fc_async(bg_emb, project = gee_project),
                        error = function(e) {
                          sdm_warn(sprintf("Could not cache the validation background (%s); sampling it per fold.",
                                           conditionMessage(e)), indent = 1L)

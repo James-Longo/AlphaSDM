@@ -50,3 +50,27 @@ test_that("no queue limit means queueing alone never ends the wait", {
     "projects/p/assets/a"
   )
 })
+
+test_that("a running task is not cut off by a deadline of our own", {
+  # Twice a fixed limit turned Earth Engine finishing the work into this package
+  # reporting a failure. There is no overall deadline by default.
+  expect_equal(
+    ee_await_export(fake_task(c("READY", rep("RUNNING", 500), "COMPLETED")), poll_seconds = 0),
+    "projects/p/assets/a"
+  )
+})
+
+test_that("an unattended run can still impose a ceiling", {
+  withr::local_envvar(ALPHASDM_MAX_WAIT_MINUTES = "0.001")
+  expect_error(
+    ee_await_export(fake_task(rep("RUNNING", 500)), poll_seconds = 0),
+    "exceeded max_minutes"
+  )
+})
+
+test_that("a failed task is reported at once, not waited out", {
+  expect_error(
+    ee_await_export(fake_task(c("RUNNING", "FAILED")), poll_seconds = 0),
+    "FAILED"
+  )
+})

@@ -98,16 +98,22 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
 #'
 #' @param handle A handle from `ee_start_fc_export()`.
 #' @param poll_seconds Seconds between status checks.
-#' @param max_minutes Give up after this long and cancel the task.
+#' @param max_minutes Overall limit. NULL, the default, means wait for as long as
+#'   the task keeps running. A deadline on work that is progressing only turns
+#'   Earth Engine's success into our own failure, which is what a fixed limit here
+#'   kept doing. Earth Engine ends its own tasks, so this does not wait forever.
+#'   Set ALPHASDM_MAX_WAIT_MINUTES for an unattended run that must not block.
 #' @param max_queue_minutes Give up if the task has not started within this long.
 #'   A backlogged scheduler and a task doing real work are different waits: the
 #'   first is worth abandoning quickly, the second is not. NULL applies no separate
 #'   limit on queueing.
-#' @return The asset id. Errors when the task fails, is cancelled, or times out.
+#' @return The asset id. Errors when the task fails, is cancelled, or gives up.
 #' @noRd
-ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60,
+ee_await_export <- function(handle, poll_seconds = 15, max_minutes = NULL,
                             max_queue_minutes = NULL) {
-  deadline <- Sys.time() + max_minutes * 60
+  env_cap <- suppressWarnings(as.numeric(Sys.getenv("ALPHASDM_MAX_WAIT_MINUTES", "")))
+  if (!is.na(env_cap) && env_cap > 0) max_minutes <- env_cap
+  deadline <- if (is.null(max_minutes)) NULL else Sys.time() + max_minutes * 60
   queue_deadline <- if (is.null(max_queue_minutes)) NULL else Sys.time() + max_queue_minutes * 60
   ever_ran <- FALSE
   start <- Sys.time(); last_beat <- 0; last_state <- ""
@@ -127,9 +133,10 @@ ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60,
       stop(sprintf("Async GEE export still queued after %g min (asset %s)",
                    max_queue_minutes, handle$asset_id))
     }
-    if (Sys.time() > deadline) {
+    if (!is.null(deadline) && Sys.time() > deadline) {
       try(handle$task$cancel(), silent = TRUE)
-      stop(sprintf("Async GEE export exceeded max_minutes = %d (asset %s)", max_minutes, handle$asset_id))
+      stop(sprintf("Async GEE export exceeded max_minutes = %g (asset %s)",
+                   max_minutes, handle$asset_id))
     }
     # Report the task's own state on every change, plus a heartbeat about once a
     # minute. READY means queued and RUNNING means working, and on a throttled tier
@@ -137,7 +144,9 @@ ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60,
     elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
     if (!identical(state, last_state) || elapsed - last_beat >= 60) {
       lbl <- switch(state, READY = "queued", RUNNING = "running", tolower(state))
-      sdm_info(sprintf("export %s server-side ... (%.0fs elapsed)", lbl, elapsed), indent = 2L)
+      sdm_info(sprintf("export %s server-side ... (%s elapsed)", lbl,
+                       if (elapsed < 600) sprintf("%.0fs", elapsed)
+                       else sprintf("%.0f min", elapsed / 60)), indent = 2L)
       last_beat <- elapsed; last_state <- state
     }
     Sys.sleep(poll_seconds)
@@ -197,7 +206,7 @@ sdm_gee_status <- function(active_only = TRUE, since_minutes = 180) {
 #' @return The new asset id.
 #' @noRd
 ee_export_fc_to_asset <- function(fc, project = NULL, select = NULL,
-                                  poll_seconds = 15, max_minutes = 60) {
+                                  poll_seconds = 15, max_minutes = NULL) {
   handle <- ee_start_fc_export(fc, project, select)
   ee_await_export(handle, poll_seconds, max_minutes)
 }
@@ -232,7 +241,7 @@ ee_delete_asset_quietly <- function(asset_id) {
 #' @return A list with the materialised `fc` and its `asset_id`.
 #' @noRd
 ee_materialize_fc_async <- function(fc, project = NULL, select = NULL,
-                                    poll_seconds = 15, max_minutes = 60) {
+                                    poll_seconds = 15, max_minutes = NULL) {
   ee <- reticulate::import("ee")
   asset_id <- ee_export_fc_to_asset(fc, project, select, poll_seconds, max_minutes)
   list(fc = ee$FeatureCollection(asset_id), asset_id = asset_id)
@@ -256,7 +265,7 @@ ee_materialize_fc_async <- function(fc, project = NULL, select = NULL,
 #' @param max_queue_minutes Give up if the task has not started within this long.
 #' @return A list with the reloaded `classifier` and its `asset_id`.
 #' @noRd
-ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_minutes = 60,
+ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_minutes = NULL,
                                   max_queue_minutes = NULL) {
   ee     <- reticulate::import("ee")
   root   <- async_asset_root(project)
@@ -366,7 +375,7 @@ sdm_clean_assets <- function(older_than_hours = 48, dry_run = FALSE,
 #' @return A list with the stored `img` and its `asset_id`.
 #' @noRd
 ee_persist_image <- function(img, region, scale, project = NULL,
-                             poll_seconds = 15, max_minutes = 720) {
+                             poll_seconds = 15, max_minutes = NULL) {
   ee     <- reticulate::import("ee")
   root   <- async_asset_root(project)
   stamp  <- format(Sys.time(), "%Y%m%d%H%M%S")
@@ -399,7 +408,7 @@ ee_persist_image <- function(img, region, scale, project = NULL,
 #' @return A list with a `features` element, matching the shape `getInfo()` returns.
 #' @noRd
 ee_table_to_info_async <- function(fc, project = NULL, select = NULL,
-                                   poll_seconds = 15, max_minutes = 60) {
+                                   poll_seconds = 15, max_minutes = NULL) {
   ee <- reticulate::import("ee")
   asset_id <- ee_export_fc_to_asset(fc, project, select, poll_seconds, max_minutes)
   info <- read_fc_paged(ee$FeatureCollection(asset_id))
