@@ -555,6 +555,12 @@ ensure_gee_authenticated <- function(project = NULL) {
 
     if (isTRUE(result)) {
         options(AlphaSDM.gee_initialized = TRUE)
+        # Sweep leftovers from runs that were killed before they could clean up.
+        # Once per session, quiet, and never fatal: a failed sweep must not stop a
+        # run from starting. Set ALPHASDM_NO_ASSET_SWEEP=1 to skip it.
+        if (!nzchar(Sys.getenv("ALPHASDM_NO_ASSET_SWEEP"))) {
+            try(sdm_clean_assets(quiet = TRUE), silent = TRUE)
+        }
         # Re-apply AFTER Initialize: GEE's deprecation.py calls _UnfilterDeprecationWarnings()
         # internally which inserts a 'default' filter for 'ee.deprecation', overriding our
         # pre-init filter. Re-applying here prepends a new 'ignore' that takes precedence.

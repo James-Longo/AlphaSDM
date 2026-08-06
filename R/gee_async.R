@@ -256,6 +256,115 @@ ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_mi
   list(classifier = ee$Classifier$load(asset_id), asset_id = asset_id)
 }
 
+#' Remove leftover AlphaSDM temporary assets
+#'
+#' The package writes temporary Earth Engine assets while it works and deletes them
+#' when it finishes. A run that is killed, crashes, or loses its connection never
+#' reaches that cleanup, so the asset stays and counts against the project's storage
+#' quota. This removes those leftovers.
+#'
+#' Only assets this package created are considered, matched on the `alphasdm_` name
+#' it gives them. An asset is kept if a batch task for it is still pending or
+#' running, or if it is newer than `older_than_hours`, so a job in progress in
+#' another session is not disturbed. A large export can run for many hours, which is
+#' why the default is deliberately generous.
+#'
+#' @param older_than_hours Keep assets younger than this. Default 48.
+#' @param dry_run If TRUE, report what would be deleted and delete nothing.
+#' @param project Earth Engine project id, or NULL to use the saved one.
+#' @param quiet If TRUE, do not print anything.
+#' @return The asset ids removed, or the ones that would be, invisibly.
+#' @export
+sdm_clean_assets <- function(older_than_hours = 48, dry_run = FALSE,
+                             project = NULL, quiet = FALSE) {
+  ee <- reticulate::import("ee")
+  ensure_gee_authenticated(project = project)
+  root <- async_asset_root(project)
+
+  assets <- tryCatch(ee$data$listAssets(list(parent = root))[["assets"]],
+                     error = function(e) NULL)
+  if (is.null(assets) || length(assets) == 0) {
+    if (!quiet) sdm_info("No Earth Engine assets found.")
+    return(invisible(character(0)))
+  }
+  ids  <- vapply(assets, function(a) a[["id"]], character(1))
+  mine <- grep("alphasdm_(async|clf|img)_[0-9]{14}_", ids, value = TRUE)
+  if (length(mine) == 0) {
+    if (!quiet) sdm_info("No leftover AlphaSDM assets.")
+    return(invisible(character(0)))
+  }
+
+  # Never touch an asset whose task is still queued or running.
+  active <- tryCatch({
+    ops <- ee$data$listOperations()
+    st  <- vapply(ops, function(o) tryCatch(o$metadata$state, error = function(e) ""), character(1))
+    ds  <- vapply(ops, function(o) tryCatch(o$metadata$description, error = function(e) ""), character(1))
+    ds[st %in% c("PENDING", "RUNNING")]
+  }, error = function(e) character(0))
+
+  stamp <- as.POSIXct(sub(".*_([0-9]{14})_.*", "\\1", mine), format = "%Y%m%d%H%M%S", tz = "")
+  age_h <- as.numeric(difftime(Sys.time(), stamp, units = "hours"))
+  suffix <- sub(".*_[0-9]{14}_", "", mine)
+
+  drop <- !is.na(age_h) & age_h > older_than_hours &
+    !vapply(suffix, function(sfx) any(grepl(sfx, active, fixed = TRUE)), logical(1))
+  targets <- mine[drop]
+
+  if (length(targets) == 0) {
+    if (!quiet) sdm_info(sprintf("%d AlphaSDM asset(s) present, none old enough to remove.",
+                                 length(mine)))
+    return(invisible(character(0)))
+  }
+  if (!dry_run) for (a in targets) ee_delete_asset_quietly(a)
+  if (!quiet) {
+    sdm_info(sprintf("%s %d leftover AlphaSDM asset%s (older than %g h).",
+                     if (dry_run) "Would remove" else "Removed", length(targets),
+                     if (length(targets) == 1) "" else "s", older_than_hours))
+  }
+  invisible(targets)
+}
+
+#' Compute an image once into an asset and load it back
+#'
+#' The interactive endpoint that serves tile downloads has a small per-request
+#' memory budget, and an image carrying a fitted model exceeds it at fine scales.
+#' Earth Engine's own guidance for that case is to run the computation through the
+#' batch system instead, which has a larger memory allowance and a longer timeout.
+#' The result is a stored image, so reading tiles from it costs a read rather than
+#' re-running the model over every pixel.
+#'
+#' Progress is reported to the console as the task runs, so the caller does not need
+#' to watch the Earth Engine task list.
+#'
+#' WARNING: this writes an asset and does not remove it. The caller has to delete it
+#' with `ee_delete_asset_quietly()`.
+#'
+#' @param img An `ee$Image` to compute.
+#' @param region Geometry to compute over.
+#' @param scale Pixel size in metres.
+#' @param project Earth Engine project id, or NULL to use the saved one.
+#' @param poll_seconds Seconds between status checks.
+#' @param max_minutes Give up after this long.
+#' @return A list with the stored `img` and its `asset_id`.
+#' @noRd
+ee_persist_image <- function(img, region, scale, project = NULL,
+                             poll_seconds = 15, max_minutes = 720) {
+  ee     <- reticulate::import("ee")
+  root   <- async_asset_root(project)
+  stamp  <- format(Sys.time(), "%Y%m%d%H%M%S")
+  suffix <- paste(sample(c(letters, 0:9), 6, replace = TRUE), collapse = "")
+  asset_id <- sprintf("%s/alphasdm_img_%s_%s", root, stamp, suffix)
+
+  task <- ee$batch$Export$image$toAsset(
+    image = img, description = paste0("alphasdm_img_", suffix), assetId = asset_id,
+    region = region, scale = scale, maxPixels = 1e13
+  )
+  task$start()
+  sdm_info(sprintf("Computing the map server-side -> %s", basename(asset_id)), indent = 2L)
+  ee_await_export(list(task = task, asset_id = asset_id), poll_seconds, max_minutes)
+  list(img = ee$Image(asset_id), asset_id = asset_id)
+}
+
 #' Read a FeatureCollection through a batch export instead of getInfo()
 #'
 #' Export to a temporary asset, read it back in pages, then delete it. Slower than

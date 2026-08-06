@@ -28,6 +28,7 @@ vignette shows the common patterns. The whole public surface is short:
 | `format_data()` | clean & standardise occurrence records |
 | `evaluate_models()` | fit the model ensemble (optionally cross-validate / score a test set) |
 | `generate_map()` | export a suitability raster |
+| `sdm_gee_status()`, `sdm_clean_assets()` | inspect running Earth Engine tasks, remove leftovers |
 | `calculate_classifier_metrics()`, `calculate_cbi()` | evaluation metrics (AUC, TSS, CBI, ...) |
 
 ## 1. The default ensemble

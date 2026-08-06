@@ -612,12 +612,23 @@ blockcv_folds <- function(df, k, block_size = NULL) {
 export_image_tiled <- function(image, region, scale, dsn,
                                nodata = -9999, max_tile_px = 2048L, tries = 4L) {
   ee <- reticulate::import("ee")
+  MIN_TILE_PX <- 128L
 
-  # Set ALPHASDM_MAX_TILE_PX to shrink tiles without editing the code. On a
-  # restricted-quota project, or over a very large area, the 2048 px default can
-  # exceed the size and compute budget of getDownloadURL and stall.
-  .env_tile <- suppressWarnings(as.integer(Sys.getenv("ALPHASDM_MAX_TILE_PX", "")))
-  if (!is.na(.env_tile) && .env_tile >= 128L) max_tile_px <- .env_tile
+  # A tile that renders slowly is not a tile that failed. R's default download
+  # timeout is 60 seconds, which a 10 m tile carrying a fitted model exceeds
+  # routinely. Two budgets are used: a short one while probing for a workable tile
+  # size, so an over-large tile is found in a couple of minutes rather than after the
+  # full budget, and a long one for the tiles themselves.
+  PROBE_TIMEOUT <- 180L
+  TILE_TIMEOUT  <- 900L
+  old_timeout <- getOption("timeout")
+  on.exit(options(timeout = old_timeout), add = TRUE)
+
+  # Set ALPHASDM_MAX_TILE_PX to pin the tile size. Otherwise the size is found by
+  # trying and halving, below.
+  pinned <- suppressWarnings(as.integer(Sys.getenv("ALPHASDM_MAX_TILE_PX", "")))
+  pinned <- !is.na(pinned) && pinned >= MIN_TILE_PX
+  if (pinned) max_tile_px <- suppressWarnings(as.integer(Sys.getenv("ALPHASDM_MAX_TILE_PX")))
 
   # Write an explicit nodata value so masked pixels download like any other. Without
   # it tiles come back ragged, and a tile that is entirely water fails as an empty
@@ -630,56 +641,222 @@ export_image_tiled <- function(image, region, scale, dsn,
   ys   <- vapply(ring, function(p) p[[2]], numeric(1))
   xmin <- min(xs); xmax <- max(xs); ymin <- min(ys); ymax <- max(ys)
 
-  # Convert the pixel budget to degrees, at about 111320 m per degree of latitude.
-  tile_deg <- max_tile_px * scale / 111320
-  nx <- max(1L, as.integer(ceiling((xmax - xmin) / tile_deg)))
-  ny <- max(1L, as.integer(ceiling((ymax - ymin) / tile_deg)))
-  xb <- seq(xmin, xmax, length.out = nx + 1L)
-  yb <- seq(ymin, ymax, length.out = ny + 1L)
+  # Tile grid for a given tile size, at about 111320 m per degree of latitude.
+  build_grid <- function(px) {
+    tile_deg <- px * scale / 111320
+    nx <- max(1L, as.integer(ceiling((xmax - xmin) / tile_deg)))
+    ny <- max(1L, as.integer(ceiling((ymax - ymin) / tile_deg)))
+    list(nx = nx, ny = ny,
+         xb = seq(xmin, xmax, length.out = nx + 1L),
+         yb = seq(ymin, ymax, length.out = ny + 1L))
+  }
 
   # Scratch directory for tiles. The default is a temporary directory, removed on
-  # exit. Set ALPHASDM_TILE_CACHE to keep the tiles instead, in a per-output cache
-  # keyed by the destination filename. A re-run then skips tiles already downloaded,
-  # so an export interrupted partway resumes on the missing tiles alone. That is what
-  # lets a slow whole-region export survive the process being killed.
+  # exit. Set ALPHASDM_TILE_CACHE to keep the tiles instead, in a cache keyed by the
+  # destination, the scale and the tile size. A re-run then skips tiles already
+  # downloaded, so an export interrupted partway resumes on the missing tiles alone.
+  # That is what lets a slow whole-region export survive the process being killed.
+  # The tile size is part of the key because changing it changes the grid, which
+  # would otherwise leave tiles from a different grid in place.
   cache_root <- Sys.getenv("ALPHASDM_TILE_CACHE", "")
-  if (nzchar(cache_root)) {
-    key    <- gsub("[^A-Za-z0-9]+", "_", tools::file_path_sans_ext(basename(dsn)))
-    tmpdir <- file.path(cache_root, sprintf("%s_%dm", key, as.integer(scale)))
-    dir.create(tmpdir, showWarnings = FALSE, recursive = TRUE)
-    # Kept on purpose: do not unlink on exit.
-  } else {
-    tmpdir <- file.path(tempdir(), sprintf("alphasdm_tiles_%06d", as.integer(stats::runif(1, 1, 1e6))))
-    dir.create(tmpdir, showWarnings = FALSE, recursive = TRUE)
-    on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
+  tile_dir <- function(px) {
+    if (nzchar(cache_root)) {
+      key <- gsub("[^A-Za-z0-9]+", "_", tools::file_path_sans_ext(basename(dsn)))
+      d <- file.path(cache_root, sprintf("%s_%dm_%dpx", key, as.integer(scale), px))
+      dir.create(d, showWarnings = FALSE, recursive = TRUE)
+      d
+    } else {
+      d <- file.path(tempdir(), sprintf("alphasdm_tiles_%06d_%dpx",
+                                        as.integer(stats::runif(1, 1, 1e6)), px))
+      dir.create(d, showWarnings = FALSE, recursive = TRUE)
+      d
+    }
   }
 
-  fetch_tile <- function(geom, path) {
-    # Reuse a non-empty tile left by an earlier run.
+  # Fetch one tile. Returns TRUE, or the condition message so the caller can tell a
+  # server rejection from a transient network failure.
+  # A 400 is the server refusing the request and a timeout is the tile not rendering
+  # in the budget. Neither is fixed by asking again, so both end the retry loop.
+  hopeless <- function(msg) grepl("400", msg, fixed = TRUE) || grepl("imeout", msg, fixed = TRUE)
+
+  fetch_tile <- function(geom, path, attempts, stop_when_hopeless = FALSE) {
     if (file.exists(path) && file.info(path)$size > 0) return(TRUE)
-    for (k in seq_len(tries)) {
-      ok <- tryCatch({
-        url <- img$getDownloadURL(list(region = geom, scale = scale,
-                                       format = "GEO_TIFF", crs = "EPSG:4326"))
-        utils::download.file(url, path, mode = "wb", quiet = TRUE)
-        file.exists(path) && file.info(path)$size > 0
-      }, error = function(e) FALSE)
-      if (isTRUE(ok)) return(TRUE)
+    last <- "unknown error"
+    for (k in seq_len(attempts)) {
+      # download.file reports an HTTP status as a warning and only sometimes as an
+      # error, so catch the warning text too. Discarding it leaves nothing to tell a
+      # server refusal from an ordinary empty result, which is the difference between
+      # shrinking the tile and giving up.
+      warn <- ""
+      res <- tryCatch(
+        withCallingHandlers({
+          url <- img$getDownloadURL(list(region = geom, scale = scale,
+                                         format = "GEO_TIFF", crs = "EPSG:4326"))
+          utils::download.file(url, path, mode = "wb", quiet = TRUE)
+          if (file.exists(path) && file.info(path)$size > 0) TRUE else "empty response"
+        }, warning = function(w) {
+          warn <<- conditionMessage(w); invokeRestart("muffleWarning")
+        }),
+        error = function(e) conditionMessage(e))
+      if (isTRUE(res)) return(TRUE)
+      if (nzchar(warn)) res <- warn
+      last <- res
+      if (hopeless(last) && stop_when_hopeless) return(last)
+      if (grepl("400", last, fixed = TRUE)) return(last)
       Sys.sleep(2 * k)
     }
-    FALSE
+    last
   }
 
-  tiles <- character(0); failed <- 0L
-  for (i in seq_len(nx)) for (j in seq_len(ny)) {
-    geom <- ee$Geometry$Rectangle(c(xb[i], yb[j], xb[i + 1L], yb[j + 1L]))
-    path <- file.path(tmpdir, sprintf("tile_%03d_%03d.tif", i, j))
-    if (fetch_tile(geom, path)) tiles <- c(tiles, path) else failed <- failed + 1L
+  # Try the first tile. A refusal means the interactive endpoint will not serve this
+  # image at this tile size, which at 10 m with a fitted model is the normal case,
+  # since every tile download re-runs the model over that tile's pixels.
+  #
+  # When that happens, compute the image once through Earth Engine's batch system,
+  # which has a larger memory allowance and a longer timeout, and read tiles from the
+  # stored result instead. Reading stored pixels costs a read, so the tile size that
+  # failed will now succeed. This is Earth Engine's own advice for "User memory limit
+  # exceeded": run it as an Export and read back the exported image.
+  #
+  # If even the stored image will not serve at this tile size, fall back to halving
+  # the tile, which is the older behaviour and still correct, just slower.
+  grid <- NULL; tmpdir <- NULL; first_path <- NULL; switched <- FALSE
+  # The staged copy is deleted as soon as every tile is on disk. This keeps it as a
+  # backstop for an early exit only.
+  staged <- NULL
+  on.exit(if (!is.null(staged)) ee_delete_asset_quietly(staged), add = TRUE)
+  options(timeout = PROBE_TIMEOUT)
+  repeat {
+    grid   <- build_grid(max_tile_px)
+    tmpdir <- tile_dir(max_tile_px)
+    first_path <- file.path(tmpdir, "tile_001_001.tif")
+    geom <- ee$Geometry$Rectangle(c(grid$xb[1], grid$yb[1], grid$xb[2], grid$yb[2]))
+    # fetch_tile returns a 400 immediately without spending retries, so a full retry
+    # budget here still separates a server refusal from a transient network failure.
+    res  <- fetch_tile(geom, first_path, attempts = tries, stop_when_hopeless = TRUE)
+    if (isTRUE(res)) break
+    # Shrink on a server refusal, and on a tile that will not render inside the probe
+    # budget. Both mean this tile size is unworkable here: the first because the
+    # server says so, the second because a whole grid of tiles this slow would never
+    # finish. Any other failure is a network problem a smaller tile will not fix.
+    too_big <- hopeless(res)
+    if (!too_big) {
+      stop(sprintf("export_image_tiled: tile download failed at %d px. %s",
+                   max_tile_px, res), call. = FALSE)
+    }
+
+    # First refusal: move the computation into the batch system and try again from
+    # the stored image, at the same tile size.
+    if (!switched) {
+      switched <- TRUE
+      sdm_warn(paste("This map is too heavy to download directly at",
+                     "this resolution. Computing it through Earth Engine's batch",
+                     "system instead, then downloading the result."), indent = 2L)
+      sdm_info("This runs server-side and can take a while. Progress is reported below.",
+               indent = 2L)
+      stored <- tryCatch(ee_persist_image(img, region, scale, project = NULL),
+                         error = function(e) e)
+      if (inherits(stored, "error")) {
+        sdm_warn(sprintf("Batch export unavailable (%s); falling back to smaller tiles.",
+                         conditionMessage(stored)), indent = 2L)
+      } else {
+        img <- stored$img
+        staged <- stored$asset_id
+        sdm_info("Map computed. Downloading it now.", indent = 2L)
+        next                       # retry the probe against the stored image
+      }
+    }
+
+    if (pinned || max_tile_px <= MIN_TILE_PX) {
+      stop(sprintf("export_image_tiled: tile download failed at %d px. %s",
+                   max_tile_px, res), call. = FALSE)
+    }
+    max_tile_px <- max(MIN_TILE_PX, max_tile_px %/% 2L)
+    sdm_info(sprintf("Tile of %d px did not render; retrying at %d px.",
+                     max_tile_px * 2L, max_tile_px), indent = 2L)
   }
-  if (length(tiles) == 0L) stop("export_image_tiled: all tile downloads failed.")
+  options(timeout = max(as.integer(old_timeout), TILE_TIMEOUT))
+  if (!nzchar(cache_root)) on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
+
+  nx <- grid$nx; ny <- grid$ny; xb <- grid$xb; yb <- grid$yb
+  n_total <- nx * ny
+  if (n_total > 50L) {
+    sdm_info(sprintf("Exporting %d tiles at %d px (%.1f km each).",
+                     n_total, max_tile_px, max_tile_px * scale / 1000), indent = 2L)
+  }
+
+  # Fetch every tile. Already-downloaded tiles are reused, so this is safe to call a
+  # second time after switching to the stored image: only the missing tiles are
+  # fetched again.
+  run_tiles <- function() {
+    tiles <- character(0); failed <- 0L; last_msg <- ""; refused <- FALSE
+    t0 <- proc.time()[["elapsed"]]; done <- 0L
+    for (i in seq_len(nx)) for (j in seq_len(ny)) {
+      geom <- ee$Geometry$Rectangle(c(xb[i], yb[j], xb[i + 1L], yb[j + 1L]))
+      path <- file.path(tmpdir, sprintf("tile_%03d_%03d.tif", i, j))
+      res  <- fetch_tile(geom, path, attempts = tries)
+      if (isTRUE(res)) {
+        tiles <- c(tiles, path)
+      } else {
+        failed <- failed + 1L; last_msg <- res
+        if (hopeless(res)) refused <- TRUE
+      }
+      done <- done + 1L
+      # Report progress on a long export, with an estimate from the rate so far.
+      if (n_total > 50L && done %% max(10L, n_total %/% 20L) == 0L) {
+        el <- proc.time()[["elapsed"]] - t0
+        sdm_info(sprintf("%d/%d tiles (%.0f%%), %.0f min elapsed, about %.0f min left",
+                         done, n_total, 100 * done / n_total, el / 60,
+                         (el / done) * (n_total - done) / 60), indent = 2L)
+      }
+    }
+    list(tiles = tiles, failed = failed, last_msg = last_msg, refused = refused)
+  }
+
+  r <- run_tiles()
+
+  # A tile can be refused partway through even when the first one was served: a
+  # busier region, or the tier throttling as the export goes on. Escalate here too,
+  # rather than leaving holes in the raster. The tiles already on disk are kept, so
+  # only the missing ones are fetched from the stored image.
+  if (r$refused && !switched) {
+    switched <- TRUE
+    sdm_warn(paste("Tiles started being refused partway through. Computing the map",
+                   "through Earth Engine's batch system instead, then finishing the",
+                   "download."), indent = 2L)
+    stored <- tryCatch(ee_persist_image(img, region, scale, project = NULL),
+                       error = function(e) e)
+    if (inherits(stored, "error")) {
+      sdm_warn(sprintf("Batch export unavailable (%s); keeping what downloaded.",
+                       conditionMessage(stored)), indent = 2L)
+    } else {
+      img <- stored$img
+      staged <- stored$asset_id
+      sdm_info(sprintf("Map computed. Fetching the %d remaining tile%s.",
+                       r$failed, if (r$failed == 1L) "" else "s"), indent = 2L)
+      r <- run_tiles()
+    }
+  }
+  tiles <- r$tiles; failed <- r$failed; last_msg <- r$last_msg
+
+  # Every tile that is going to arrive has arrived, so the staged copy has done its
+  # job. Release it now rather than at function exit: mosaicking and writing a large
+  # raster takes time, and there is no reason to hold Earth Engine storage during it.
+  if (!is.null(staged) && length(tiles) > 0L) {
+    on_disk <- sum(file.exists(tiles) & file.info(tiles)$size > 0)
+    if (on_disk == length(tiles)) {
+      ee_delete_asset_quietly(staged)
+      staged <- NULL
+      sdm_info(sprintf("%d tile%s confirmed on disk; removed the temporary copy from your Earth Engine storage.",
+                       on_disk, if (on_disk == 1L) "" else "s"), indent = 2L)
+    }
+  }
+
+  if (length(tiles) == 0L)
+    stop(sprintf("export_image_tiled: every tile failed. Last error: %s", last_msg), call. = FALSE)
   if (failed > 0L)
-    sdm_warn(sprintf("%d of %d export tiles failed after %d retries; the output raster has gaps in those areas.",
-                     failed, nx * ny, tries))
+    sdm_warn(sprintf("%d of %d export tiles failed after %d retries; the raster has gaps there. Last error: %s",
+                     failed, n_total, tries, last_msg))
 
   if (length(tiles) == 1L) {
     r <- stars::read_stars(tiles[[1]], proxy = FALSE)
