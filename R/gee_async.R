@@ -99,10 +99,17 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
 #' @param handle A handle from `ee_start_fc_export()`.
 #' @param poll_seconds Seconds between status checks.
 #' @param max_minutes Give up after this long and cancel the task.
+#' @param max_queue_minutes Give up if the task has not started within this long.
+#'   A backlogged scheduler and a task doing real work are different waits: the
+#'   first is worth abandoning quickly, the second is not. NULL applies no separate
+#'   limit on queueing.
 #' @return The asset id. Errors when the task fails, is cancelled, or times out.
 #' @noRd
-ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60) {
+ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60,
+                            max_queue_minutes = NULL) {
   deadline <- Sys.time() + max_minutes * 60
+  queue_deadline <- if (is.null(max_queue_minutes)) NULL else Sys.time() + max_queue_minutes * 60
+  ever_ran <- FALSE
   start <- Sys.time(); last_beat <- 0; last_state <- ""
   repeat {
     st    <- handle$task$status()
@@ -111,6 +118,14 @@ ee_await_export <- function(handle, poll_seconds = 15, max_minutes = 60) {
     if (state %in% c("FAILED", "CANCELLED", "CANCEL_REQUESTED")) {
       msg <- if (!is.null(st[["error_message"]])) st[["error_message"]] else state
       stop(sprintf("Async GEE export %s: %s", state, msg))
+    }
+    if (identical(state, "RUNNING")) ever_ran <- TRUE
+    # Abandon a task that never got off the queue, but keep waiting on one that is
+    # running: the wait that is worth cutting short is the backlog, not the work.
+    if (!ever_ran && !is.null(queue_deadline) && Sys.time() > queue_deadline) {
+      try(handle$task$cancel(), silent = TRUE)
+      stop(sprintf("Async GEE export still queued after %g min (asset %s)",
+                   max_queue_minutes, handle$asset_id))
     }
     if (Sys.time() > deadline) {
       try(handle$task$cancel(), silent = TRUE)
@@ -238,9 +253,11 @@ ee_materialize_fc_async <- function(fc, project = NULL, select = NULL,
 #' @param project Earth Engine project id, or NULL to use the saved one.
 #' @param poll_seconds Seconds between status checks.
 #' @param max_minutes Give up after this long.
+#' @param max_queue_minutes Give up if the task has not started within this long.
 #' @return A list with the reloaded `classifier` and its `asset_id`.
 #' @noRd
-ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_minutes = 60) {
+ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_minutes = 60,
+                                  max_queue_minutes = NULL) {
   ee     <- reticulate::import("ee")
   root   <- async_asset_root(project)
   stamp  <- format(Sys.time(), "%Y%m%d%H%M%S")
@@ -252,7 +269,8 @@ ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_mi
   )
   task$start()
   sdm_info(sprintf("Persisting classifier via batch export -> %s", asset_id), indent = 1L)
-  ee_await_export(list(task = task, asset_id = asset_id), poll_seconds, max_minutes)
+  ee_await_export(list(task = task, asset_id = asset_id), poll_seconds, max_minutes,
+                  max_queue_minutes = max_queue_minutes)
   list(classifier = ee$Classifier$load(asset_id), asset_id = asset_id)
 }
 

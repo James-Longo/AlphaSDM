@@ -394,17 +394,21 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
     if (persist && isTRUE(GEE_CLASSIFIER_METHODS[[method]]$persistable)) {
       # Storing the model is an optimisation, not a requirement. It lets a
       # whole-region export apply a stored forest instead of retraining it for every
-      # tile. It depends on the Earth Engine batch scheduler, which on a throttled
-      # tier can be too backlogged to run even this small export. So cap the wait and
-      # fall back to the inline classifier on any failure. The inline PROBABILITY
-      # path still produces a valid map, it just retrains per tile.
+      # tile, and it keeps the classify graph small enough that the interactive
+      # endpoint will serve a tile at all. It depends on the Earth Engine batch
+      # scheduler, so fall back to the inline classifier on any failure: that path
+      # still produces a valid map.
       persisted <- tryCatch({
         # Train a fresh regressor: a forest already trained for classification cannot
         # be switched to another output mode. Export it, load it back, and read it as
         # a regression score.
         reg_clf <- do.call(clf_factory, filtered_params)$setOutputMode("REGRESSION")$train(
           features = sampled_fc, classProperty = LABEL_COL, inputProperties = emb_cols)
-        ee_persist_classifier(reg_clf, project = project, max_minutes = 5)
+        # Give up quickly if the scheduler never starts the task, but let one that is
+        # running finish: a large training set takes longer to write than a small one,
+        # and abandoning it there is what loses the speedup on the jobs that need it.
+        ee_persist_classifier(reg_clf, project = project,
+                              max_minutes = 45, max_queue_minutes = 5)
       }, error = function(e) {
         sdm_warn(sprintf("Classifier persistence unavailable (%s); falling back to the inline %s classifier.",
                          conditionMessage(e), toupper(method)), indent = 1L)
