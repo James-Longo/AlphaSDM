@@ -675,9 +675,16 @@ export_image_tiled <- function(image, region, scale, dsn,
 
   # Fetch one tile. Returns TRUE, or the condition message so the caller can tell a
   # server rejection from a transient network failure.
-  # A 400 is the server refusing the request and a timeout is the tile not rendering
-  # in the budget. Neither is fixed by asking again, so both end the retry loop.
-  hopeless <- function(msg) grepl("400", msg, fixed = TRUE) || grepl("imeout", msg, fixed = TRUE)
+  # A tile that cannot be served is one the batch system should compute instead.
+  # is_gee_timeout() already lists the messages Earth Engine uses for a request that
+  # was too expensive, including "Computation timed out" and "User memory limit
+  # exceeded". A 400 is the same refusal arriving as an HTTP status, and "Timeout of
+  # N seconds" is R's own download giving up. None is fixed by asking again.
+  hopeless <- function(msg) {
+    is_gee_timeout(msg) ||
+      grepl("400", msg, fixed = TRUE) ||
+      grepl("Timeout of", msg, fixed = TRUE)
+  }
 
   fetch_tile <- function(geom, path, attempts, stop_when_hopeless = FALSE) {
     if (file.exists(path) && file.info(path)$size > 0) return(TRUE)

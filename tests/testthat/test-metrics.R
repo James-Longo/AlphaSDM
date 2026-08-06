@@ -49,3 +49,21 @@ test_that("CBI is positive when presences concentrate at high scores", {
 test_that("CBI returns 0 when the score range collapses", {
   expect_equal(calculate_cbi(rep(0.5, 10), rep(0.5, 50)), 0)
 })
+
+test_that("a request Earth Engine refuses is recognised as one to escalate", {
+  # The classifier in export_image_tiled decides whether to move a tile into the
+  # batch system or give up. It missed "Computation timed out" once, which is the
+  # single most common way a fine-scale tile fails, so the cases are pinned here.
+  escalate <- function(msg) {
+    is_gee_timeout(msg) || grepl("400", msg, fixed = TRUE) ||
+      grepl("Timeout of", msg, fixed = TRUE)
+  }
+  expect_true(escalate("ee.ee_exception.EEException: Computation timed out."))
+  expect_true(escalate("User memory limit exceeded."))
+  expect_true(escalate("cannot open URL: HTTP status was '400 Bad Request'"))
+  expect_true(escalate("Timeout of 900 seconds was reached"))
+  expect_true(escalate("Too many concurrent aggregations"))
+  # A network problem is not fixed by computing the image somewhere else.
+  expect_false(escalate("cannot open the connection"))
+  expect_false(escalate("Could not resolve host: earthengine.googleapis.com"))
+})
