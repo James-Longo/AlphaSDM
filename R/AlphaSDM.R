@@ -137,6 +137,27 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     bg_balanced  <- balance_bg(sampled_fc$filter(ee$Filter$eq("present", 0L)), n_pres, n_background)
   }
 
+  # Compute the sampled training table once into an asset. Everything downstream is
+  # lazy and would otherwise re-evaluate the upload-and-sample graph on every use;
+  # past a few thousand points that graph exceeds even batch memory. Reading stored
+  # rows keeps every later step small. The asset id is returned for cleanup by the
+  # caller, since the models reference it until mapping or scoring is finished.
+  sdm_info("Computing the sampled training data (server-side) ...", indent = 1L)
+  training_asset <- NULL
+  mat <- tryCatch(ee_materialize_fc_async(sampled_fc, project = project),
+                  error = function(e) {
+                    sdm_warn(sprintf("Could not store the training table (%s); continuing with the in-graph table.",
+                                     conditionMessage(e)), indent = 1L)
+                    NULL
+                  })
+  if (!is.null(mat)) {
+    training_asset <- mat$asset_id
+    sampled_fc     <- mat$fc
+    pres_sampled   <- sampled_fc$filter(ee$Filter$eq("present", 1L))
+    bg_balanced    <- balance_bg(sampled_fc$filter(ee$Filter$eq("present", 0L)),
+                                 n_pres, n_background)
+  }
+
   sdm_progress_done(pb_up)
 
   # Earth Engine classifiers are lazy: clf$train() only builds a graph, so this loop
@@ -170,9 +191,12 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
       n_background     = n_background,
       methods          = methods,
       scale            = scale,
-      # Temporary classifier assets written by persist_classifier, empty if none.
-      # Remove them with cleanup_classifier_assets() once prediction is finished.
-      classifier_assets = Filter(Negate(is.null), lapply(models, function(x) x$asset_id))
+      # Temporary assets: classifiers written by persist_classifier plus the stored
+      # training table. Remove with cleanup_classifier_assets() after prediction.
+      classifier_assets = c(
+        Filter(Negate(is.null), lapply(models, function(x) x$asset_id)),
+        if (!is.null(training_asset)) list(training_asset)
+      )
     )
   ))
 }

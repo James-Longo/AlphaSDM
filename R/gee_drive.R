@@ -230,9 +230,10 @@ ee_await_export_all <- function(tasks, poll_seconds = 15) {
       run <- which(sts == "RUNNING")
       detail <- if (length(run))
         ee_task_progress(tasks[[run[1]]]$status()[["name"]]) else ""
-      sdm_info(sprintf("%d of %d tasks done, %d running, %d queued%s (%s elapsed)",
+      sdm_info(sprintf("%d of %d tasks done, %d running, %d queued%s%s (%s elapsed)",
                        done, length(sts), length(run),
-                       sum(sts == "READY"), detail,
+                       sum(sts == "READY"),
+                       if (bad > 0L) sprintf(", %d FAILED", bad) else "", detail,
                        if (elapsed < 600) sprintf("%.0fs", elapsed)
                        else sprintf("%.0f min", elapsed / 60)), indent = 2L)
       last_beat <- elapsed
