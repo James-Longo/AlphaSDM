@@ -93,17 +93,14 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
 
 #' Describe how far along an Earth Engine batch task is
 #'
-#' `task$status()` reports only a state word. The Operations API also carries the
-#' task's own progress fraction, its named stages with their work-unit counts, and
-#' the compute it has consumed, so a task that is working can be told apart from one
-#' that is merely running. Earth Engine populates these as the task proceeds, so any
-#' of them may be absent on a young task and the caller gets whatever is available.
+#' The Operations API carries a progress fraction, named stages with work-unit
+#' counts, and compute consumed, none of which `task$status()` exposes. Any field
+#' may be absent on a young task; the caller gets whatever is available.
 #'
 #' @param op_name Operation name from `task$status()[["name"]]`.
-#' @param drive_prefix For a Drive export, the file name prefix. Earth Engine stops
-#'   advancing `progress` and stops consuming compute once it reaches the stage that
-#'   uploads results, so for the last stage the count of files written is the only
-#'   signal that moves. Counting them keeps a working export from looking stalled.
+#' @param drive_prefix For a Drive export, the file name prefix. During the final
+#'   upload stage the file count is the only signal that still moves, so it is
+#'   counted to keep a working export from looking stalled.
 #' @return A string to append to a progress line, empty when nothing is reported yet.
 #' @noRd
 ee_task_progress <- function(op_name, drive_prefix = NULL) {
@@ -158,16 +155,11 @@ ee_task_progress <- function(op_name, drive_prefix = NULL) {
 #'
 #' @param handle A handle from `ee_start_fc_export()`.
 #' @param poll_seconds Seconds between status checks.
-#' @param max_minutes Overall limit. NULL, the default, means wait for as long as
-#'   the task keeps running. A deadline on work that is progressing only turns
-#'   Earth Engine's success into our own failure, which is what a fixed limit here
-#'   kept doing. Earth Engine ends its own tasks, so this does not wait forever.
+#' @param max_minutes Overall limit. NULL, the default, waits for as long as the
+#'   task runs; Earth Engine ends its own tasks, so this does not wait forever.
 #'   Set ALPHASDM_MAX_WAIT_MINUTES for an unattended run that must not block.
 #' @param max_queue_minutes Give up if the task has not started within this long.
-#'   NULL, the default, waits. Queueing is how Earth Engine schedules work, not a
-#'   sign that something is wrong, and a task that has not started yet has cost
-#'   nothing to keep waiting for. Provided for an unattended run that would rather
-#'   fall back than sit in a queue.
+#'   NULL, the default, waits: queueing is normal scheduling, not a fault.
 #' @return The asset id. Errors when the task fails, is cancelled, or gives up.
 #' @noRd
 ee_await_export <- function(handle, poll_seconds = 15, max_minutes = NULL,

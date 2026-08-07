@@ -592,22 +592,14 @@ blockcv_folds <- function(df, k, block_size = NULL) {
 #' Google Drive or GCS authentication; it pulls pixels directly through the
 #' synchronous \code{getDownloadURL} endpoint and mosaics the tiles locally.
 #'
-#' Robustness to water / missing data: AlphaEarth has no embedding over open
-#' water, so predictions there are \emph{masked}. Masked pixels otherwise export
-#' as ragged or zero-sized tiles, and a tile that is entirely water can come back
-#' empty. We therefore \code{unmask()} the image to an explicit \code{nodata}
-#' sentinel before download: every pixel (land or water) then has a real value,
-#' so every tile, including all-water tiles, returns a valid, equal-sized
-#' GeoTIFF. The sentinel is restored to \code{NA} in the mosaicked output.
+#' AlphaEarth is masked over open water, and masked pixels export as ragged or
+#' empty tiles, so the image is \code{unmask()}ed to a \code{nodata} sentinel
+#' before download and the sentinel restored to \code{NA} in the output.
 #'
-#' A single-band float32 tile of \code{max_tile_px} on a side is
-#' \code{max_tile_px^2 * 4} bytes, so the default 512 is 1 MB against
-#' \code{getDownloadURL}'s 32 MB request limit. Request size is not what bounds a
-#' tile: memory is. A tile carrying a fitted model is refused well below the size
-#' limit, and 512 is the largest edge measured to succeed with the heaviest of the
-#' default methods, a 500-tree random forest, at 10 m. Larger tiles cost less per
-#' pixel, because a fixed per-request overhead dominates, so the default is the
-#' largest size known to work rather than a cautious one.
+#' Memory, not request size, is what bounds a tile: one carrying a fitted model is
+#' refused well below \code{getDownloadURL}'s 32 MB limit. The 512 px default is
+#' the largest edge that works with the heaviest default method, and larger tiles
+#' cost less per pixel because per-request overhead dominates.
 #'
 #' @param image     ee.Image with a single prediction band.
 #' @param region    ee.Geometry whose bounds define the export extent.
@@ -741,15 +733,9 @@ export_image_tiled <- function(image, region, scale, dsn,
   # writes straight into it.
   out_dir <- file.path(dirname(dsn), paste0(tools::file_path_sans_ext(basename(dsn)), "_tiles"))
 
-  # Hand the whole region to Earth Engine's batch system and let it do the tiling.
-  # Export.image.toDrive takes shardSize, which sets the pixel block the computation
-  # runs in and so the memory it needs, and fileDimensions, which splits the result
-  # into aligned tiles. Export.image.toAsset takes neither, which is why the asset
-  # route needed the region subdivided by hand.
-  #
-  # `image` is passed rather than `img`: `img` has had its mask filled with the
-  # sentinel, and a filled image gives skipEmptyTiles nothing to skip. Masked tiles
-  # arrive as masked, so they need no sentinel translation afterwards.
+  # Batch export to Drive: shardSize bounds the computation's memory and
+  # fileDimensions makes Earth Engine do the tiling. Passes `image`, not the
+  # sentinel-filled `img`, so skipEmptyTiles can drop fully-masked tiles.
   escalate_to_drive <- function(why, planned = FALSE) {
     # The route chosen up front is normal operation; a mid-download switch is not.
     if (planned) sdm_info(why, indent = 2L) else sdm_warn(why, indent = 2L)
@@ -775,15 +761,10 @@ export_image_tiled <- function(image, region, scale, dsn,
       dir_out
     }, error = function(e) e)
   }
-  # Choose the route by whether the region fits in one request. A single direct
-  # download is measured at seconds against the batch system's minute-plus of
-  # startup, so a one-tile region goes direct. Anything larger goes to Drive
-  # up front: the batch system computes tiles concurrently while the direct route
-  # fetches them one at a time, so past a single request it is faster as well as
-  # safer, and a large region on the direct route is not refused, it just grinds.
-  # This came from a run that probed successfully at 512 px and then set off to
-  # serially download 270,744 tiles, about a hundred days of technically working.
-  # A failed batch export still falls through to the direct grid below.
+  # One-tile regions download direct, which beats the batch system's startup cost.
+  # Anything larger goes to Drive up front: batch computes tiles concurrently,
+  # while the direct route fetches serially and would grind on a large region
+  # without ever being refused. A failed batch export falls through to the grid.
   first_grid <- build_grid(max_tile_px)
   if (first_grid$nx * first_grid$ny > 1L && !pinned) {
     esc <- escalate_to_drive(sprintf(

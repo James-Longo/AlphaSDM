@@ -1,13 +1,6 @@
-# Google Drive access for image exports.
-#
-# Export.image.toDrive is the only export that takes shardSize and fileDimensions,
-# which are Earth Engine's own controls for the memory a computation may use and for
-# splitting the result into aligned tiles. Export.image.toAsset has neither, so a
-# region too large for one computation has to be subdivided by hand there.
-#
-# Drive needs no separate sign-in. The Earth Engine credential already carries the
-# drive scope, and the Earth Engine client's own OAuth client identifies us to the
-# token endpoint.
+# Google Drive access for image exports. toDrive is the only export destination
+# with shardSize (compute memory) and fileDimensions (output tiling). No separate
+# sign-in: the Earth Engine credential already carries the drive scope.
 
 .drive <- new.env(parent = emptyenv())
 
@@ -93,12 +86,9 @@ drive_download_file <- function(id, dest) {
 
 #' Decide whether a Drive file name was written by a given export
 #'
-#' Drive's "name contains" query is a case-insensitive substring match, so listing
-#' by an export's prefix can also return the user's own files whose names happen to
-#' contain it. Files matched here are deleted after download, which makes a loose
-#' match dangerous rather than merely untidy. Accept only names Earth Engine itself
-#' writes: the prefix followed by the -yMin-xMin suffix of a tiled export, or
-#' nothing at all when the region fitted in a single file.
+#' Matched files are deleted after download, and Drive's "name contains" query is
+#' a loose substring match, so accept only names Earth Engine writes: the prefix
+#' plus the -yMin-xMin tile suffix, or the bare prefix for a single-file export.
 #'
 #' @param prefix The export's fileNamePrefix.
 #' @param names Character vector of Drive file names.
