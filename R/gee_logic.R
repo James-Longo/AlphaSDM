@@ -750,8 +750,9 @@ export_image_tiled <- function(image, region, scale, dsn,
   # `image` is passed rather than `img`: `img` has had its mask filled with the
   # sentinel, and a filled image gives skipEmptyTiles nothing to skip. Masked tiles
   # arrive as masked, so they need no sentinel translation afterwards.
-  escalate_to_drive <- function(why) {
-    sdm_warn(why, indent = 2L)
+  escalate_to_drive <- function(why, planned = FALSE) {
+    # The route chosen up front is normal operation; a mid-download switch is not.
+    if (planned) sdm_info(why, indent = 2L) else sdm_warn(why, indent = 2L)
     sdm_info(paste("Earth Engine will compute this map in its batch system and write",
                    "the tiles to Google Drive. AlphaSDM downloads them and removes them",
                    "from Drive afterwards, so nothing is left in your storage."),
@@ -774,6 +775,27 @@ export_image_tiled <- function(image, region, scale, dsn,
       dir_out
     }, error = function(e) e)
   }
+  # Choose the route by whether the region fits in one request. A single direct
+  # download is measured at seconds against the batch system's minute-plus of
+  # startup, so a one-tile region goes direct. Anything larger goes to Drive
+  # up front: the batch system computes tiles concurrently while the direct route
+  # fetches them one at a time, so past a single request it is faster as well as
+  # safer, and a large region on the direct route is not refused, it just grinds.
+  # This came from a run that probed successfully at 512 px and then set off to
+  # serially download 270,744 tiles, about a hundred days of technically working.
+  # A failed batch export still falls through to the direct grid below.
+  first_grid <- build_grid(max_tile_px)
+  if (first_grid$nx * first_grid$ny > 1L && !pinned) {
+    esc <- escalate_to_drive(sprintf(
+      "This region needs %d separate downloads at this resolution.",
+      first_grid$nx * first_grid$ny), planned = TRUE)
+    if (!inherits(esc, "error")) return(esc)
+    # Do not offer Drive again from the refusal paths below; it already failed once.
+    switched <- TRUE
+    sdm_warn(sprintf("The batch export did not run (%s); downloading tile by tile instead.",
+                     conditionMessage(esc)), indent = 2L)
+  }
+
   repeat {
     grid   <- build_grid(max_tile_px)
     tmpdir <- tile_dir(max_tile_px)
