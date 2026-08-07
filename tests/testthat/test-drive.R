@@ -8,6 +8,9 @@ test_that("names Earth Engine writes for an export are accepted", {
   expect_true(is_export_tile_name(p, paste0(p, "-0000000000-0000000000.tif")))
   # A region that fits in one file gets no tile suffix.
   expect_true(is_export_tile_name(p, paste0(p, ".tif")))
+  # Multi-band exports insert a _rNNN band suffix before the tile suffix.
+  expect_true(is_export_tile_name(p, paste0(p, "_r001-0000000000-0000004096.tif")))
+  expect_true(is_export_tile_name(p, paste0(p, "_r017.tif")))
 })
 
 test_that("user files that merely contain the prefix are rejected", {
@@ -19,6 +22,8 @@ test_that("user files that merely contain the prefix are rejected", {
   expect_false(is_export_tile_name(p, "AlphaSDM output"))
   # Same name, wrong extension.
   expect_false(is_export_tile_name(p, paste0(p, "-0000016384-0000110592.tiff")))
+  # A band marker alone is not license for arbitrary trailing text.
+  expect_false(is_export_tile_name(p, paste0(p, "_r001_backup.tif")))
 })
 
 test_that("the filter is vectorised and keeps order", {

@@ -87,15 +87,16 @@ drive_download_file <- function(id, dest) {
 #' Decide whether a Drive file name was written by a given export
 #'
 #' Matched files are deleted after download, and Drive's "name contains" query is
-#' a loose substring match, so accept only names Earth Engine writes: the prefix
-#' plus the -yMin-xMin tile suffix, or the bare prefix for a single-file export.
+#' a loose substring match, so accept only names Earth Engine writes: the prefix,
+#' an optional _rNNN band suffix, then the -yMin-xMin tile suffix or nothing for a
+#' single-file export.
 #'
 #' @param prefix The export's fileNamePrefix.
 #' @param names Character vector of Drive file names.
 #' @return Logical vector, TRUE for names the export wrote.
 #' @noRd
 is_export_tile_name <- function(prefix, names) {
-  grepl(sprintf("^%s(-\\d+-\\d+)?\\.tif$", prefix), names)
+  grepl(sprintf("^%s(_r\\d+)?(-\\d+-\\d+)?\\.tif$", prefix), names)
 }
 
 #' Delete one Drive file
@@ -140,19 +141,45 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
 
   prefix <- sprintf("alphasdm_%s_%s", format(Sys.time(), "%Y%m%d%H%M%S"),
                     paste(sample(c(letters, 0:9), 6, replace = TRUE), collapse = ""))
-  task <- ee$batch$Export$image$toDrive(
-    image = image, description = prefix, folder = folder, fileNamePrefix = prefix,
-    region = region, scale = scale, crs = "EPSG:4326",
-    shardSize = shard_size, fileDimensions = file_dim, skipEmptyTiles = TRUE,
-    maxPixels = 1e13, fileFormat = "GeoTIFF")
-  task$start()
-  sdm_info(sprintf("Computing the map on Earth Engine and writing tiles to Drive/%s",
-                   folder), indent = 1L)
-  ee_await_export(list(task = task, asset_id = prefix, drive_prefix = prefix),
-                  poll_seconds)
+
+  # One export task per row of output files. The rows come from Earth Engine's own
+  # file grid (file_dim), so the split is derived from the request, not chosen.
+  # Each task checkpoints and retries independently, so a restart or a terminal
+  # failure costs one row, not the map. A shared crsTransform keeps every band on
+  # one global pixel grid.
+  ring <- region$bounds()$coordinates()$get(0L)$getInfo()
+  xs <- vapply(ring, function(p) p[[1]], numeric(1))
+  ys <- vapply(ring, function(p) p[[2]], numeric(1))
+  west <- min(xs); east <- max(xs); south <- min(ys); north <- max(ys)
+  dpp <- scale / 111320                       # degrees per pixel, as build_grid uses
+  row_deg <- file_dim * dpp
+  n_rows <- max(1L, as.integer(ceiling((north - south) / row_deg)))
+  transform <- list(dpp, 0, west, 0, -dpp, north)
+
+  tasks <- list()
+  for (b in seq_len(n_rows)) {
+    top <- north - (b - 1L) * row_deg
+    bot <- max(south, top - row_deg)
+    band_prefix <- if (n_rows == 1L) prefix else sprintf("%s_r%03d", prefix, b)
+    task <- ee$batch$Export$image$toDrive(
+      image = image, description = band_prefix, folder = folder,
+      fileNamePrefix = band_prefix,
+      region = ee$Geometry$Rectangle(c(west, bot, east, top)),
+      crs = "EPSG:4326", crsTransform = transform,
+      shardSize = shard_size, fileDimensions = file_dim, skipEmptyTiles = TRUE,
+      maxPixels = 1e13, fileFormat = "GeoTIFF")
+    task$start()
+    tasks[[band_prefix]] <- task
+  }
+  sdm_info(sprintf(
+    "Computing the map on Earth Engine as %d task%s, writing tiles to Drive/%s",
+    n_rows, if (n_rows == 1L) "" else "s", folder), indent = 1L)
+  ee_await_export_all(tasks, poll_seconds)
 
   files <- drive_list_files(prefix)
   files <- files[is_export_tile_name(prefix, files$name), , drop = FALSE]
+  # A band of open water legitimately writes nothing; only a map with no tiles at
+  # all is an error.
   if (!nrow(files))
     stop("The export finished but wrote no tiles. If the whole region is masked, ",
          "skipEmptyTiles will have dropped every tile.", call. = FALSE)
@@ -178,4 +205,49 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
   }
   sdm_info(sprintf("Tiles written to %s", out_dir), indent = 1L)
   out_dir
+}
+
+#' Wait for a set of export tasks, reporting joint progress
+#'
+#' One poll loop over every task; all scheduling is Earth Engine's. Waits for all
+#' tasks to reach a terminal state before raising any failure, so completed bands
+#' keep their output.
+#'
+#' @param tasks Named list of started tasks, name = description.
+#' @param poll_seconds Seconds between polls.
+#' @return Invisibly TRUE. Errors if any task failed or was cancelled.
+#' @noRd
+ee_await_export_all <- function(tasks, poll_seconds = 15) {
+  ee <- reticulate::import("ee")
+  start <- Sys.time(); last_beat <- -Inf
+  repeat {
+    sts <- vapply(tasks, function(t) t$status()[["state"]], character(1))
+    done <- sum(sts == "COMPLETED")
+    bad  <- sum(sts %in% c("FAILED", "CANCELLED"))
+    if (done + bad == length(sts)) break
+    elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
+    if (elapsed - last_beat >= 60) {
+      run <- which(sts == "RUNNING")
+      detail <- if (length(run))
+        ee_task_progress(tasks[[run[1]]]$status()[["name"]]) else ""
+      sdm_info(sprintf("%d of %d tasks done, %d running, %d queued%s (%s elapsed)",
+                       done, length(sts), length(run),
+                       sum(sts == "READY"), detail,
+                       if (elapsed < 600) sprintf("%.0fs", elapsed)
+                       else sprintf("%.0f min", elapsed / 60)), indent = 2L)
+      last_beat <- elapsed
+    }
+    Sys.sleep(poll_seconds)
+  }
+  if (bad > 0L) {
+    who <- names(tasks)[sts %in% c("FAILED", "CANCELLED")]
+    msgs <- vapply(who, function(nm) {
+      s <- tasks[[nm]]$status()
+      if (!is.null(s[["error_message"]])) s[["error_message"]] else s[["state"]]
+    }, character(1))
+    stop(sprintf("%d of %d export tasks did not complete. %s. Completed bands remain in Drive.",
+                 bad, length(sts),
+                 paste(sprintf("%s: %s", who, msgs), collapse = "; ")), call. = FALSE)
+  }
+  invisible(TRUE)
 }

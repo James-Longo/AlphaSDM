@@ -771,6 +771,10 @@ export_image_tiled <- function(image, region, scale, dsn,
       "This region needs %d separate downloads at this resolution.",
       first_grid$nx * first_grid$ny), planned = TRUE)
     if (!inherits(esc, "error")) return(esc)
+    # A cancellation is a person stopping the run; honour it rather than grinding
+    # on through the fallback.
+    if (grepl("CANCEL", conditionMessage(esc)))
+      stop("The batch export was cancelled; stopping.", call. = FALSE)
     # Do not offer Drive again from the refusal paths below; it already failed once.
     switched <- TRUE
     sdm_warn(sprintf("The batch export did not run (%s); downloading tile by tile instead.",
