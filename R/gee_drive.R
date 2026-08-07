@@ -145,12 +145,22 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
                   poll_seconds)
 
   files <- drive_list_files(prefix)
+  # Drive's "name contains" is a case-insensitive substring match, so it can return a
+  # user's own files whose names happen to contain the prefix. These files are deleted
+  # after download, so accept only names Earth Engine itself would have written: the
+  # prefix, then either the -yMin-xMin suffix it gives a tiled export or nothing at
+  # all when the whole region fitted in one file.
+  keep <- grepl(sprintf("^%s(-\\d+-\\d+)?\\.tif$", prefix), files$name)
+  files <- files[keep, , drop = FALSE]
   if (!nrow(files))
     stop("The export finished but wrote no tiles. If the whole region is masked, ",
          "skipEmptyTiles will have dropped every tile.", call. = FALSE)
 
-  sdm_info(sprintf("Downloading %d tiles (%.1f GB)", nrow(files),
-                   sum(files$bytes, na.rm = TRUE) / 1024^3), indent = 1L)
+  total <- sum(files$bytes, na.rm = TRUE)
+  sdm_info(sprintf("Downloading %d tile%s (%s)", nrow(files),
+                   if (nrow(files) == 1L) "" else "s",
+                   if (total >= 1024^3) sprintf("%.1f GB", total / 1024^3)
+                   else sprintf("%.0f MB", total / 1024^2)), indent = 1L)
   for (i in seq_len(nrow(files))) {
     dest <- file.path(out_dir, files$name[i])
     drive_download_file(files$id[i], dest)
@@ -162,7 +172,8 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
                    files$name[i], got, files$bytes[i]), call. = FALSE)
     if (!keep_on_drive) drive_delete_file(files$id[i])
     if (i %% 25 == 0 || i == nrow(files))
-      sdm_info(sprintf("%d of %d tiles downloaded", i, nrow(files)), indent = 2L)
+      sdm_info(sprintf("%d of %d tile%s downloaded", i, nrow(files),
+                       if (nrow(files) == 1L) "" else "s"), indent = 2L)
   }
   sdm_info(sprintf("Tiles written to %s", out_dir), indent = 1L)
   out_dir
