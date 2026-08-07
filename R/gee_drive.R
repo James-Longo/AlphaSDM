@@ -91,6 +91,23 @@ drive_download_file <- function(id, dest) {
   dest
 }
 
+#' Decide whether a Drive file name was written by a given export
+#'
+#' Drive's "name contains" query is a case-insensitive substring match, so listing
+#' by an export's prefix can also return the user's own files whose names happen to
+#' contain it. Files matched here are deleted after download, which makes a loose
+#' match dangerous rather than merely untidy. Accept only names Earth Engine itself
+#' writes: the prefix followed by the -yMin-xMin suffix of a tiled export, or
+#' nothing at all when the region fitted in a single file.
+#'
+#' @param prefix The export's fileNamePrefix.
+#' @param names Character vector of Drive file names.
+#' @return Logical vector, TRUE for names the export wrote.
+#' @noRd
+is_export_tile_name <- function(prefix, names) {
+  grepl(sprintf("^%s(-\\d+-\\d+)?\\.tif$", prefix), names)
+}
+
 #' Delete one Drive file
 #' @noRd
 drive_delete_file <- function(id) {
@@ -145,13 +162,7 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
                   poll_seconds)
 
   files <- drive_list_files(prefix)
-  # Drive's "name contains" is a case-insensitive substring match, so it can return a
-  # user's own files whose names happen to contain the prefix. These files are deleted
-  # after download, so accept only names Earth Engine itself would have written: the
-  # prefix, then either the -yMin-xMin suffix it gives a tiled export or nothing at
-  # all when the whole region fitted in one file.
-  keep <- grepl(sprintf("^%s(-\\d+-\\d+)?\\.tif$", prefix), files$name)
-  files <- files[keep, , drop = FALSE]
+  files <- files[is_export_tile_name(prefix, files$name), , drop = FALSE]
   if (!nrow(files))
     stop("The export finished but wrote no tiles. If the whole region is masked, ",
          "skipEmptyTiles will have dropped every tile.", call. = FALSE)
