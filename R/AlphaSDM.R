@@ -262,8 +262,19 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   } else if (is.list(aoi) && !is.null(aoi$lat)) {
     aoi_geom <- ee$Geometry$Point(c(as.numeric(aoi$lon), as.numeric(aoi$lat)))$buffer(as.numeric(aoi$radius))
   } else if (is.character(aoi) && file.exists(aoi)) {
+    # Convert the file's geometry to GeoJSON with sf alone and hand it to Earth
+    # Engine directly. rgee::sf_as_ee() does the same conversion but through the
+    # geojsonio package, which neither rgee nor this package declares as a
+    # dependency, so the documented file-AOI path crashed for any user without it.
     aoi_sf <- sf::st_read(aoi, quiet = TRUE)
-    aoi_geom <- rgee::sf_as_ee(aoi_sf)$geometry()
+    geom <- sf::st_geometry(aoi_sf)
+    if (length(geom) > 1L) geom <- sf::st_union(geom)
+    geom <- sf::st_transform(geom, 4326)
+    tmp <- tempfile(fileext = ".geojson")
+    on.exit(unlink(tmp), add = TRUE)
+    sf::st_write(sf::st_sf(geometry = geom), tmp, quiet = TRUE)
+    gj <- jsonlite::fromJSON(readLines(tmp, warn = FALSE), simplifyVector = FALSE)
+    aoi_geom <- ee$Geometry(gj$features[[1]]$geometry)
   } else {
     stop("`aoi` must be an ee.Geometry, a list with lon/lat/radius, or a path to a ",
          "readable vector file. Got: ", paste(class(aoi), collapse = "/"), call. = FALSE)
