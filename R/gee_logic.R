@@ -600,9 +600,14 @@ blockcv_folds <- function(df, k, block_size = NULL) {
 #' so every tile, including all-water tiles, returns a valid, equal-sized
 #' GeoTIFF. The sentinel is restored to \code{NA} in the mosaicked output.
 #'
-#' Tiles are sized to stay under \code{getDownloadURL}'s synchronous limits
-#' (~32 MB request, 10000 px per side); a single-band float32 tile of
-#' \code{max_tile_px} on a side is ~\code{max_tile_px^2 * 4} bytes.
+#' A single-band float32 tile of \code{max_tile_px} on a side is
+#' \code{max_tile_px^2 * 4} bytes, so the default 512 is 1 MB against
+#' \code{getDownloadURL}'s 32 MB request limit. Request size is not what bounds a
+#' tile: memory is. A tile carrying a fitted model is refused well below the size
+#' limit, and 512 is the largest edge measured to succeed with the heaviest of the
+#' default methods, a 500-tree random forest, at 10 m. Larger tiles cost less per
+#' pixel, because a fixed per-request overhead dominates, so the default is the
+#' largest size known to work rather than a cautious one.
 #'
 #' @param image     ee.Image with a single prediction band.
 #' @param region    ee.Geometry whose bounds define the export extent.
@@ -614,7 +619,7 @@ blockcv_folds <- function(df, k, block_size = NULL) {
 #' @return \code{dsn}; writes the GeoTIFF as a side effect.
 #' @noRd
 export_image_tiled <- function(image, region, scale, dsn,
-                               nodata = -9999, max_tile_px = 2048L, tries = 4L) {
+                               nodata = -9999, max_tile_px = 512L, tries = 12L) {
   ee <- reticulate::import("ee")
   MIN_TILE_PX <- 128L
 
