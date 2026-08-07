@@ -66,13 +66,11 @@ DEFAULT_METHODS <- c("svm", "rf", "gbt", "maxent")
 #' Internal Unified GEE Training Pipeline
 #' @noRd
 fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, training_params, count = NULL,
-                           bg_ratio = NULL, persist_classifier = TRUE, project = NULL) {
-  # persist_classifier defaults to TRUE. Which methods actually store a model is a
-  # property of the method, held in the registry's `persistable` field, so a caller
-  # never has to reason about it: svm, gbt and maxent ignore the argument. Storing a
-  # whole-region map's tree model once lets every export tile apply the stored forest
-  # instead of retraining it, which is the largest export saving on a throttled tier.
-  # Cross-validation passes FALSE, since a model stored per fold is pure overhead.
+                           bg_ratio = NULL, persist_classifier = FALSE, project = NULL) {
+  # Persistence is opt-in. Map exports run in the batch system, which evaluates the
+  # model inline, so storing it first adds a wait without changing the result. Which
+  # methods can store a model is the registry's `persistable` field; svm, gbt and
+  # maxent ignore the argument.
   ee <- reticulate::import("ee")
 
   # Optional class balancing: thin the background collection to a target
@@ -222,11 +220,11 @@ cleanup_classifier_assets <- function(train_res) {
 #'   `"KD_TREE"` or `"COVER_TREE"`. Note `KD_TREE` ignores `knn_metric`.
 #' @param knn_metric kNN distance metric: `"EUCLIDEAN"`, `"MAHALANOBIS"`,
 #'   `"MANHATTAN"` or `"BRAYCURTIS"`. Only honoured for search methods that use it.
-#' @param persist_classifier Logical; whether to persist internally-persistable classifiers
-#'   (currently RF/CART) to a temporary GEE asset so a whole-region export applies a stored
-#'   model instead of retraining the forest on every tile. Defaults to `TRUE`; the package
-#'   ignores it for methods that cannot persist (SVM/GBT/MaxEnt), so most callers should
-#'   leave it unset.
+#' @param persist_classifier Logical; whether to store internally-persistable
+#'   classifiers (currently RF/CART) as a temporary GEE asset before mapping.
+#'   Defaults to `FALSE`: map exports run through Earth Engine's batch system,
+#'   which evaluates the model inline, so storing it first adds a wait without
+#'   changing the result. Ignored for methods that cannot persist (SVM/GBT/MaxEnt).
 #' @param gee_project Optional Earth Engine project override (normally set via [setup_gee()]).
 #' @return A named list of output file paths, with one `<method>_map` entry per
 #'   model, plus `ensemble_map` when more than one method is requested.
@@ -239,7 +237,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
                          maxent_beta = 1, maxent_features = "auto",
                          knn_k = NULL, knn_search_method = NULL, knn_metric = NULL,
-                         persist_classifier = TRUE,
+                         persist_classifier = FALSE,
                          gee_project = NULL) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   ensure_gee_authenticated(project = gee_project)

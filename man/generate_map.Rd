@@ -30,7 +30,7 @@ generate_map(
   knn_k = NULL,
   knn_search_method = NULL,
   knn_metric = NULL,
-  persist_classifier = TRUE,
+  persist_classifier = FALSE,
   gee_project = NULL
 )
 }
@@ -78,11 +78,11 @@ the surface can take only `k + 1` distinct values. Raise alongside `bg_ratio`.}
 \item{knn_metric}{kNN distance metric: `"EUCLIDEAN"`, `"MAHALANOBIS"`,
 `"MANHATTAN"` or `"BRAYCURTIS"`. Only honoured for search methods that use it.}
 
-\item{persist_classifier}{Logical; whether to persist internally-persistable classifiers
-(currently RF/CART) to a temporary GEE asset so a whole-region export applies a stored
-model instead of retraining the forest on every tile. Defaults to `TRUE`; the package
-ignores it for methods that cannot persist (SVM/GBT/MaxEnt), so most callers should
-leave it unset.}
+\item{persist_classifier}{Logical; whether to store internally-persistable
+classifiers (currently RF/CART) as a temporary GEE asset before mapping.
+Defaults to `FALSE`: map exports run through Earth Engine's batch system,
+which evaluates the model inline, so storing it first adds a wait without
+changing the result. Ignored for methods that cannot persist (SVM/GBT/MaxEnt).}
 
 \item{gee_project}{Optional Earth Engine project override (normally set via [setup_gee()]).}
 }
