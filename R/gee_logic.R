@@ -597,9 +597,10 @@ blockcv_folds <- function(df, k, block_size = NULL) {
 #' before download and the sentinel restored to \code{NA} in the output.
 #'
 #' Memory, not request size, is what bounds a tile: one carrying a fitted model is
-#' refused well below \code{getDownloadURL}'s 32 MB limit. The 512 px default is
-#' the largest edge that works with the heaviest default method, and larger tiles
-#' cost less per pixel because per-request overhead dominates.
+#' refused well below \code{getDownloadURL}'s 32 MB limit. The 256 px default is
+#' the largest edge that works across every default method with a heavy training
+#' set, so one universal size serves multi-method runs and shared ensemble grids.
+#' The halving ladder below remains for models heavier still.
 #'
 #' @param image     ee.Image with a single prediction band.
 #' @param region    ee.Geometry whose bounds define the export extent.
@@ -611,7 +612,7 @@ blockcv_folds <- function(df, k, block_size = NULL) {
 #' @return \code{dsn}; writes the GeoTIFF as a side effect.
 #' @noRd
 export_image_tiled <- function(image, region, scale, dsn,
-                               nodata = -9999, max_tile_px = 512L, tries = 12L) {
+                               nodata = -9999, max_tile_px = 256L, tries = 12L) {
   ee <- reticulate::import("ee")
   MIN_TILE_PX <- 128L
 
