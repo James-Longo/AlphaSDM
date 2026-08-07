@@ -91,25 +91,6 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
   list(task = task, asset_id = asset_id)
 }
 
-#' Poll an export task until it finishes
-#'
-#' Prints roughly one line a minute so a long export shows progress rather than
-#' sitting silent.
-#'
-#' @param handle A handle from `ee_start_fc_export()`.
-#' @param poll_seconds Seconds between status checks.
-#' @param max_minutes Overall limit. NULL, the default, means wait for as long as
-#'   the task keeps running. A deadline on work that is progressing only turns
-#'   Earth Engine's success into our own failure, which is what a fixed limit here
-#'   kept doing. Earth Engine ends its own tasks, so this does not wait forever.
-#'   Set ALPHASDM_MAX_WAIT_MINUTES for an unattended run that must not block.
-#' @param max_queue_minutes Give up if the task has not started within this long.
-#'   NULL, the default, waits. Queueing is how Earth Engine schedules work, not a
-#'   sign that something is wrong, and a task that has not started yet has cost
-#'   nothing to keep waiting for. Provided for an unattended run that would rather
-#'   fall back than sit in a queue.
-#' @return The asset id. Errors when the task fails, is cancelled, or gives up.
-#' @noRd
 #' Describe how far along an Earth Engine batch task is
 #'
 #' `task$status()` reports only a state word. The Operations API also carries the
@@ -170,6 +151,25 @@ ee_task_progress <- function(op_name, drive_prefix = NULL) {
   if (!length(bits)) "" else paste0(" [", paste(bits, collapse = ", "), "]")
 }
 
+#' Poll an export task until it finishes
+#'
+#' Prints roughly one line a minute so a long export shows progress rather than
+#' sitting silent.
+#'
+#' @param handle A handle from `ee_start_fc_export()`.
+#' @param poll_seconds Seconds between status checks.
+#' @param max_minutes Overall limit. NULL, the default, means wait for as long as
+#'   the task keeps running. A deadline on work that is progressing only turns
+#'   Earth Engine's success into our own failure, which is what a fixed limit here
+#'   kept doing. Earth Engine ends its own tasks, so this does not wait forever.
+#'   Set ALPHASDM_MAX_WAIT_MINUTES for an unattended run that must not block.
+#' @param max_queue_minutes Give up if the task has not started within this long.
+#'   NULL, the default, waits. Queueing is how Earth Engine schedules work, not a
+#'   sign that something is wrong, and a task that has not started yet has cost
+#'   nothing to keep waiting for. Provided for an unattended run that would rather
+#'   fall back than sit in a queue.
+#' @return The asset id. Errors when the task fails, is cancelled, or gives up.
+#' @noRd
 ee_await_export <- function(handle, poll_seconds = 15, max_minutes = NULL,
                             max_queue_minutes = NULL) {
   env_cap <- suppressWarnings(as.numeric(Sys.getenv("ALPHASDM_MAX_WAIT_MINUTES", "")))
@@ -413,46 +413,6 @@ sdm_clean_assets <- function(older_than_hours = 48, dry_run = FALSE,
   invisible(targets)
 }
 
-#' Compute an image once into an asset and load it back
-#'
-#' The interactive endpoint that serves tile downloads has a small per-request
-#' memory budget, and an image carrying a fitted model exceeds it at fine scales.
-#' Earth Engine's own guidance for that case is to run the computation through the
-#' batch system instead, which has a larger memory allowance and a longer timeout.
-#' The result is a stored image, so reading tiles from it costs a read rather than
-#' re-running the model over every pixel.
-#'
-#' Progress is reported to the console as the task runs, so the caller does not need
-#' to watch the Earth Engine task list.
-#'
-#' WARNING: this writes an asset and does not remove it. The caller has to delete it
-#' with `ee_delete_asset_quietly()`.
-#'
-#' @param img An `ee$Image` to compute.
-#' @param region Geometry to compute over.
-#' @param scale Pixel size in metres.
-#' @param project Earth Engine project id, or NULL to use the saved one.
-#' @param poll_seconds Seconds between status checks.
-#' @param max_minutes Give up after this long.
-#' @return A list with the stored `img` and its `asset_id`.
-#' @noRd
-ee_persist_image <- function(img, region, scale, project = NULL,
-                             poll_seconds = 15, max_minutes = NULL) {
-  ee     <- reticulate::import("ee")
-  root   <- async_asset_root(project)
-  stamp  <- format(Sys.time(), "%Y%m%d%H%M%S")
-  suffix <- paste(sample(c(letters, 0:9), 6, replace = TRUE), collapse = "")
-  asset_id <- sprintf("%s/alphasdm_img_%s_%s", root, stamp, suffix)
-
-  task <- ee$batch$Export$image$toAsset(
-    image = img, description = paste0("alphasdm_img_", suffix), assetId = asset_id,
-    region = region, scale = scale, maxPixels = 1e13
-  )
-  task$start()
-  sdm_info(sprintf("Computing the map server-side -> %s", basename(asset_id)), indent = 2L)
-  ee_await_export(list(task = task, asset_id = asset_id), poll_seconds, max_minutes)
-  list(img = ee$Image(asset_id), asset_id = asset_id)
-}
 
 #' Read a FeatureCollection through a batch export instead of getInfo()
 #'

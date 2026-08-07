@@ -736,10 +736,44 @@ export_image_tiled <- function(image, region, scale, dsn,
   # If even the stored image will not serve at this tile size, fall back to halving
   # the tile, which is the older behaviour and still correct, just slower.
   grid <- NULL; tmpdir <- NULL; first_path <- NULL; switched <- FALSE
-  # The staged copy is deleted as soon as every tile is on disk. This keeps it as a
-  # backstop for an early exit only.
-  staged <- NULL
-  on.exit(if (!is.null(staged)) ee_delete_asset_quietly(staged), add = TRUE)
+
+  # Tiles are delivered in this directory. It is named here because the Drive route
+  # writes straight into it.
+  out_dir <- file.path(dirname(dsn), paste0(tools::file_path_sans_ext(basename(dsn)), "_tiles"))
+
+  # Hand the whole region to Earth Engine's batch system and let it do the tiling.
+  # Export.image.toDrive takes shardSize, which sets the pixel block the computation
+  # runs in and so the memory it needs, and fileDimensions, which splits the result
+  # into aligned tiles. Export.image.toAsset takes neither, which is why the asset
+  # route needed the region subdivided by hand.
+  #
+  # `image` is passed rather than `img`: `img` has had its mask filled with the
+  # sentinel, and a filled image gives skipEmptyTiles nothing to skip. Masked tiles
+  # arrive as masked, so they need no sentinel translation afterwards.
+  escalate_to_drive <- function(why) {
+    sdm_warn(why, indent = 2L)
+    sdm_info(paste("Earth Engine will compute this map in its batch system and write",
+                   "the tiles to Google Drive. AlphaSDM downloads them and removes them",
+                   "from Drive afterwards, so nothing is left in your storage."),
+             indent = 2L)
+    sdm_info("This runs server-side and can take a while. Progress is reported below.",
+             indent = 2L)
+    tryCatch({
+      dir_out <- ee_export_image_drive(image, region, scale, out_dir)
+      files <- list.files(dir_out, pattern = "\\.tif$", full.names = TRUE)
+      if (!length(files))
+        stop("the export produced no tiles", call. = FALSE)
+      # One tile is the whole region, so hand back the raster rather than a directory
+      # holding a single file. This matches what the direct route does.
+      if (length(files) == 1L) {
+        file.copy(files[1], dsn, overwrite = TRUE)
+        unlink(dir_out, recursive = TRUE)
+        return(dsn)
+      }
+      sdm_info(sprintf("%d tiles written to %s", length(files), dir_out), indent = 2L)
+      dir_out
+    }, error = function(e) e)
+  }
   repeat {
     grid   <- build_grid(max_tile_px)
     tmpdir <- tile_dir(max_tile_px)
@@ -758,26 +792,14 @@ export_image_tiled <- function(image, region, scale, dsn,
                    max_tile_px, res), call. = FALSE)
     }
 
-    # First refusal: move the computation into the batch system and try again from
-    # the stored image, at the same tile size.
+    # First refusal: hand the region to the batch system, which computes and tiles it.
     if (!switched) {
       switched <- TRUE
-      sdm_warn(paste("This map is too heavy to download directly at",
-                     "this resolution. Computing it through Earth Engine's batch",
-                     "system instead, then downloading the result."), indent = 2L)
-      sdm_info("This runs server-side and can take a while. Progress is reported below.",
-               indent = 2L)
-      stored <- tryCatch(ee_persist_image(img, region, scale, project = NULL),
-                         error = function(e) e)
-      if (inherits(stored, "error")) {
-        sdm_warn(sprintf("Batch export unavailable (%s); falling back to smaller tiles.",
-                         conditionMessage(stored)), indent = 2L)
-      } else {
-        img <- stored$img
-        staged <- stored$asset_id
-        sdm_info("Map computed. Downloading it now.", indent = 2L)
-        next                       # retry the probe against the stored image
-      }
+      esc <- escalate_to_drive(paste("This map is too large to download directly at",
+                                     "this resolution."))
+      if (!inherits(esc, "error")) return(esc)
+      sdm_warn(sprintf("The batch export did not run (%s); falling back to smaller tiles.",
+                       conditionMessage(esc)), indent = 2L)
     }
 
     if (pinned || max_tile_px <= MIN_TILE_PX) {
@@ -833,36 +855,13 @@ export_image_tiled <- function(image, region, scale, dsn,
   # only the missing ones are fetched from the stored image.
   if (r$refused && !switched) {
     switched <- TRUE
-    sdm_warn(paste("Tiles started being refused partway through. Computing the map",
-                   "through Earth Engine's batch system instead, then finishing the",
-                   "download."), indent = 2L)
-    stored <- tryCatch(ee_persist_image(img, region, scale, project = NULL),
-                       error = function(e) e)
-    if (inherits(stored, "error")) {
-      sdm_warn(sprintf("Batch export unavailable (%s); keeping what downloaded.",
-                       conditionMessage(stored)), indent = 2L)
-    } else {
-      img <- stored$img
-      staged <- stored$asset_id
-      sdm_info(sprintf("Map computed. Fetching the %d remaining tile%s.",
-                       r$failed, if (r$failed == 1L) "" else "s"), indent = 2L)
-      r <- run_tiles()
-    }
+    esc <- escalate_to_drive(paste("Tiles started being refused partway through, so the",
+                                   "rest of the region would come back with holes."))
+    if (!inherits(esc, "error")) return(esc)
+    sdm_warn(sprintf("The batch export did not run (%s); keeping what downloaded.",
+                     conditionMessage(esc)), indent = 2L)
   }
   tiles <- r$tiles; failed <- r$failed; last_msg <- r$last_msg
-
-  # Every tile that is going to arrive has arrived, so the staged copy has done its
-  # job. Release it now rather than at function exit: mosaicking and writing a large
-  # raster takes time, and there is no reason to hold Earth Engine storage during it.
-  if (!is.null(staged) && length(tiles) > 0L) {
-    on_disk <- sum(file.exists(tiles) & file.info(tiles)$size > 0)
-    if (on_disk == length(tiles)) {
-      ee_delete_asset_quietly(staged)
-      staged <- NULL
-      sdm_info(sprintf("%d tile%s confirmed on disk; removed the temporary copy from your Earth Engine storage.",
-                       on_disk, if (on_disk == 1L) "" else "s"), indent = 2L)
-    }
-  }
 
   if (length(tiles) == 0L)
     stop(sprintf("export_image_tiled: every tile failed. Last error: %s", last_msg), call. = FALSE)
@@ -878,7 +877,6 @@ export_image_tiled <- function(image, region, scale, dsn,
   # The sentinel written for masked pixels is turned into NA here, one tile at a time,
   # so the tiles are usable as they are. Mosaic them with gdalbuildvrt or terra::vrt
   # if a single raster is wanted.
-  out_dir <- file.path(dirname(dsn), paste0(tools::file_path_sans_ext(basename(dsn)), "_tiles"))
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
   written <- character(0)
