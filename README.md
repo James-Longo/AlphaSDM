@@ -144,7 +144,7 @@ Two caveats worth knowing:
 
 ### 1. Format your data
 
-Get your presence/absence records into the expected format. A year column is required so each record is matched to the embedding for the year it was recorded.
+Get your presence/absence records into the expected format. Coordinates must be longitude and latitude in decimal degrees on WGS84 (EPSG:4326), which is what GPS units and databases like GBIF and eBird report. Projected coordinates (UTM metres and the like) are rejected; reproject them first with `sf::st_transform(x, 4326)`. A year column is required so each record is matched to the embedding for the year it was recorded.
 
 The Alpha Earth embeddings are annual and currently cover 2017 to 2025. `format_data()` drops any record dated outside that window and reports how many it removed. If the temporal gap does not matter for your question, set those records to 2017 to keep them and match them against the earliest available embedding.
 
@@ -185,6 +185,8 @@ Create maps for an area of interest. You can define the AOI in two ways:
 aoi <- list(lat = 44.5, lon = -71.5, radius = 50000)
 
 # Option 2: A path to any spatial file (Shapefile, GeoJSON, GeoPackage, KML, etc.)
+# Any CRS works here: the file carries its projection, so it is reprojected
+# to WGS84 automatically. Only bare coordinate columns can't be.
 aoi <- "path/to/my_study_area.shp"
 ```
 

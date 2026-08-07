@@ -7,11 +7,18 @@
 format_data(data, coords, year, presence = NULL, species = NULL, label = NULL)
 }
 \arguments{
-\item{data}{A data frame of survey records.}
+\item{data}{A data frame of survey records.
+Coordinates must be longitude and latitude in decimal degrees on WGS84
+(EPSG:4326), the system GPS units and most occurrence databases (GBIF, eBird)
+report in. A data frame carries no CRS information, so nothing can be
+reprojected on your behalf: projected coordinates such as UTM metres are
+rejected, and coordinates in another geographic datum are not detectable and
+will be treated as WGS84. Reproject with
+`sf::st_transform(x, 4326)` before formatting if needed.}
 
 \item{coords}{Character vector of length 2 naming the longitude and latitude
-columns, longitude first: `c(longitude_col, latitude_col)`. The order matters
-and is not checked beyond a range test on the first non-missing row.}
+columns, longitude first: `c(longitude_col, latitude_col)`. Values must be
+decimal degrees on WGS84 (EPSG:4326); see Details.}
 
 \item{year}{A character string naming the year or date column. Dates are reduced
 to their year. Records outside the Alpha Earth window are dropped.}

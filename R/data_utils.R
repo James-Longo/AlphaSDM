@@ -11,9 +11,17 @@
 #' [setup_gee()] first.
 #'
 #' @param data A data frame of survey records.
+#' Coordinates must be longitude and latitude in decimal degrees on WGS84
+#' (EPSG:4326), the system GPS units and most occurrence databases (GBIF, eBird)
+#' report in. A data frame carries no CRS information, so nothing can be
+#' reprojected on your behalf: projected coordinates such as UTM metres are
+#' rejected, and coordinates in another geographic datum are not detectable and
+#' will be treated as WGS84. Reproject with
+#' `sf::st_transform(x, 4326)` before formatting if needed.
+#'
 #' @param coords Character vector of length 2 naming the longitude and latitude
-#'   columns, longitude first: `c(longitude_col, latitude_col)`. The order matters
-#'   and is not checked beyond a range test on the first non-missing row.
+#'   columns, longitude first: `c(longitude_col, latitude_col)`. Values must be
+#'   decimal degrees on WGS84 (EPSG:4326); see Details.
 #' @param year A character string naming the year or date column. Dates are reduced
 #'   to their year. Records outside the Alpha Earth window are dropped.
 #' @param presence Optional. Name of the presence column, holding 1 for presence
@@ -76,16 +84,26 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
     # Guard on NA, not NULL: `x[1]` on an empty vector gives NA. An all-NA
     # coordinate column would otherwise reach the comparison below and fail with
     # "missing value where TRUE/FALSE needed".
-    if (!is.na(sample_lat) && !is.na(sample_lon)) {
-        lat_in_range <- sample_lat >= -90 && sample_lat <= 90
-        lon_in_range <- sample_lon >= -180 && sample_lon <= 180
-
-        if (!lat_in_range && lon_in_range) {
-            warning(sprintf(
-                "Coordinates may be SWAPPED! Latitude=%s is outside valid range [-90, 90].\n  Did you pass coords in the correct order? It should be: coords = c(longitude_col, latitude_col)\n  Your call: coords = c('%s', '%s')",
-                sample_lat, coords[1], coords[2]
-            ))
+    # Out-of-range coordinates never proceed: Earth Engine would treat them as
+    # degrees regardless. Latitude out of range beside a plausible longitude
+    # usually means the columns were passed in the wrong order; out of range in
+    # both usually means a projected system such as UTM metres.
+    bad_lat <- !is.na(result$latitude)  & (result$latitude  < -90  | result$latitude  > 90)
+    bad_lon <- !is.na(result$longitude) & (result$longitude < -180 | result$longitude > 180)
+    if (any(bad_lat) || any(bad_lon)) {
+        if (any(bad_lat) && !any(bad_lon)) {
+            stop(sprintf(paste0(
+                "Coordinates may be SWAPPED: latitude=%s is outside [-90, 90] but the ",
+                "longitude column looks valid. coords must be longitude first: ",
+                "coords = c(longitude_col, latitude_col). Your call: coords = c('%s', '%s')"),
+                result$latitude[bad_lat][1], coords[1], coords[2]), call. = FALSE)
         }
+        stop(sprintf(paste0(
+            "%d record(s) have coordinates outside decimal-degree range ",
+            "(longitude [-180, 180], latitude [-90, 90]). AlphaSDM needs longitude/latitude ",
+            "in decimal degrees on WGS84 (EPSG:4326). If your coordinates are projected ",
+            "(e.g. UTM metres), reproject first: sf::st_transform(x, 4326)."),
+            sum(bad_lat | bad_lon)), call. = FALSE)
     }
 
     year_data <- data[[year]]

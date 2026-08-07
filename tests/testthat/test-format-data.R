@@ -81,12 +81,12 @@ test_that("rows with missing values are removed", {
   expect_equal(nrow(out), 2)
 })
 
-test_that("swapped coordinates are flagged", {
+test_that("swapped coordinates are rejected with a swap hint", {
   local_coverage_window()
   d <- data.frame(lon = c(44.5, 44.6), lat = c(-171.5, -171.6),
                   yr = c(2020, 2021), occ = c(1, 1))
-  expect_warning(format_data(d, coords = c("lon", "lat"), year = "yr", presence = "occ"),
-                 "SWAPPED")
+  expect_error(format_data(d, coords = c("lon", "lat"), year = "yr", presence = "occ"),
+               "SWAPPED")
 })
 
 test_that("a species column is carried through when requested", {
@@ -119,4 +119,21 @@ test_that("the reported window drives the filter and the advice", {
   expect_message(out <- format_data(d, coords = c("lon", "lat"), year = "yr", presence = "occ"),
                  "2019-2021")
   expect_true(all(out$year >= 2019 & out$year <= 2021))
+})
+
+test_that("projected coordinates are rejected with a WGS84 message", {
+  local_coverage_window()
+  utm <- data.frame(x = c(500000, 501000), y = c(4900000, 4901000),
+                    yr = 2020L, occ = 1L)
+  expect_error(
+    format_data(utm, coords = c("x", "y"), year = "yr", presence = "occ"),
+    "WGS84")
+})
+
+test_that("valid decimal degrees are not caught by the projection guard", {
+  local_coverage_window()
+  ok <- data.frame(lon = c(-68.5, 179.9, -179.9), lat = c(44.7, -89.9, 89.9),
+                   yr = 2020L, occ = 1L)
+  expect_silent(suppressMessages(
+    format_data(ok, coords = c("lon", "lat"), year = "yr", presence = "occ")))
 })
