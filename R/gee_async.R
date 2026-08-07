@@ -110,6 +110,66 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
 #'   fall back than sit in a queue.
 #' @return The asset id. Errors when the task fails, is cancelled, or gives up.
 #' @noRd
+#' Describe how far along an Earth Engine batch task is
+#'
+#' `task$status()` reports only a state word. The Operations API also carries the
+#' task's own progress fraction, its named stages with their work-unit counts, and
+#' the compute it has consumed, so a task that is working can be told apart from one
+#' that is merely running. Earth Engine populates these as the task proceeds, so any
+#' of them may be absent on a young task and the caller gets whatever is available.
+#'
+#' @param op_name Operation name from `task$status()[["name"]]`.
+#' @param drive_prefix For a Drive export, the file name prefix. Earth Engine stops
+#'   advancing `progress` and stops consuming compute once it reaches the stage that
+#'   uploads results, so for the last stage the count of files written is the only
+#'   signal that moves. Counting them keeps a working export from looking stalled.
+#' @return A string to append to a progress line, empty when nothing is reported yet.
+#' @noRd
+ee_task_progress <- function(op_name, drive_prefix = NULL) {
+  if (is.null(op_name) || !nzchar(op_name)) return("")
+  ee <- reticulate::import("ee")
+  m <- tryCatch(ee$data$getOperation(op_name)$metadata, error = function(e) NULL)
+  if (is.null(m)) return("")
+  one <- function(x) {
+    v <- suppressWarnings(as.numeric(x))
+    if (length(v) != 1L || is.na(v)) NULL else v
+  }
+  bits <- character(0)
+  # One decimal, because a long export can spend an hour inside a single percent
+  # and a rounded whole number makes steady work look like a stall.
+  pct <- one(m$progress)
+  if (!is.null(pct)) bits <- c(bits, sprintf("%.1f%%", 100 * pct))
+  # Name the stage currently being worked, with its counts when Earth Engine
+  # supplies them. The last stage uploads to the destination, so seeing it start is
+  # what tells the user the computation itself is finished.
+  stg <- tryCatch(m$stages, error = function(e) NULL)
+  if (!is.null(stg)) {
+    for (s in rev(stg)) {
+      done <- one(s$completeWorkUnits)
+      if (is.null(done)) next
+      tot <- one(s$totalWorkUnits)
+      nm <- tryCatch(as.character(s$displayName), error = function(e) NULL)
+      if (length(nm) != 1L) nm <- NULL
+      # Work units are fractional, so they creep within a unit rather than stepping.
+      # Two decimals is enough to see movement without reporting noise.
+      bits <- c(bits, if (is.null(tot)) sprintf("%s %.2f", nm, done)
+                      else sprintf("%s %.2f/%g", nm, done, tot))
+      break
+    }
+  }
+  eecu <- one(m$batchEecuUsageSeconds)
+  if (!is.null(eecu)) bits <- c(bits, sprintf("%.0f EECU-s", eecu))
+  att <- one(m$attempt)
+  if (!is.null(att) && att > 1) bits <- c(bits, sprintf("attempt %g", att))
+  if (!is.null(drive_prefix)) {
+    fl <- tryCatch(drive_list_files(drive_prefix), error = function(e) NULL)
+    if (!is.null(fl) && nrow(fl))
+      bits <- c(bits, sprintf("%d tiles, %.1f GB written", nrow(fl),
+                              sum(fl$bytes, na.rm = TRUE) / 1024^3))
+  }
+  if (!length(bits)) "" else paste0(" [", paste(bits, collapse = ", "), "]")
+}
+
 ee_await_export <- function(handle, poll_seconds = 15, max_minutes = NULL,
                             max_queue_minutes = NULL) {
   env_cap <- suppressWarnings(as.numeric(Sys.getenv("ALPHASDM_MAX_WAIT_MINUTES", "")))
@@ -145,7 +205,8 @@ ee_await_export <- function(handle, poll_seconds = 15, max_minutes = NULL,
     elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
     if (!identical(state, last_state) || elapsed - last_beat >= 60) {
       lbl <- switch(state, READY = "queued", RUNNING = "running", tolower(state))
-      sdm_info(sprintf("export %s server-side ... (%s elapsed)", lbl,
+      sdm_info(sprintf("export %s server-side ...%s (%s elapsed)", lbl,
+                       ee_task_progress(st[["name"]], handle$drive_prefix),
                        if (elapsed < 600) sprintf("%.0fs", elapsed)
                        else sprintf("%.0f min", elapsed / 60)), indent = 2L)
       last_beat <- elapsed; last_state <- state
