@@ -137,14 +137,17 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     bg_balanced  <- balance_bg(sampled_fc$filter(ee$Filter$eq("present", 0L)), n_pres, n_background)
   }
 
-  # Compute the sampled training table once into an asset. Everything downstream is
-  # lazy and would otherwise re-evaluate the upload-and-sample graph on every use;
-  # past a few thousand points that graph exceeds even batch memory. Reading stored
-  # rows keeps every later step small. The asset id is returned for cleanup by the
-  # caller, since the models reference it until mapping or scoring is finished.
+  # Store the training rows the requested methods will actually fit on. Everything
+  # downstream is lazy and re-evaluates its input graph on every use, and every
+  # worker loads the whole stored table, so both the graph and the table must be no
+  # bigger than the training set itself. When every method trains on the presence or
+  # balanced pool, that is the balanced rows, not the full sample.
   sdm_info("Computing the sampled training data (server-side) ...", indent = 1L)
   training_asset <- NULL
-  mat <- tryCatch(ee_materialize_fc_async(sampled_fc, project = project),
+  pools <- vapply(methods, method_pool, character(1))
+  to_store <- if (all(pools %in% c("presence", "balanced")))
+    pres_sampled$merge(bg_balanced) else sampled_fc
+  mat <- tryCatch(ee_materialize_fc_async(to_store, project = project),
                   error = function(e) {
                     sdm_warn(sprintf("Could not store the training table (%s); continuing with the in-graph table.",
                                      conditionMessage(e)), indent = 1L)
@@ -152,10 +155,15 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
                   })
   if (!is.null(mat)) {
     training_asset <- mat$asset_id
-    sampled_fc     <- mat$fc
-    pres_sampled   <- sampled_fc$filter(ee$Filter$eq("present", 1L))
-    bg_balanced    <- balance_bg(sampled_fc$filter(ee$Filter$eq("present", 0L)),
+    if (all(pools %in% c("presence", "balanced"))) {
+      pres_sampled <- mat$fc$filter(ee$Filter$eq("present", 1L))
+      bg_balanced  <- mat$fc$filter(ee$Filter$eq("present", 0L))
+    } else {
+      sampled_fc   <- mat$fc
+      pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
+      bg_balanced  <- balance_bg(sampled_fc$filter(ee$Filter$eq("present", 0L)),
                                  n_pres, n_background)
+    }
   }
 
   sdm_progress_done(pb_up)
