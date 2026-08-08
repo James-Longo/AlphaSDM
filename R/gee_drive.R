@@ -41,9 +41,12 @@ drive_session <- function() {
 #' @noRd
 drive_list_files <- function(prefix) {
   s <- drive_session()
+  # Drive's "name contains" silently returns nothing for some long compound
+  # strings, so query on a short leading token and filter exactly here.
+  q_token <- paste(head(strsplit(prefix, "_", fixed = TRUE)[[1]], 2L), collapse = "_")
   out <- list(); token <- NULL
   repeat {
-    params <- list(q = sprintf("name contains '%s' and trashed = false", prefix),
+    params <- list(q = sprintf("name contains '%s' and trashed = false", q_token),
                    fields = "nextPageToken,files(id,name,size)",
                    pageSize = 1000L)
     if (!is.null(token)) params$pageToken <- token
@@ -57,13 +60,14 @@ drive_list_files <- function(prefix) {
   if (!length(out))
     return(data.frame(id = character(0), name = character(0), bytes = numeric(0),
                       stringsAsFactors = FALSE))
-  data.frame(
+  df <- data.frame(
     id    = vapply(out, function(f) as.character(f[["id"]]), character(1)),
     name  = vapply(out, function(f) as.character(f[["name"]]), character(1)),
     bytes = vapply(out, function(f) {
       v <- suppressWarnings(as.numeric(f[["size"]])); if (length(v) != 1L) NA_real_ else v
     }, numeric(1)),
     stringsAsFactors = FALSE)
+  df[startsWith(df$name, prefix), , drop = FALSE]
 }
 
 #' Download one Drive file
