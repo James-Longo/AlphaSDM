@@ -154,6 +154,11 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
   dpp <- scale / 111320                       # degrees per pixel, as build_grid uses
   row_deg <- file_dim * dpp
   n_rows <- max(1L, as.integer(ceiling((north - south) / row_deg)))
+  # ALPHASDM_BAND_GEOM: "transform" (default; shared grid) or "scale".
+  # ALPHASDM_BAND_MODE: "rows" (default) or "single" for one whole-region task.
+  use_transform <- !identical(Sys.getenv("ALPHASDM_BAND_GEOM", "transform"), "scale")
+  if (identical(Sys.getenv("ALPHASDM_BAND_MODE", "rows"), "single")) n_rows <- 1L
+  if (n_rows == 1L) row_deg <- north - south
   transform <- list(dpp, 0, west, 0, -dpp, north)
 
   tasks <- list()
@@ -165,7 +170,9 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
       image = image, description = band_prefix, folder = folder,
       fileNamePrefix = band_prefix,
       region = ee$Geometry$Rectangle(c(west, bot, east, top)),
-      crs = "EPSG:4326", crsTransform = transform,
+      crs = "EPSG:4326",
+      crsTransform = if (use_transform) transform else NULL,
+      scale = if (use_transform) NULL else scale,
       shardSize = shard_size, fileDimensions = file_dim, skipEmptyTiles = TRUE,
       maxPixels = 1e13, fileFormat = "GeoTIFF")
     task$start()

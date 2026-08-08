@@ -429,3 +429,35 @@ ee_table_to_info_async <- function(fc, project = NULL, select = NULL,
   ee_delete_asset_quietly(asset_id)
   info
 }
+
+#' Store a large sampled table as several concurrent chunk exports
+#'
+#' One table export evaluates one sampling graph over every point; chunking
+#' keeps each export's graph small and the chunks run concurrently server-side.
+#'
+#' @param dfs List of data frames, one per chunk, each with longitude, latitude
+#'   and the property columns.
+#' @param scale Sampling scale in metres.
+#' @param years Years list passed through to sampling.
+#' @param project Earth Engine project id or NULL.
+#' @return list(fc = merged FeatureCollection over all chunk assets,
+#'   asset_ids = character vector for cleanup).
+#' @noRd
+ee_materialize_fc_chunked <- function(dfs, scale, years, project = NULL,
+                                      poll_seconds = 15) {
+  ee <- reticulate::import("ee")
+  handles <- vector("list", length(dfs))
+  for (i in seq_along(dfs)) {
+    fc_i <- get_embeddings_at_fc(upload_points_to_gee(dfs[[i]]), scale,
+                                 properties = c("year", "present"),
+                                 geometries = TRUE, years = years)
+    handles[[i]] <- ee_start_fc_export(fc_i, project)
+  }
+  sdm_info(sprintf("%d chunk exports started; awaiting all", length(handles)),
+           indent = 2L)
+  for (h in handles) ee_await_export(h, poll_seconds)
+  ids <- vapply(handles, function(h) h$asset_id, character(1))
+  fcs <- lapply(ids, ee$FeatureCollection)
+  fc  <- Reduce(function(a, b) a$merge(b), fcs)
+  list(fc = fc, asset_ids = ids)
+}

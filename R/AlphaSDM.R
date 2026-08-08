@@ -150,15 +150,32 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
   pools <- vapply(methods, method_pool, character(1))
   to_store <- if (all(pools %in% c("presence", "balanced")))
     pres_sampled$merge(bg_balanced) else sampled_fc
-  mat <- tryCatch(ee_materialize_fc_async(to_store, project = project),
-                  error = function(e) {
-                    sdm_warn(sprintf("Could not store the training table (%s); continuing with the in-graph table.",
-                                     conditionMessage(e)), indent = 1L)
-                    NULL
-                  })
+  # ALPHASDM_TABLE_ROUTE: "single" (default), "chunked", or "graph" to skip storing.
+  route <- Sys.getenv("ALPHASDM_TABLE_ROUTE", "single")
+  mat <- if (identical(route, "graph")) NULL else tryCatch({
+    if (identical(route, "chunked") && !all(train_df$present == 1)) {
+      idx <- split(seq_len(nrow(train_df)),
+                   ceiling(seq_len(nrow(train_df)) / 5000))
+      dfs <- lapply(idx, function(i) train_df[i, c("longitude","latitude","year","present")])
+      ck  <- ee_materialize_fc_chunked(dfs, scale,
+              years = as.list(unique(as.integer(train_df$year))), project = project)
+      list(fc = ck$fc, asset_id = ck$asset_ids)
+    } else {
+      ee_materialize_fc_async(to_store, project = project)
+    }
+  }, error = function(e) {
+    sdm_warn(sprintf("Could not store the training table (%s); continuing with the in-graph table.",
+                     conditionMessage(e)), indent = 1L)
+    NULL
+  })
   if (!is.null(mat)) {
     training_asset <- mat$asset_id
-    if (all(pools %in% c("presence", "balanced"))) {
+    if (identical(route, "chunked") || !all(pools %in% c("presence", "balanced"))) {
+      sampled_fc   <- mat$fc
+      pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
+      bg_balanced  <- balance_bg(sampled_fc$filter(ee$Filter$eq("present", 0L)),
+                                 n_pres, n_background)
+    } else if (all(pools %in% c("presence", "balanced"))) {
       pres_sampled <- mat$fc$filter(ee$Filter$eq("present", 1L))
       bg_balanced  <- mat$fc$filter(ee$Filter$eq("present", 0L))
     } else {
@@ -206,7 +223,7 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
       # training table. Remove with cleanup_classifier_assets() after prediction.
       classifier_assets = c(
         Filter(Negate(is.null), lapply(models, function(x) x$asset_id)),
-        if (!is.null(training_asset)) list(training_asset)
+        if (!is.null(training_asset)) as.list(training_asset)
       )
     )
   ))
