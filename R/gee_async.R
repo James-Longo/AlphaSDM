@@ -115,31 +115,13 @@ ee_task_progress <- function(op_name, drive_prefix = NULL) {
   }
   bits <- character(0)
   # One decimal, because a long export can spend an hour inside a single percent
-  # and a rounded whole number makes steady work look like a stall.
+  # and a rounded whole number makes steady work look like a stall. Internal
+  # detail such as stage names and attempt counters stays out of the line;
+  # percent and compute consumed are what a reader can act on.
   pct <- one(m$progress)
   if (!is.null(pct)) bits <- c(bits, sprintf("%.1f%%", 100 * pct))
-  # Name the stage currently being worked, with its counts when Earth Engine
-  # supplies them. The last stage uploads to the destination, so seeing it start is
-  # what tells the user the computation itself is finished.
-  stg <- tryCatch(m$stages, error = function(e) NULL)
-  if (!is.null(stg)) {
-    for (s in rev(stg)) {
-      done <- one(s$completeWorkUnits)
-      if (is.null(done)) next
-      tot <- one(s$totalWorkUnits)
-      nm <- tryCatch(as.character(s$displayName), error = function(e) NULL)
-      if (length(nm) != 1L) nm <- NULL
-      # Work units are fractional, so they creep within a unit rather than stepping.
-      # Two decimals is enough to see movement without reporting noise.
-      bits <- c(bits, if (is.null(tot)) sprintf("%s %.2f", nm, done)
-                      else sprintf("%s %.2f/%g", nm, done, tot))
-      break
-    }
-  }
   eecu <- one(m$batchEecuUsageSeconds)
   if (!is.null(eecu)) bits <- c(bits, sprintf("%.0f EECU-s", eecu))
-  att <- one(m$attempt)
-  if (!is.null(att) && att > 1) bits <- c(bits, sprintf("attempt %g", att))
   if (!is.null(drive_prefix)) {
     fl <- tryCatch(drive_list_files(drive_prefix), error = function(e) NULL)
     if (!is.null(fl) && nrow(fl))
