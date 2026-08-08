@@ -14,7 +14,8 @@ is_gee_timeout <- function(e) {
     grepl("User memory limit exceeded", msg, fixed = TRUE) ||
     grepl("Collection query aborted", msg, fixed = TRUE) ||
     grepl("Too many concurrent aggregations", msg, fixed = TRUE) ||
-    grepl("computation took too long", msg, ignore.case = TRUE)
+    grepl("computation took too long", msg, ignore.case = TRUE) ||
+    grepl("out of memory", msg, ignore.case = TRUE)
 }
 
 #' Resolve a writable Earth Engine folder for temporary exports
