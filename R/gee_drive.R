@@ -285,9 +285,17 @@ ee_await_export_all <- function(tasks, poll_seconds = 15) {
       s <- tasks[[nm]]$status()
       if (!is.null(s[["error_message"]])) s[["error_message"]] else s[["state"]]
     }, character(1))
-    stop(sprintf("%d of %d export tasks did not complete. %s. Completed bands remain in Drive.",
-                 bad, length(sts),
-                 paste(sprintf("%s: %s", who, msgs), collapse = "; ")), call. = FALSE)
+    # A cell that is entirely masked (open ocean) is reported FAILED by Earth
+    # Engine but is an empty result, not a failure.
+    empty <- grepl("No valid \\(un-masked\\) pixels", msgs)
+    if (any(empty))
+      sdm_info(sprintf("%d cell%s contained no unmasked pixels (open water); skipped.",
+                       sum(empty), if (sum(empty) == 1L) "" else "s"), indent = 2L)
+    who <- who[!empty]; msgs <- msgs[!empty]
+    if (length(who) > 0L)
+      stop(sprintf("%d of %d export tasks did not complete. %s. Completed cells remain in Drive.",
+                   length(who), length(sts),
+                   paste(sprintf("%s: %s", who, msgs), collapse = "; ")), call. = FALSE)
   }
   invisible(TRUE)
 }
