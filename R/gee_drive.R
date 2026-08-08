@@ -136,7 +136,7 @@ drive_delete_file <- function(id) {
 ee_export_image_drive <- function(image, region, scale, out_dir,
                                   folder = "AlphaSDM", shard_size = 256L,
                                   file_dim = 4096L, poll_seconds = 15,
-                                  keep_on_drive = FALSE) {
+                                  keep_on_drive = FALSE, valid_mask = NULL) {
   ee <- reticulate::import("ee")
   if (file_dim %% shard_size != 0L)
     stop(sprintf("file_dim (%d) must be a multiple of shard_size (%d).", file_dim,
@@ -166,8 +166,39 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
   single <- n_rows == 1L && n_cols == 1L
   transform <- list(dpp, 0, west, 0, -dpp, north)
 
+  # With a validity mask, measure unmasked area per cell once, at native scale,
+  # and submit only cells that contain any. An all-masked cell otherwise spends
+  # minutes in the queue to fail with "No valid (un-masked) pixels".
+  has_land <- matrix(TRUE, n_rows, n_cols)
+  if (!is.null(valid_mask) && n_rows * n_cols > 1L) {
+    sdm_info("Measuring which cells contain unmasked pixels ...", indent = 2L)
+    feats <- list()
+    for (b in seq_len(n_rows)) for (cc in seq_len(n_cols)) {
+      top  <- north - (b - 1L) * cell_deg; bot <- max(south, top - cell_deg)
+      left <- west + (cc - 1L) * cell_deg; rgt <- min(east, left + cell_deg)
+      feats[[length(feats) + 1L]] <- ee$Feature(
+        ee$Geometry$Rectangle(c(left, bot, rgt, top)),
+        list(b = b, cc = cc))
+    }
+    counted <- ee$Image$pixelArea()$updateMask(valid_mask)$reduceRegions(
+      collection = ee$FeatureCollection(feats),
+      reducer = ee$Reducer$sum(), scale = scale, tileScale = 16L)
+    h <- ee_start_fc_export(counted$select(list("b", "cc", "sum")), NULL)
+    ee_await_export(h, poll_seconds)
+    rows <- read_fc_paged(ee$FeatureCollection(h$asset_id))$features
+    has_land <- matrix(FALSE, n_rows, n_cols)
+    for (f in rows) {
+      pr <- f$properties
+      if (!is.null(pr$sum) && pr$sum > 0) has_land[pr$b, pr$cc] <- TRUE
+    }
+    ee_delete_asset_quietly(h$asset_id)
+    sdm_info(sprintf("%d of %d cells contain data; the rest are skipped.",
+                     sum(has_land), n_rows * n_cols), indent = 2L)
+  }
+
   tasks <- list()
   for (b in seq_len(n_rows)) for (cc in seq_len(n_cols)) {
+    if (!has_land[b, cc]) next
     top  <- if (single) north else north - (b - 1L) * cell_deg
     bot  <- if (single) south else max(south, top - cell_deg)
     left <- if (single) west  else west + (cc - 1L) * cell_deg
