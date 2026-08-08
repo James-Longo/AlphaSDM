@@ -106,6 +106,7 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
 
     pres_sampled <- get_embeddings_at_fc(presence_fc, scale,
                                          properties = c("year", "present"),
+                                         geometries = TRUE,
                                          years      = all_years)
 
     # Draw the background with randomPoints on Earth Engine. The graph stays the same
@@ -116,8 +117,9 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     bg_fc <- generate_background_fc_gee(aoi_year, n_bg, aoi_geom)
 
     bg_props   <- c("year", "present")
-    bg_sampled <- get_embeddings_at_fc(bg_fc, scale,
-                                       properties = bg_props, years = list(as.integer(aoi_year)))
+    bg_sampled <- get_embeddings_at_fc(bg_fc, scale, properties = bg_props,
+                                       geometries = TRUE,
+                                       years = list(as.integer(aoi_year)))
 
     bg_balanced <- balance_bg(bg_sampled, n_pres, n_bg)
     sampled_fc  <- pres_sampled$merge(bg_sampled)
@@ -129,6 +131,7 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
     upload_fc    <- upload_points_to_gee(upload_df)
     sampled_fc   <- get_embeddings_at_fc(upload_fc, scale,
                                          properties = c("year", "present"),
+                                         geometries = TRUE,
                                          years      = as.list(unique(as.integer(upload_df$year))))
     pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
     # Supplied absences serve as the background pool, as in the branch above.
