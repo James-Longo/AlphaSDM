@@ -151,22 +151,36 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
   to_store <- if (all(pools %in% c("presence", "balanced")))
     pres_sampled$merge(bg_balanced) else sampled_fc
   # ALPHASDM_TABLE_ROUTE: "single" (default), "chunked", or "graph" to skip storing.
+  # A single export refused by Earth Engine escalates to chunked exports along the
+  # upload's existing payload chunks, so every row is kept and each export's
+  # sampling graph stays small.
   route <- Sys.getenv("ALPHASDM_TABLE_ROUTE", "single")
+  materialize_chunked <- function() {
+    idx <- split(seq_len(nrow(train_df)), ceiling(seq_len(nrow(train_df)) / 5000))
+    dfs <- lapply(idx, function(i) train_df[i, c("longitude","latitude","year","present")])
+    ck  <- ee_materialize_fc_chunked(dfs, scale,
+            years = as.list(unique(as.integer(train_df$year))), project = project)
+    list(fc = ck$fc, asset_id = ck$asset_ids)
+  }
+  chunkable <- !all(train_df$present == 1)
   mat <- if (identical(route, "graph")) NULL else tryCatch({
-    if (identical(route, "chunked") && !all(train_df$present == 1)) {
-      idx <- split(seq_len(nrow(train_df)),
-                   ceiling(seq_len(nrow(train_df)) / 5000))
-      dfs <- lapply(idx, function(i) train_df[i, c("longitude","latitude","year","present")])
-      ck  <- ee_materialize_fc_chunked(dfs, scale,
-              years = as.list(unique(as.integer(train_df$year))), project = project)
-      list(fc = ck$fc, asset_id = ck$asset_ids)
-    } else {
-      ee_materialize_fc_async(to_store, project = project)
-    }
+    if (identical(route, "chunked") && chunkable) materialize_chunked()
+    else ee_materialize_fc_async(to_store, project = project)
   }, error = function(e) {
-    sdm_warn(sprintf("Could not store the training table (%s); continuing with the in-graph table.",
-                     conditionMessage(e)), indent = 1L)
-    NULL
+    if (chunkable && is_gee_timeout(e) && !identical(route, "chunked")) {
+      sdm_warn("The training table was refused in one export; storing it as chunks.",
+               indent = 1L)
+      route <<- "chunked"
+      tryCatch(materialize_chunked(), error = function(e2) {
+        sdm_warn(sprintf("Could not store the training table (%s); continuing with the in-graph table.",
+                         conditionMessage(e2)), indent = 1L)
+        NULL
+      })
+    } else {
+      sdm_warn(sprintf("Could not store the training table (%s); continuing with the in-graph table.",
+                       conditionMessage(e)), indent = 1L)
+      NULL
+    }
   })
   if (!is.null(mat)) {
     training_asset <- mat$asset_id
