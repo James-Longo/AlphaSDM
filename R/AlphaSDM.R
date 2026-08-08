@@ -217,8 +217,12 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
       presence = pres_sampled,
       balanced = pres_sampled$merge(bg_balanced),
       sampled_fc)
+    # Data that needed chunked storing also exceeds inline evaluation, so tree
+    # models are stored too; loading a stored model keeps every later graph small.
+    persist_m <- persist_classifier ||
+      (identical(route, "chunked") && isTRUE(GEE_CLASSIFIER_METHODS[[m]]$persistable))
     models[[m]]   <- train_gee_model(fc_for_method, m, params = training_params[[m]],
-                                     persist = persist_classifier, project = project)
+                                     persist = persist_m, project = project)
     # No post-fit probe here, on purpose. Map export and scoring both classify on
     # their own and surface a malformed classifier anyway, and on a throttled tier
     # the extra synchronous round trip is the first thing to time out. That discarded
