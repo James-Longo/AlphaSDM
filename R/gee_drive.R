@@ -96,7 +96,7 @@ drive_download_file <- function(id, dest) {
 #' @return Logical vector, TRUE for names the export wrote.
 #' @noRd
 is_export_tile_name <- function(prefix, names) {
-  grepl(sprintf("^%s(_r\\d+)?(-\\d+-\\d+)?\\.tif$", prefix), names)
+  grepl(sprintf("^%s(_r\\d+(_c\\d+)?)?(-\\d+-\\d+)?\\.tif$", prefix), names)
 }
 
 #' Delete one Drive file
@@ -142,45 +142,48 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
   prefix <- sprintf("alphasdm_%s_%s", format(Sys.time(), "%Y%m%d%H%M%S"),
                     paste(sample(c(letters, 0:9), 6, replace = TRUE), collapse = ""))
 
-  # One export task per row of output files. The rows come from Earth Engine's own
-  # file grid (file_dim), so the split is derived from the request, not chosen.
-  # Each task checkpoints and retries independently, so a restart or a terminal
-  # failure costs one row, not the map. A shared crsTransform keeps every band on
-  # one global pixel grid.
+  # One export task per square grid cell of at most two output files per side.
+  # Small independent tasks keep a restart or a terminal failure cheap and give
+  # each cell its own retry budget; a shared crsTransform keeps every cell on one
+  # global pixel grid.
   ring <- region$bounds()$coordinates()$get(0L)$getInfo()
   xs <- vapply(ring, function(p) p[[1]], numeric(1))
   ys <- vapply(ring, function(p) p[[2]], numeric(1))
   west <- min(xs); east <- max(xs); south <- min(ys); north <- max(ys)
   dpp <- scale / 111320                       # degrees per pixel, as build_grid uses
-  row_deg <- file_dim * dpp
-  n_rows <- max(1L, as.integer(ceiling((north - south) / row_deg)))
+  cell_px  <- 2L * file_dim
+  cell_deg <- cell_px * dpp
+  n_rows <- max(1L, as.integer(ceiling((north - south) / cell_deg)))
+  n_cols <- max(1L, as.integer(ceiling((east - west) / cell_deg)))
   # ALPHASDM_BAND_GEOM: "transform" (default; shared grid) or "scale".
-  # ALPHASDM_BAND_MODE: "rows" (default) or "single" for one whole-region task.
+  # ALPHASDM_BAND_MODE: "rows" (default grid) or "single" for one whole-region task.
   use_transform <- !identical(Sys.getenv("ALPHASDM_BAND_GEOM", "transform"), "scale")
-  if (identical(Sys.getenv("ALPHASDM_BAND_MODE", "rows"), "single")) n_rows <- 1L
-  if (n_rows == 1L) row_deg <- north - south
+  if (identical(Sys.getenv("ALPHASDM_BAND_MODE", "rows"), "single")) { n_rows <- 1L; n_cols <- 1L }
+  single <- n_rows == 1L && n_cols == 1L
   transform <- list(dpp, 0, west, 0, -dpp, north)
 
   tasks <- list()
-  for (b in seq_len(n_rows)) {
-    top <- north - (b - 1L) * row_deg
-    bot <- max(south, top - row_deg)
-    band_prefix <- if (n_rows == 1L) prefix else sprintf("%s_r%03d", prefix, b)
+  for (b in seq_len(n_rows)) for (cc in seq_len(n_cols)) {
+    top  <- if (single) north else north - (b - 1L) * cell_deg
+    bot  <- if (single) south else max(south, top - cell_deg)
+    left <- if (single) west  else west + (cc - 1L) * cell_deg
+    rgt  <- if (single) east  else min(east, left + cell_deg)
+    cell_prefix <- if (single) prefix else sprintf("%s_r%03d_c%03d", prefix, b, cc)
     task <- ee$batch$Export$image$toDrive(
-      image = image, description = band_prefix, folder = folder,
-      fileNamePrefix = band_prefix,
-      region = ee$Geometry$Rectangle(c(west, bot, east, top)),
+      image = image, description = cell_prefix, folder = folder,
+      fileNamePrefix = cell_prefix,
+      region = ee$Geometry$Rectangle(c(left, bot, rgt, top)),
       crs = "EPSG:4326",
       crsTransform = if (use_transform) transform else NULL,
       scale = if (use_transform) NULL else scale,
       shardSize = shard_size, fileDimensions = file_dim, skipEmptyTiles = TRUE,
       maxPixels = 1e13, fileFormat = "GeoTIFF")
     task$start()
-    tasks[[band_prefix]] <- task
+    tasks[[cell_prefix]] <- task
   }
   sdm_info(sprintf(
     "Computing the map on Earth Engine as %d task%s, writing tiles to Drive/%s",
-    n_rows, if (n_rows == 1L) "" else "s", folder), indent = 1L)
+    length(tasks), if (length(tasks) == 1L) "" else "s", folder), indent = 1L)
   ee_await_export_all(tasks, poll_seconds)
 
   files <- drive_list_files(prefix)
@@ -227,8 +230,30 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
 ee_await_export_all <- function(tasks, poll_seconds = 15) {
   ee <- reticulate::import("ee")
   start <- Sys.time(); last_beat <- -Inf
+  # One listOperations call per poll covers every task; per-task status calls
+  # would multiply requests by the task count.
+  states_by_desc <- function() {
+    out <- list()
+    ops <- tryCatch(ee$data$listOperations(), error = function(e) list())
+    for (o in ops) {
+      m <- o$metadata
+      d <- tryCatch(as.character(m$description), error = function(e) NULL)
+      st <- tryCatch(as.character(m$state), error = function(e) NULL)
+      if (length(d) == 1L && length(st) == 1L) out[[d]] <- st
+    }
+    out
+  }
+  ee_to_task_state <- c(PENDING = "READY", RUNNING = "RUNNING",
+                        SUCCEEDED = "COMPLETED", COMPLETED = "COMPLETED",
+                        FAILED = "FAILED", CANCELLED = "CANCELLED",
+                        CANCELLING = "CANCELLED")
   repeat {
-    sts <- vapply(tasks, function(t) t$status()[["state"]], character(1))
+    sm <- states_by_desc()
+    sts <- vapply(names(tasks), function(nm) {
+      st <- sm[[nm]]
+      if (is.null(st)) tasks[[nm]]$status()[["state"]]
+      else { mapped <- ee_to_task_state[[st]]; if (is.null(mapped)) st else mapped }
+    }, character(1))
     done <- sum(sts == "COMPLETED")
     bad  <- sum(sts %in% c("FAILED", "CANCELLED"))
     if (done + bad == length(sts)) break
