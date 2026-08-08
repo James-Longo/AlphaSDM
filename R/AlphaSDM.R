@@ -155,6 +155,12 @@ fit_gee_models <- function(train_df, methods, aoi_geom, scale, aoi_year, trainin
   # upload's existing payload chunks, so every row is kept and each export's
   # sampling graph stays small.
   route <- Sys.getenv("ALPHASDM_TABLE_ROUTE", "single")
+  # Data spanning several upload chunks routes straight to chunked exports: a
+  # single export of that much sampling reliably exceeds batch memory at fine
+  # scales, and waiting for the refusal costs the five-attempt retry cycle.
+  # Provisional routing until the failure boundary is measured properly.
+  if (identical(route, "single") && !all(train_df$present == 1) &&
+      nrow(train_df) > 5000L) route <- "chunked" 
   materialize_chunked <- function() {
     idx <- split(seq_len(nrow(train_df)), ceiling(seq_len(nrow(train_df)) / 5000))
     dfs <- lapply(idx, function(i) train_df[i, c("longitude","latitude","year","present")])
