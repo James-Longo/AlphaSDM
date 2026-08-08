@@ -747,8 +747,7 @@ export_image_tiled <- function(image, region, scale, dsn,
     sdm_info("This runs server-side and can take a while. Progress is reported below.",
              indent = 2L)
     tryCatch({
-      dir_out <- ee_export_image_drive(image, region, scale, out_dir,
-                                       valid_mask = image$select(0L)$mask())
+      dir_out <- ee_export_image_drive(image, region, scale, out_dir)
       files <- list.files(dir_out, pattern = "\\.tif$", full.names = TRUE)
       if (!length(files))
         stop("the export produced no tiles", call. = FALSE)

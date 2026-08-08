@@ -166,34 +166,29 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
   single <- n_rows == 1L && n_cols == 1L
   transform <- list(dpp, 0, west, 0, -dpp, north)
 
-  # With a validity mask, measure unmasked area per cell once, at native scale,
-  # and submit only cells that contain any. An all-masked cell otherwise spends
-  # minutes in the queue to fail with "No valid (un-masked) pixels".
+  # Submit only cells that intersect the caller's region geometry. The region is
+  # the user's own statement of where the map should exist, so cells outside it
+  # cost nothing; all-masked cells inside it are reclassified as empty on
+  # completion.
   has_land <- matrix(TRUE, n_rows, n_cols)
-  if (!is.null(valid_mask) && n_rows * n_cols > 1L) {
-    sdm_info("Measuring which cells contain unmasked pixels ...", indent = 2L)
+  if (n_rows * n_cols > 1L) {
     feats <- list()
     for (b in seq_len(n_rows)) for (cc in seq_len(n_cols)) {
       top  <- north - (b - 1L) * cell_deg; bot <- max(south, top - cell_deg)
       left <- west + (cc - 1L) * cell_deg; rgt <- min(east, left + cell_deg)
       feats[[length(feats) + 1L]] <- ee$Feature(
-        ee$Geometry$Rectangle(c(left, bot, rgt, top)),
-        list(b = b, cc = cc))
+        ee$Geometry$Rectangle(c(left, bot, rgt, top)), list(b = b, cc = cc))
     }
-    counted <- ee$Image$pixelArea()$updateMask(valid_mask)$reduceRegions(
-      collection = ee$FeatureCollection(feats),
-      reducer = ee$Reducer$sum(), scale = scale, tileScale = 16L)
-    h <- ee_start_fc_export(counted$select(list("b", "cc", "sum")), NULL)
-    ee_await_export(h, poll_seconds)
-    rows <- read_fc_paged(ee$FeatureCollection(h$asset_id))$features
-    has_land <- matrix(FALSE, n_rows, n_cols)
-    for (f in rows) {
-      pr <- f$properties
-      if (!is.null(pr$sum) && pr$sum > 0) has_land[pr$b, pr$cc] <- TRUE
+    hits <- tryCatch(
+      ee$FeatureCollection(feats)$filterBounds(region)$
+        reduceColumns(ee$Reducer$toList(2L), list("b", "cc"))$get("list")$getInfo(),
+      error = function(e) NULL)
+    if (!is.null(hits)) {
+      has_land <- matrix(FALSE, n_rows, n_cols)
+      for (hh in hits) has_land[hh[[1]], hh[[2]]] <- TRUE
+      sdm_info(sprintf("%d of %d cells intersect the AOI; the rest are skipped.",
+                       sum(has_land), n_rows * n_cols), indent = 2L)
     }
-    ee_delete_asset_quietly(h$asset_id)
-    sdm_info(sprintf("%d of %d cells contain data; the rest are skipped.",
-                     sum(has_land), n_rows * n_cols), indent = 2L)
   }
 
   tasks <- list()
