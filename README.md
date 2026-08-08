@@ -105,6 +105,53 @@ setup_gee(project = "your-project-id")   # re-authenticate
 
 ---
 
+## How Requests Run: Two Paths
+
+AlphaSDM chooses between two execution paths based on the size of the request.
+The choice is automatic and per run; there is nothing to configure, and the
+console messages tell you which path you are on.
+
+### The fast path
+
+Small and medium requests run through Earth Engine's interactive services:
+training data is sampled in a single pass, models are fitted in place, and a
+map small enough to be served in one download arrives in seconds to a few
+minutes. Most day-to-day work lands here: study areas up to a few kilometres
+across at 10 m, or much larger areas at coarser scales.
+
+### The stable path
+
+Requests too large for interactive services move to Earth Engine's
+[batch system](https://developers.google.com/earth-engine/guides/processing_environments),
+which allows far more computation per step. On this path:
+
+*   Training data with many points is sampled and stored server-side in
+    chunks, so no single step has to hold the whole dataset.
+*   Tree models (random forest, CART) are trained as their own server-side
+    job and stored, then applied from storage, which keeps every later step
+    small. The other methods are fitted in place at whatever size the batch
+    system can hold.
+*   The map is computed as many small, independent export jobs, each covering
+    one cell of the area. Earth Engine retries any cell that hits a transient
+    failure, and a failure costs that one cell rather than the whole map.
+    Cells that lie outside your AOI polygon are never submitted at all.
+*   Finished cells are written as tiles to an `AlphaSDM` folder in the Google
+    Drive of the same account you connected with. AlphaSDM downloads each
+    tile, verifies it, and then removes it from Drive, so nothing accumulates
+    in your storage.
+
+The stable path is slower. A regional map at 10 m runs for hours, and the
+console reports progress the whole way. What it buys is that size stops being
+a failure mode: the same call that maps a single valley also maps an
+archipelago, it just takes longer.
+
+Maps larger than one download are delivered as a directory of aligned GeoTIFF
+tiles rather than one raster, since a single fine-scale raster over a large
+region would not fit in memory on most machines. Mosaic them if needed with
+`terra::vrt()` or `gdalbuildvrt`.
+
+---
+
 ## Built-in Models
 
 Pass any of these to the `methods =` argument of `evaluate_models()` or
