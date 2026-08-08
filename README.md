@@ -96,97 +96,6 @@ setup_gee(project = "your-project-id")   # re-authenticate
 
 ---
 
-## Key Features
-
-*   Resolution: model habitat at up to 10m, anywhere on the globe, using Google's 64-band Alpha Earth satellite embeddings.
-*   Fully server-side: no environmental data to download. All data extraction, model training, and prediction happens on Google Earth Engine.
-*   Built-in models: nine modeling methods plus an ensemble, all trained and
-    applied server-side. See [Built-in Models](#built-in-models) below.
-
----
-
-## How Requests Run: Two Paths
-
-AlphaSDM chooses between two execution paths based on the size of the request.
-The choice is automatic and per run; there is nothing to configure, and the
-console messages tell you which path you are on.
-
-### The fast path
-
-Small and medium requests run through Earth Engine's interactive services:
-training data is sampled in a single pass, models are fitted in place, and a
-map small enough to be served in one download arrives in seconds to a few
-minutes. Most day-to-day work lands here: study areas up to a few kilometres
-across at 10 m, or much larger areas at coarser scales.
-
-### The stable path
-
-Requests too large for interactive services move to Earth Engine's
-[batch system](https://developers.google.com/earth-engine/guides/processing_environments),
-which allows far more computation per step. On this path:
-
-*   Training data with many points is sampled and stored server-side in
-    chunks, so no single step has to hold the whole dataset.
-*   Tree models (random forest, CART) are trained as their own server-side
-    job and stored, then applied from storage, which keeps every later step
-    small. The other methods are fitted in place at whatever size the batch
-    system can hold.
-*   The map is computed as many small, independent export jobs, each covering
-    one cell of the area. Earth Engine retries any cell that hits a transient
-    failure, and a failure costs that one cell rather than the whole map.
-    Cells that lie outside your AOI polygon are never submitted at all.
-*   Finished cells are written as tiles to an `AlphaSDM` folder in the Google
-    Drive of the same account you connected with. AlphaSDM downloads each
-    tile, verifies it, and then removes it from Drive, so nothing accumulates
-    in your storage.
-
-The stable path is slower. A regional map at 10 m runs for hours, and the
-console reports progress the whole way. What it buys is that size stops being
-a failure mode: the same call that maps a single valley also maps an
-archipelago, it just takes longer.
-
-Maps larger than one download are delivered as a directory of aligned GeoTIFF
-tiles rather than one raster, since a single fine-scale raster over a large
-region would not fit in memory on most machines. Mosaic them if needed with
-`terra::vrt()` or `gdalbuildvrt`.
-
----
-
-## Built-in Models
-
-Pass any of these to the `methods =` argument of `evaluate_models()` or
-`generate_map()`. The default is `c("svm", "rf", "gbt", "maxent")`: four methods
-that make different modelling assumptions, so averaging them is worth more than
-averaging four variations on the same idea.
-
-| `methods` value | Model | Earth Engine backend |
-| --- | --- | --- |
-| `"svm"` | Support Vector Machine (default EPSILON_SVR, RBF kernel) | [`ee.Classifier.libsvm`](https://developers.google.com/earth-engine/apidocs/ee-classifier-libsvm) |
-| `"rf"` | Random Forest | [`ee.Classifier.smileRandomForest`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilerandomforest) |
-| `"gbt"` | Gradient Boosted Trees | [`ee.Classifier.smileGradientTreeBoost`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilegradienttreeboost) |
-| `"maxent"` | MaxEnt | [`ee.Classifier.amnhMaxent`](https://developers.google.com/earth-engine/apidocs/ee-classifier-amnhmaxent) |
-| `"cart"` | Classification and Regression Tree | [`ee.Classifier.smileCart`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilecart) |
-| `"knn"` | k-Nearest Neighbors | [`ee.Classifier.smileKNN`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smileknn) |
-| `"mindist"` | Minimum Distance to class centroid | [`ee.Classifier.minimumDistance`](https://developers.google.com/earth-engine/apidocs/ee-classifier-minimumdistance) |
-| `"naivebayes"` | Naive Bayes (see note below) | [`ee.Classifier.smileNaiveBayes`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilenaivebayes) |
-| `"similarity"` | Dot product against the mean presence embedding | `ee.Reducer.mean` |
-
-Selecting more than one method also produces an ensemble map and score. It is
-equal-weighted by default; `evaluate_models(weighted_ensemble = TRUE)` weights
-members by their cross-validated AUC instead.
-
-Two caveats worth knowing:
-
-*   `"naivebayes"` is exposed for completeness but is not recommended.
-    `smileNaiveBayes` assumes positive-integer features and discards negative
-    inputs, so it collapses to roughly random performance on the signed Alpha
-    Earth embeddings.
-*   The lighter methods (`similarity`, `knn`, `cart`, `mindist`) are cheaper to fit
-    but less expressive than the default four. `similarity` in particular is a single
-    dot product against the mean presence embedding, with no fitted decision boundary.
-
----
-
 ## Quick Start
 
 ### 1. Format your data
@@ -247,6 +156,81 @@ results <- generate_map(
   output_dir = "results/my_species"
 )
 ```
+
+---
+
+## Key Features
+
+*   Resolution: model habitat at up to 10m, anywhere on the globe, using Google's 64-band Alpha Earth satellite embeddings.
+*   Fully server-side: no environmental data to download. All data extraction, model training, and prediction happens on Google Earth Engine.
+*   Built-in models: nine modeling methods plus an ensemble, all trained and
+    applied server-side. See [Built-in Models](#built-in-models) below.
+
+---
+
+## Built-in Models
+
+Pass any of these to the `methods =` argument of `evaluate_models()` or
+`generate_map()`. The default is `c("svm", "rf", "gbt", "maxent")`: four methods
+that make different modelling assumptions, so averaging them is worth more than
+averaging four variations on the same idea.
+
+| `methods` value | Model | Earth Engine backend |
+| --- | --- | --- |
+| `"svm"` | Support Vector Machine (default EPSILON_SVR, RBF kernel) | [`ee.Classifier.libsvm`](https://developers.google.com/earth-engine/apidocs/ee-classifier-libsvm) |
+| `"rf"` | Random Forest | [`ee.Classifier.smileRandomForest`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilerandomforest) |
+| `"gbt"` | Gradient Boosted Trees | [`ee.Classifier.smileGradientTreeBoost`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilegradienttreeboost) |
+| `"maxent"` | MaxEnt | [`ee.Classifier.amnhMaxent`](https://developers.google.com/earth-engine/apidocs/ee-classifier-amnhmaxent) |
+| `"cart"` | Classification and Regression Tree | [`ee.Classifier.smileCart`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilecart) |
+| `"knn"` | k-Nearest Neighbors | [`ee.Classifier.smileKNN`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smileknn) |
+| `"mindist"` | Minimum Distance to class centroid | [`ee.Classifier.minimumDistance`](https://developers.google.com/earth-engine/apidocs/ee-classifier-minimumdistance) |
+| `"naivebayes"` | Naive Bayes (see note below) | [`ee.Classifier.smileNaiveBayes`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilenaivebayes) |
+| `"similarity"` | Dot product against the mean presence embedding | `ee.Reducer.mean` |
+
+Selecting more than one method also produces an ensemble map and score. It is
+equal-weighted by default; `evaluate_models(weighted_ensemble = TRUE)` weights
+members by their cross-validated AUC instead.
+
+Two caveats worth knowing:
+
+*   `"naivebayes"` is exposed for completeness but is not recommended.
+    `smileNaiveBayes` assumes positive-integer features and discards negative
+    inputs, so it collapses to roughly random performance on the signed Alpha
+    Earth embeddings.
+*   The lighter methods (`similarity`, `knn`, `cart`, `mindist`) are cheaper to fit
+    but less expressive than the default four. `similarity` in particular is a single
+    dot product against the mean presence embedding, with no fitted decision boundary.
+
+---
+
+## How Requests Run: Two Paths
+
+AlphaSDM chooses between two execution paths based on the size of the request.
+The choice is automatic; the console messages tell you which path you are on.
+
+Small and medium requests run through Earth Engine's interactive services and
+arrive in seconds to a few minutes.
+
+Requests too large for interactive services move to Earth Engine's
+[batch system](https://developers.google.com/earth-engine/guides/processing_environments),
+which allows far more computation per step. On this path:
+
+*   Training data with many points is sampled and stored server-side in
+    chunks, so no single step has to hold the whole dataset.
+*   Tree models (random forest, CART) are trained as their own server-side
+    job and stored, then applied from storage. The other methods are fitted
+    in place at whatever size the batch system can hold.
+*   The map is computed as many small, independent export jobs, and the
+    finished tiles are written to an `AlphaSDM` folder in the Google Drive
+    of the account you connected. Expect files to appear there mid-run:
+    AlphaSDM downloads each tile, verifies it, and then removes it, so
+    nothing accumulates in your storage.
+
+The stable path is slower: a regional map at 10 m runs for hours, with
+progress reported the whole way. In return, size stops being a failure mode.
+
+Large maps are delivered as a directory of aligned GeoTIFF tiles rather than
+one raster; mosaic them if needed with `terra::vrt()` or `gdalbuildvrt`.
 
 ---
 
