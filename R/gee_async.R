@@ -145,8 +145,28 @@ ee_task_progress <- function(op_name, drive_prefix = NULL) {
 #'   NULL, the default, waits: queueing is normal scheduling, not a fault.
 #' @return The asset id. Errors when the task fails, is cancelled, or gives up.
 #' @noRd
+#' Print the live task-monitor links, once per session
+#'
+#' Batch tasks can sit in Google's queue for hours when the monthly EECU
+#' quota is exhausted; the wait is visible (and tasks cancellable) in the
+#' Code Editor Tasks tab and the Cloud Console Earth Engine page.
+#' @noRd
+sdm_task_monitor_hint <- function(project = NULL) {
+  if (isTRUE(.alphasdm_env$task_hint_printed)) return(invisible())
+  .alphasdm_env$task_hint_printed <- TRUE
+  if (is.null(project) || !nzchar(project)) project <- .read_saved_project()
+  sdm_info("Watch batch tasks live: https://code.earthengine.google.com/tasks",
+           indent = 1L)
+  if (!is.null(project) && nzchar(project))
+    sdm_info(sprintf(
+      "  or in Cloud Console: https://console.cloud.google.com/earth-engine/tasks?project=%s",
+      project), indent = 1L)
+  invisible()
+}
+
 ee_await_export <- function(handle, poll_seconds = 15, max_minutes = NULL,
                             max_queue_minutes = NULL) {
+  sdm_task_monitor_hint()
   env_cap <- suppressWarnings(as.numeric(Sys.getenv("ALPHASDM_MAX_WAIT_MINUTES", "")))
   if (!is.na(env_cap) && env_cap > 0) max_minutes <- env_cap
   deadline <- if (is.null(max_minutes)) NULL else Sys.time() + max_minutes * 60

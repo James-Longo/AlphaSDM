@@ -10,8 +10,8 @@ evaluate_models(
   scale = 10,
   methods = NULL,
   aoi_year = NULL,
-  count = NULL,
   bg_ratio = NULL,
+  bg_replicates = TRUE,
   balance_trees = TRUE,
   n_trees = 100L,
   min_leaf_population = 5L,
@@ -53,11 +53,16 @@ and a `present` column (1 = presence; include 0 rows to supply real absences).}
 
 \item{aoi_year}{Year of the Alpha Earth mosaic to sample (default 2023).}
 
-\item{count}{Number of background points to generate for presence-only data.}
-
 \item{bg_ratio}{Optional absence:presence ratio; downsamples the balanced background
 pool (the methods whose registry entry declares `pool = "balanced"`) to
 `bg_ratio * n_presence`. Overrides `balance_trees` when set.}
+
+\item{bg_replicates}{Logical (default TRUE). Train the balanced-pool
+methods (rf, gbt, knn) on k = min(10, ceil(10000/pool size))
+replicate thinned subsets of the absences and average their
+predictions (Barbet-Massin et al. 2012, Table 1: several runs when
+few pseudo-absences are used). Requires `bg_ratio` thinning to be
+active; methods on the full pool are never replicated.}
 
 \item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
 balanced 1:1 background while svm/maxent use the full background; set `FALSE`
@@ -109,7 +114,7 @@ A list containing `methods`, `model_metadata`, `cv_metrics` and
 }
 \description{
 Trains the model ensemble on Google Earth Engine and either cross-validates it
-and/or scores an independent set of coordinates. Training data may be
-presence-only (background is generated automatically) or presence/absence
-(the supplied absences are used directly).
+and/or scores an independent set of coordinates. Training data must contain
+absences: real ones, or pseudo-absences from [generate_pseudo_absences()].
+Presence-only input is rejected with directions.
 }

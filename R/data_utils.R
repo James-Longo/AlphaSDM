@@ -146,7 +146,6 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         result$present <- as.numeric(data[[presence]])
     } else {
         sdm_warn("No 'presence' column supplied; treating all records as presence-only")
-        sdm_info("Background pseudo-absences will be generated automatically", indent = 1L)
         result$present <- 1
     }
 
@@ -202,6 +201,17 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         sdm_warn(sprintf("%d row%s removed: duplicate or conflicting records (presence prioritized)",
                          rows_before - rows_after,
                          if ((rows_before - rows_after) == 1) "" else "s"))
+    }
+
+    # Presence-only data is standardized but not yet modelable: absence
+    # placement is a modelling decision (Barbet-Massin et al. 2012) made
+    # explicitly in generate_pseudo_absences(); the modelling functions
+    # reject presence-only input until then.
+    if (all(result$present == 1)) {
+        sdm_warn(paste0("Presence-only records: generate pseudo-absences ",
+                        "before modelling —"))
+        sdm_info("pa <- generate_pseudo_absences(this_data, aoi = ..., strategy = ...)",
+                 indent = 1L)
     }
 
     cols_desc <- paste(names(result), collapse = ", ")

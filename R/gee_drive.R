@@ -295,6 +295,7 @@ ee_await_export_all <- function(tasks, poll_seconds = 15) {
       # The bracket describes one running task; label it so its percent is not
       # read as the whole job's.
       if (nzchar(detail)) detail <- sub(" \\[", " [current task: ", detail)
+      sdm_task_monitor_hint()
       sdm_info(sprintf("%d of %d tasks done, %d running, %d queued%s%s (%s elapsed)",
                        done, length(sts), length(run),
                        sum(sts == "READY"),

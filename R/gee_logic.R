@@ -52,6 +52,17 @@ alphaearth_year_range <- function() {
   yrs
 }
 
+#' The embedding value convention shared by every consumer
+#'
+#' The Alpha Earth asset serves float values on [-1, 1] and the whole package
+#' uses them raw: sampling, training and prediction all read the asset values
+#' unchanged. Every consumer passes its input through this function, so no
+#' two code paths can diverge. Any future rescale happens here and nowhere
+#' else. (The same definition exists on the concepts prototype branch;
+#' deduplicate on merge.)
+#' @noRd
+alphaearth_rescale <- function(x) x
+
 get_embedding_image <- function(year) {
   ee <- reticulate::import("ee")
   emb_cols <- sprintf("A%02d", 0:63)
@@ -148,25 +159,6 @@ upload_points_to_gee <- function(df, chunk_size = 5000L) {
     fc       <- fc$merge(chunk_fc)
   }
   fc
-}
-
-#' Generate Background Points Server-Side
-#'
-#' Generates background points entirely on Earth Engine. Samples only band A00
-#' for land validation; it never downloads background coordinates to R.
-#' Returns a GEE FeatureCollection (geometry + year + present=0).
-#' @noRd
-generate_background_fc_gee <- function(aoi_year, count, region) {
-  ee <- reticulate::import("ee")
-
-  sdm_info(sprintf("Target: %d background points (server-side, no pre-check)", count), indent = 1L)
-
-  # No A00 pre-check here. get_embeddings_at_fc() already filters notNull("A00"),
-  # so points over water and other gaps drop out during the main 64-band sampling.
-  # Checking first would mean two sampleRegions calls where one does.
-  raw_fc <- ee$FeatureCollection$randomPoints(region, as.integer(count * 3L))
-  bg_fc  <- raw_fc$map(function(f) f$set("year", as.integer(aoi_year), "present", 0L))
-  return(bg_fc$limit(as.integer(count)))
 }
 
 #' GEE Classifier Methods Registry
@@ -464,6 +456,12 @@ predict_gee_map <- function(model_res, img) {
 
   if (model_res$is_classifier) {
     spec       <- if (!is.null(model_res$spec)) model_res$spec else GEE_CLASSIFIER_METHODS[[model_res$method]]
+    if (!is.null(model_res$replicates) && spec$transform == "none") {
+      # Replicate models: classify once per model, average the maps.
+      imgs <- lapply(c(list(model_res$trained), model_res$replicates),
+                     function(tr) img$classify(tr)$select(spec$score))
+      return(ee$ImageCollection(imgs)$mean()$rename("similarity"))
+    }
     classified <- img$classify(model_res$trained)
 
     if (spec$transform == "mindist_raw") {
@@ -507,6 +505,36 @@ predict_all_models_gee <- function(fc, models_list) {
     spec       <- if (!is.null(model_res$spec)) model_res$spec else GEE_CLASSIFIER_METHODS[[model_res$method]]
     score_col  <- spec$score
     target_col <- paste0("pred_", m)
+
+    # Replicate models (balanced-pool methods trained on k background
+    # draws) score each feature once per model; the prediction is the
+    # mean. Only transform "none" methods carry replicates. Each score is
+    # copied into its own property immediately: classify() must not be
+    # given an outputName, because a LOADED classifier ignores it and
+    # writes "classification" regardless, and successive classifies
+    # overwrite it. A persisted main model scores in REGRESSION mode and
+    # its replicates in PROBABILITY; both approximate P(presence).
+    if (!is.null(model_res$replicates) && spec$transform == "none") {
+      all_tr <- c(list(model_res$trained), model_res$replicates)
+      rprops <- paste0("rep_", seq_along(all_tr))
+      reg_score <- GEE_CLASSIFIER_METHODS[[model_res$method]]$score
+      for (i in seq_along(all_tr)) {
+        prop_i <- if (i == 1L) score_col else reg_score
+        rp_i <- rprops[i]
+        scored_fc <- scored_fc$classify(all_tr[[i]])$map(
+          local({
+            p <- prop_i; rp <- rp_i
+            function(f) f$set(rp, f$get(p))
+          }))
+      }
+      k_ee <- length(all_tr)
+      scored_fc <- scored_fc$map(function(f) {
+        tot <- ee$Number(0)
+        for (rp in rprops) tot <- tot$add(ee$Number(f$get(rp)))
+        f$set(target_col, tot$divide(k_ee))
+      })
+      next
+    }
     scored_fc  <- scored_fc$classify(model_res$trained)
 
     if (spec$transform == "mindist_raw") {
@@ -918,4 +946,32 @@ export_image_tiled <- function(image, region, scale, dsn,
   }
   sdm_info(sprintf("%d tiles written to %s", length(written), out_dir), indent = 2L)
   out_dir
+}
+
+#' Resolve a user AOI into an ee.Geometry
+#'
+#' Accepts a pre-built ee.Geometry, a list(lon, lat, radius) buffer, or a
+#' path to a vector file. The file path converts through sf alone (never
+#' rgee::sf_as_ee, whose geojsonio dependency is not declared anywhere).
+#' @noRd
+resolve_aoi <- function(aoi, ee = reticulate::import("ee")) {
+  if (inherits(aoi, "python.builtin.object")) return(aoi)
+  if (is.list(aoi) && !is.null(aoi$lat))
+    return(ee$Geometry$Point(c(as.numeric(aoi$lon), as.numeric(aoi$lat)))$
+             buffer(as.numeric(aoi$radius)))
+  if (is.character(aoi) && file.exists(aoi)) {
+    aoi_sf <- sf::st_read(aoi, quiet = TRUE)
+    geom <- sf::st_geometry(aoi_sf)
+    if (length(geom) > 1L) geom <- sf::st_union(geom)
+    geom <- sf::st_transform(geom, 4326)
+    tmp <- tempfile(fileext = ".geojson")
+    on.exit(unlink(tmp), add = TRUE)
+    sf::st_write(sf::st_sf(geometry = geom), tmp, quiet = TRUE)
+    gj <- jsonlite::fromJSON(readLines(tmp, warn = FALSE),
+                             simplifyVector = FALSE)
+    return(ee$Geometry(gj$features[[1]]$geometry))
+  }
+  stop("`aoi` must be an ee.Geometry, a list with lon/lat/radius, or a ",
+       "path to a readable vector file. Got: ",
+       paste(class(aoi), collapse = "/"), call. = FALSE)
 }
