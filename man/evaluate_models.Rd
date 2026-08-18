@@ -28,10 +28,6 @@ evaluate_models(
   knn_k = NULL,
   knn_search_method = NULL,
   knn_metric = NULL,
-  cv_folds = 5L,
-  cv_method = "block",
-  block_size = NULL,
-  weighted_ensemble = FALSE,
   async = FALSE,
   persist_classifier = FALSE,
   gee_project = NULL,
@@ -85,16 +81,6 @@ the surface can take only `k + 1` distinct values. Raise alongside `bg_ratio`.}
 \item{knn_metric}{kNN distance metric: `"EUCLIDEAN"`, `"MAHALANOBIS"`,
 `"MANHATTAN"` or `"BRAYCURTIS"`. Only honoured for search methods that use it.}
 
-\item{cv_folds}{Number of spatial cross-validation folds (0 to skip CV).}
-
-\item{cv_method}{Fold assignment: `"block"` (spatial blocks), `"kmeans"`
-(coordinate clusters), or `"random"` (non-spatial k-fold).}
-
-\item{block_size}{Optional block size (metres) for `cv_method = "block"`.}
-
-\item{weighted_ensemble}{Logical; if `TRUE`, weight the ensemble by CV AUC
-(requires `cv_folds > 0`). Default `FALSE` (equal weights).}
-
 \item{async}{Logical; use asynchronous GEE export for large prediction sets.}
 
 \item{persist_classifier}{Logical; persist internally-persistable classifiers (RF/CART)
@@ -107,10 +93,11 @@ where per-fold persistence is pure overhead. (Map generation defaults it `TRUE`.
 coordinates are scored per Earth Engine request (default 4000).}
 }
 \value{
-A list containing `methods`, `model_metadata`, `cv_metrics` and
-  `ensemble_weights`; when `predict_coords` is supplied it also includes
-  `point_predictions` and (if a `present` column is present) per-model and
-  ensemble `metrics`.
+A list containing `methods`, `model_metadata`,
+  `point_predictions` and, when `predict_coords` has a `present`
+  column, per-model and ensemble `metrics`. For cross-validation,
+  split the data yourself and call this once per fold with the fold's
+  holdout as `predict_coords`.
 }
 \description{
 Trains the model ensemble on Google Earth Engine and either cross-validates it

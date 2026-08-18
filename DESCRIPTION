@@ -1,6 +1,6 @@
 Package: AlphaSDM
 Title: Species Distribution Modeling using Alpha Earth Embeddings
-Version: 0.1.1
+Version: 0.1.2
 Authors@R:
     person("James", "Longo",
            email = "james.longo.birds@gmail.com",
@@ -28,7 +28,6 @@ Suggests:
     withr,
     testthat (>= 3.0.0),
     knitr,
-    rmarkdown,
-    blockCV
+    rmarkdown
 VignetteBuilder: knitr
 Config/testthat/edition: 3

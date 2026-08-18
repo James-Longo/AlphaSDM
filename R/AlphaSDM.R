@@ -440,32 +440,6 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   return(final_results)
 }
 
-#' Score a pre-sampled embedding FeatureCollection
-#'
-#' Cross-validation scores the same validation background in every fold, and only
-#' the classifier changes between folds. Sampling those embeddings once and then
-#' classifying the stored collection per fold turns `cv_folds` full 64-band
-#' sampleRegions passes into one. Rows are matched back by the 0-based `row_idx`
-#' carried through Earth Engine.
-#' @noRd
-score_sampled_fc <- function(emb_fc, models, methods, n_rows, async = FALSE, project = NULL) {
-  pred_cols <- paste0("pred_", methods)
-  out <- as.data.frame(matrix(NA_real_, nrow = n_rows, ncol = length(methods)))
-  names(out) <- pred_cols
-
-  scored <- predict_all_models_gee(emb_fc, models[methods])$select(as.list(c("row_idx", pred_cols)))
-  feats  <- if (isTRUE(async)) ee_table_to_info_async(scored, project)$features else read_fc_paged(scored)$features
-
-  for (f in feats) {
-    ridx <- suppressWarnings(as.integer(f$properties[["row_idx"]]))
-    if (length(ridx) != 1L || is.na(ridx) || ridx < 0L || ridx >= n_rows) next
-    for (m in methods) {
-      v <- f$properties[[paste0("pred_", m)]]
-      if (!is.null(v)) out[ridx + 1L, paste0("pred_", m)] <- as.numeric(v)
-    }
-  }
-  out
-}
 
 #' Internal: score a coordinate data frame against trained models (FC-first, server-side)
 #'
@@ -580,12 +554,6 @@ predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year
 #'   `"KD_TREE"` or `"COVER_TREE"`. Note `KD_TREE` ignores `knn_metric`.
 #' @param knn_metric kNN distance metric: `"EUCLIDEAN"`, `"MAHALANOBIS"`,
 #'   `"MANHATTAN"` or `"BRAYCURTIS"`. Only honoured for search methods that use it.
-#' @param cv_folds Number of spatial cross-validation folds (0 to skip CV).
-#' @param cv_method Fold assignment: `"block"` (spatial blocks), `"kmeans"`
-#'   (coordinate clusters), or `"random"` (non-spatial k-fold).
-#' @param block_size Optional block size (metres) for `cv_method = "block"`.
-#' @param weighted_ensemble Logical; if `TRUE`, weight the ensemble by CV AUC
-#'   (requires `cv_folds > 0`). Default `FALSE` (equal weights).
 #' @param async Logical; use asynchronous GEE export for large prediction sets.
 #' @param persist_classifier Logical; persist internally-persistable classifiers (RF/CART)
 #'   to a temporary GEE asset. Defaults to `FALSE` here: cross-validation refits per fold,
@@ -593,10 +561,11 @@ predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year
 #' @param gee_project Optional Earth Engine project override (normally set via [setup_gee()]).
 #' @param options Named list of advanced options; `batch_size` sets how many
 #'   coordinates are scored per Earth Engine request (default 4000).
-#' @return A list containing `methods`, `model_metadata`, `cv_metrics` and
-#'   `ensemble_weights`; when `predict_coords` is supplied it also includes
-#'   `point_predictions` and (if a `present` column is present) per-model and
-#'   ensemble `metrics`.
+#' @return A list containing `methods`, `model_metadata`,
+#'   `point_predictions` and, when `predict_coords` has a `present`
+#'   column, per-model and ensemble `metrics`. For cross-validation,
+#'   split the data yourself and call this once per fold with the fold's
+#'   holdout as `predict_coords`.
 #' @export
 evaluate_models <- function(data, predict_coords = NULL, scale = 10,
                             methods = NULL, aoi_year = NULL, bg_ratio = NULL,
@@ -607,8 +576,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
                             svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
                             maxent_beta = 1, maxent_features = "auto",
                             knn_k = NULL, knn_search_method = NULL, knn_metric = NULL,
-                            cv_folds = 5L, cv_method = "block", block_size = NULL,
-                            weighted_ensemble = FALSE, async = FALSE,
+                            async = FALSE,
                             persist_classifier = FALSE,
                             gee_project = NULL,
                             options = list()) {
@@ -638,14 +606,11 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
   # synchronous compute budget partway through a chunk.
   score_chunk <- if (!is.null(options$batch_size)) as.integer(options$batch_size) else 4000L
 
-  cv_folds <- as.integer(cv_folds)
-  if (weighted_ensemble && cv_folds == 0L) {
-    cv_folds <- 5L
-    sdm_warn("weighted_ensemble = TRUE requires cross-validation; cv_folds overridden to 5.")
-  }
-  if (is.null(predict_coords) && cv_folds == 0L) {
-    stop("Either predict_coords or cv_folds > 0 must be provided.")
-  }
+  if (is.null(predict_coords))
+    stop("`predict_coords` is required: supply held-out coordinates to score, ",
+         "with a `present` column to get metrics. For cross-validation, split ",
+         "the data yourself and call evaluate_models() once per fold.",
+         call. = FALSE)
 
   method_params <- build_method_params(
     methods, n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes,
@@ -658,125 +623,9 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
                 max(ref_df$longitude), max(ref_df$latitude))
   aoi_geom <- ee$Geometry$Rectangle(bbox)
 
-  cv_metrics       <- NULL
-  ensemble_weights <- NULL
-
-  if (cv_folds > 0L) {
-    sdm_section(sprintf("Cross-validation (%d spatial folds)", cv_folds))
-
-    pres_df <- data[data$present == 1, , drop = FALSE]
-    n_pres  <- nrow(pres_df)
-
-    if (cv_folds > n_pres) {
-      stop(sprintf(
-        "cv_folds (%d) exceeds the number of presence points (%d). Reduce cv_folds or provide more training data.",
-        cv_folds, n_pres
-      ))
-    }
-
-    # Spatial folds from blockCV by default. Its blocks control spatial
-    # autocorrelation better than the contiguous regions k-means produces. Falls back
-    # to k-means when blockCV is not installed.
-    pres_df$cv_fold <- assign_cv_folds(pres_df, cv_folds, method = cv_method, block_size = block_size)
-    sdm_info(sprintf("CV folds: %s (%d folds)",
-                     switch(cv_method, block = "blockCV blocks", kmeans = "k-means clusters",
-                            random = "random k-fold", cv_method), cv_folds), indent = 1L)
-
-    # Generate the validation background and download its coordinates once, before
-    # the fold loop.
-    val_bg_n  <- n_pres
-    # Validation background stays a plain availability draw: scoring against
-    # the strategy-placed training absences would grade the models on a
-    # background they were built to avoid.
-    bg_fc_gee <- generate_background_fc_gee(aoi_year, val_bg_n, aoi_geom)$fc
-    bg_info   <- retry_curl_download(bg_fc_gee$getInfo())
-    val_bg_df <- do.call(rbind, lapply(bg_info$features, function(f) {
-      data.frame(longitude = f$geometry$coordinates[[1]],
-                 latitude  = f$geometry$coordinates[[2]],
-                 year      = aoi_year)
-    }))
-
-    # The validation background is the same in every fold, and only the classifier
-    # changes, so sample its embeddings once and reuse the stored collection. Falls
-    # back to sampling per fold when the batch scheduler is unavailable, which it can
-    # be on a throttled tier.
-    val_bg_df$row_idx <- seq_len(nrow(val_bg_df)) - 1L
-    bg_emb <- get_embeddings_at_fc(
-      upload_points_to_gee(val_bg_df[, c("longitude", "latitude", "year", "row_idx")]),
-      scale, properties = c("year", "row_idx"), geometries = TRUE,
-      years = list(as.integer(aoi_year)))
-    bg_mat <- tryCatch(ee_materialize_fc_async(bg_emb, project = gee_project),
-                       error = function(e) {
-                         sdm_warn(sprintf("Could not cache the validation background (%s); sampling it per fold.",
-                                          conditionMessage(e)), indent = 1L)
-                         NULL
-                       })
-    if (!is.null(bg_mat)) on.exit(ee_delete_asset_quietly(bg_mat$asset_id), add = TRUE)
-
-    cv_fold_aucs <- matrix(NA_real_, nrow = cv_folds, ncol = length(methods),
-                           dimnames = list(NULL, methods))
-
-    for (k in seq_len(cv_folds)) {
-      sdm_info(sprintf("Fold %d / %d", k, cv_folds), indent = 1L)
-
-      train_k <- pres_df[pres_df$cv_fold != k, c("longitude", "latitude", "year", "present"), drop = FALSE]
-      test_k  <- pres_df[pres_df$cv_fold == k, c("longitude", "latitude", "year"),             drop = FALSE]
-
-      res_k        <- fit_gee_models(train_k, methods, aoi_geom, scale, aoi_year, method_params, bg_ratio = bg_ratio, bg_replicates = bg_replicates, persist_classifier = persist_classifier, project = gee_project)
-      pres_scored  <- predict_scores_internal(test_k,    res_k$models, methods, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
-      bg_scored    <- if (!is.null(bg_mat)) {
-        score_sampled_fc(bg_mat$fc, res_k$models, methods, nrow(val_bg_df), async = async, project = gee_project)
-      } else {
-        predict_scores_internal(val_bg_df, res_k$models, methods, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
-      }
-      cleanup_classifier_assets(res_k)   # per-fold temp classifier assets
-
-      na_pres_cv <- is.na(pres_scored[[paste0("pred_", methods[1])]])
-      na_bg_cv   <- is.na(bg_scored[[paste0("pred_",  methods[1])]])
-      if (any(na_pres_cv) || any(na_bg_cv)) {
-        sdm_warn(sprintf(
-          "CV fold %d: %d presence and %d background points dropped: no satellite coverage.",
-          k, sum(na_pres_cv), sum(na_bg_cv)
-        ), indent = 2L)
-      }
-      for (m in methods) {
-        pos <- pres_scored[[paste0("pred_", m)]]; pos <- pos[!is.na(pos)]
-        neg <- bg_scored[[paste0("pred_", m)]];   neg <- neg[!is.na(neg)]
-        if (length(pos) > 0 && length(neg) > 0)
-          cv_fold_aucs[k, m] <- calculate_classifier_metrics(pos, neg)$auc_roc
-      }
-    }
-
-    cv_aucs    <- colMeans(cv_fold_aucs, na.rm = TRUE)
-    cv_metrics <- as.list(cv_aucs)
-    sdm_info(paste("CV AUC:", paste(sprintf("%s:%.3f", names(cv_aucs), cv_aucs), collapse = "  ")))
-
-    if (weighted_ensemble) {
-      raw_wts <- pmax(cv_aucs - 0.5, 0)
-      if (sum(raw_wts) == 0) {
-        sdm_warn("All CV AUCs <= 0.5; falling back to equal weights")
-        ensemble_weights <- setNames(rep(1 / length(methods), length(methods)), methods)
-      } else {
-        ensemble_weights <- raw_wts / sum(raw_wts)
-      }
-      sdm_info(paste("Ensemble weights:", paste(sprintf("%s:%.3f", names(ensemble_weights), ensemble_weights), collapse = "  ")))
-    }
-  }
-
   # Final model, trained on all the data.
   train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, bg_ratio = bg_ratio, bg_replicates = bg_replicates, persist_classifier = persist_classifier, project = gee_project)
   on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp assets on any exit
-
-  # Cross-validation only: return without scoring any prediction coordinates.
-  if (is.null(predict_coords)) {
-    sdm_finish(t_total_start, "Species evaluation finished")
-    return(list(
-      methods          = c(methods, "ensemble"),
-      model_metadata   = train_res$metadata,
-      cv_metrics       = cv_metrics,
-      ensemble_weights = ensemble_weights
-    ))
-  }
 
   sdm_section(sprintf("Predicting at %d coordinates (server-side)", nrow(predict_coords)))
   pb_pred    <- sdm_progress_start("Prediction")
@@ -784,20 +633,13 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
   sdm_progress_done(pb_pred)
 
   pred_cols <- paste0("pred_", methods)
-  if (weighted_ensemble && !is.null(ensemble_weights)) {
-    wts <- ensemble_weights[methods]
-    final_pred$pred_ensemble <- as.numeric(as.matrix(final_pred[, pred_cols, drop = FALSE]) %*% wts)
-  } else {
-    final_pred$pred_ensemble <- rowMeans(final_pred[, pred_cols, drop = FALSE], na.rm = TRUE)
-  }
+  final_pred$pred_ensemble <- rowMeans(final_pred[, pred_cols, drop = FALSE], na.rm = TRUE)
 
   final_results <- list(
     methods           = c(methods, "ensemble"),
     metrics           = list(),
     point_predictions = final_pred,
-    model_metadata    = train_res$metadata,
-    cv_metrics        = cv_metrics,
-    ensemble_weights  = ensemble_weights
+    model_metadata    = train_res$metadata
   )
 
   if ("present" %in% names(final_pred)) {

@@ -115,24 +115,51 @@ formatted_data <- format_data(
 )
 ```
 
-### 2. Evaluate models
+### 2. Presence-only data? Generate pseudo-absences
 
-Test model performance against a set of known coordinates:
+Every model needs absences. If your records are presence-only, where the
+artificial absences go is a modelling decision with real consequences
+(Barbet-Massin et al. 2012), so AlphaSDM asks you to make it explicitly
+rather than making it for you:
 
 ```r
+formatted_data <- generate_pseudo_absences(
+  formatted_data,
+  aoi      = "path/to/my_study_area.shp",  # where absences may be placed
+  strategy = "combined",                    # random | disk | envelope | combined
+  n        = 10000
+)
+```
+
+`?generate_pseudo_absences` explains the four strategies and which models
+each one suits. The disk radius and environmental envelope are estimated
+from your presences (and reported) unless you set them yourself. Skip this
+step entirely if your data already has real absences.
+
+### 3. Evaluate models
+
+Hold out part of your data and score it. Include the `present` column in
+the holdout to get metrics:
+
+```r
+test_rows <- sample(nrow(formatted_data), 50)
+
 metrics <- evaluate_models(
-  data = train_data,
-  predict_coords = test_data,
+  data = formatted_data[-test_rows, ],
+  predict_coords = formatted_data[test_rows, ],
   scale = 10,
-  aoi_year = 2024,
-  methods = c("gbt", "maxent")
+  aoi_year = 2023
 )
 
 # Access metrics like AUC, TSS, and CBI
 print(metrics$metrics$ensemble)
 ```
 
-### 3. Generate maps
+For k-fold cross-validation, repeat this with your own fold assignments
+(spatial folds are worth the trouble; see e.g. the blockCV package) and
+average the metrics.
+
+### 4. Generate maps
 
 Create maps for an area of interest. You can define the AOI in two ways:
 

@@ -566,35 +566,6 @@ predict_all_models_gee <- function(fc, models_list) {
   return(scored_fc)
 }
 
-#' Assign spatial cross-validation folds (blockCV blocks or k-means clusters)
-#'
-#' blockCV (Valavi et al. 2018) tiles the study area into square blocks (sized to a
-#' fraction of the extent, or `block_size` metres) and distributes them among folds,
-#' controlling spatial autocorrelation WITHOUT the harsh contiguous-region
-#' extrapolation that k-means clustering of coordinates produces (k-means makes each
-#' fold one geographic chunk, the most pessimistic spatial CV). Falls back to k-means
-#' if `blockCV`/`sf` are unavailable or fail.
-#' @noRd
-assign_cv_folds <- function(df, k, method = c("block", "kmeans", "random"), block_size = NULL) {
-  method <- match.arg(method)
-  if (method == "random") {
-    # Non-spatial k-fold suits an interpolation task, where the points to be
-    # predicted come from the same region as the training points. Use "block"
-    # instead to estimate error when transferring to a region not sampled.
-    n <- nrow(df)
-    return(as.integer(sample(rep_len(seq_len(k), n), n)))
-  }
-  if (method == "block") {
-    if (requireNamespace("blockCV", quietly = TRUE) && requireNamespace("sf", quietly = TRUE)) {
-      folds <- tryCatch(blockcv_folds(df, k, block_size), error = function(e) {
-        sdm_warn(sprintf("blockCV folds failed (%s); using k-means.", conditionMessage(e))); NULL })
-      if (!is.null(folds) && !anyNA(folds) && length(unique(folds)) > 1) return(as.integer(folds))
-    } else {
-      sdm_warn("Package 'blockCV' not installed; using k-means spatial folds.")
-    }
-  }
-  as.integer(stats::kmeans(df[, c("longitude", "latitude")], centers = k, nstart = 5L)$cluster)
-}
 
 #' blockCV spatial-block fold assignment
 #' @noRd
