@@ -75,7 +75,9 @@ ready for [evaluate_models()] or [generate_map()].
 Strategies, following Barbet-Massin et al. (2012):
 \describe{
   \item{`"random"`}{Uniform over the AOI. Their recommendation for
-    regression-style methods and MaxEnt (with `n = 10000`).}
+    regression-style methods and MaxEnt (with `n = 10000`). MaxEnt is
+    not in the default ensemble for exactly this reason: give it its
+    own random set and run `methods = "maxent"` separately.}
   \item{`"disk"`}{Their "2-degree-far": only beyond a distance from
     every presence. `radius_m = NULL` estimates the distance at which
     embedding similarity to the presences decays to the regional

@@ -1,6 +1,6 @@
 Package: AlphaSDM
 Title: Species Distribution Modeling using Alpha Earth Embeddings
-Version: 0.1.2
+Version: 0.1.3
 Authors@R:
     person("James", "Longo",
            email = "james.longo.birds@gmail.com",

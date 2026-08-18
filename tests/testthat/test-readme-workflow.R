@@ -46,8 +46,7 @@ test_that("the README workflow runs on its own, only those lines", {
     data = formatted_data[-test_rows, ],
     predict_coords = formatted_data[test_rows, ],
     scale = 10,
-    aoi_year = 2023,
-    methods = c("rf", "maxent")
+    aoi_year = 2023
   )
   # ---------------------------------------------------------------------------
 

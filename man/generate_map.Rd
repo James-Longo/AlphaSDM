@@ -46,7 +46,10 @@ or a path to a vector file readable by [sf::st_read()].}
 \item{output_dir}{Directory to write the GeoTIFF(s) to.}
 
 \item{methods}{Character vector of models to ensemble. Defaults to
-`c("svm", "rf", "gbt", "maxent")`; also accepts `similarity`, `knn`, `cart`, `mindist`.}
+`c("svm", "rf", "gbt")`; also accepts `maxent`, `similarity`, `knn`,
+`cart`, `mindist`. MaxEnt is not a default because its literature
+recipe is ~10,000 RANDOM pseudo-absences; run it separately on its
+own random set (see `?generate_pseudo_absences`).}
 
 \item{ensemble}{Logical; also export the ensemble mean map (default `TRUE`).}
 

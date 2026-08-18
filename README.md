@@ -198,9 +198,20 @@ results <- generate_map(
 ## Built-in Models
 
 Pass any of these to the `methods =` argument of `evaluate_models()` or
-`generate_map()`. The default is `c("svm", "rf", "gbt", "maxent")`: four methods
-that make different modelling assumptions, so averaging them is worth more than
-averaging four variations on the same idea.
+`generate_map()`. The default is `c("svm", "rf", "gbt")`: three methods that
+make different modelling assumptions, so averaging them is worth more than
+averaging variations on the same idea.
+
+MaxEnt is available but not a default. Its literature recommendation is
+~10,000 *random* background points (Barbet-Massin et al. 2012; Phillips &
+Dudik 2008), which usually differs from the strategy that suits the rest of
+the ensemble — so run it on its own set:
+
+```r
+pa_mx <- generate_pseudo_absences(pres, aoi = aoi, strategy = "random", n = 10000)
+mx    <- evaluate_models(pa_mx[-test_rows, ], predict_coords = pa_mx[test_rows, ],
+                         methods = "maxent")
+```
 
 | `methods` value | Model | Earth Engine backend |
 | --- | --- | --- |
