@@ -364,10 +364,17 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
     variables_per_split, svm_type, svm_kernel, svm_cost, svm_gamma,
     maxent_beta, maxent_features, knn_k, knn_search_method, knn_metric)
   train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, bg_ratio = bg_ratio, bg_replicates = bg_replicates, persist_classifier = persist_classifier, project = gee_project)
-  on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp classifier assets on exit
+  # Temp assets are NOT deleted here: the returned models evaluate lazily and a
+  # stored training table or classifier is part of their graph, so deleting it
+  # would break derive_concepts() on the result. The session-start sweep (or
+  # sdm_clean_assets()) removes them once they are old enough.
 
   img_mosaic <- get_embedding_image(aoi_year)
-  final_results <- list(methods = methods, model_metadata = train_res$metadata)
+  final_results <- list(methods = methods, model_metadata = train_res$metadata,
+                        models = train_res$models,
+                        context = list(data = data, aoi_geom = aoi_geom,
+                                       aoi_year = aoi_year, scale = scale,
+                                       gee_project = gee_project))
   want_ensemble <- isTRUE(ensemble) && length(methods) > 1L
   pb_map <- sdm_progress_start("Map generation")
   member_tifs <- character(0)
@@ -639,9 +646,11 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
                 max(ref_df$longitude), max(ref_df$latitude))
   aoi_geom <- ee$Geometry$Rectangle(bbox)
 
-  # Final model, trained on all the data.
+  # Final model, trained on all the data. Its temp assets are NOT deleted on
+  # exit: the returned models evaluate lazily and a stored training table is
+  # part of their graph, so deleting it would break derive_concepts() on the
+  # result. The session-start sweep (or sdm_clean_assets()) removes them.
   train_res <- fit_gee_models(data, methods, aoi_geom, scale, aoi_year, method_params, bg_ratio = bg_ratio, bg_replicates = bg_replicates, persist_classifier = persist_classifier, project = gee_project)
-  on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp assets on any exit
 
   sdm_section(sprintf("Predicting at %d coordinates (server-side)", nrow(predict_coords)))
   pb_pred    <- sdm_progress_start("Prediction")
@@ -655,7 +664,11 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
     methods           = c(methods, "ensemble"),
     metrics           = list(),
     point_predictions = final_pred,
-    model_metadata    = train_res$metadata
+    model_metadata    = train_res$metadata,
+    models            = train_res$models,
+    context           = list(data = data, aoi_geom = aoi_geom,
+                             aoi_year = aoi_year, scale = scale,
+                             gee_project = gee_project)
   )
 
   if ("present" %in% names(final_pred)) {
