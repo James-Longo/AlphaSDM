@@ -211,6 +211,9 @@ GEE_CLASSIFIER_METHODS <- list(
 #'   "full"      presences plus all background.
 #' @noRd
 method_pool <- function(method) {
+  # glm follows the paper's regression recipe (large random pool, equal
+  # total class weights), so it trains on the full pool like maxent.
+  if (identical(method, "glm")) return("full")
   if (method %in% GEE_REDUCER_METHODS) return("presence")
   pool <- GEE_CLASSIFIER_METHODS[[method]]$pool
   if (is.null(pool)) "full" else pool
@@ -329,7 +332,7 @@ resolve_clf_spec <- function(method, filtered_params) {
 
 #' Methods backed by a reducer rather than an `ee.Classifier`
 #' @noRd
-GEE_REDUCER_METHODS <- "similarity"
+GEE_REDUCER_METHODS <- c("similarity", "glm")
 
 #' Train GEE Model
 #'
@@ -420,6 +423,59 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
       spec          = spec,
       asset_id      = asset_id
     ))
+  } else if (identical(method, "glm")) {
+    # Logistic GLM fitted by IRLS, entirely server-side: each iteration is
+    # one weighted least-squares solve (ee.Reducer.linearRegression) over
+    # the training table, with the working response and weights recomputed
+    # from the current coefficients. Fixed iteration count keeps the
+    # round-trips deterministic. Class weights equalize the total presence
+    # and absence weight (Barbet-Massin et al. 2012, GLM recipe).
+    counts <- sampled_fc$aggregate_histogram(LABEL_COL)$getInfo()
+    n1 <- as.numeric(counts[["1"]]); n0 <- as.numeric(counts[["0"]])
+    # The only enforced bound is the mathematical one: 65 coefficients
+    # (intercept + 64 bands) need more rows than coefficients or the
+    # least-squares solve is undefined. How many MORE is the user's
+    # judgment (the literature recipe is ~10,000 random pseudo-absences).
+    if (is.na(n1) || is.na(n0) || n1 + n0 <= 65)
+      stop("glm fits 65 coefficients (intercept + 64 embedding bands) and ",
+           "has only ", n1 + n0, " training rows; the solve is undefined ",
+           "with rows <= coefficients.", call. = FALSE)
+    cw0 <- n1 / n0
+    xcols <- sprintf("X%02d", 0:64)
+    beta <- rep(0, 65)
+    for (it in seq_len(8L)) {
+      b0 <- beta[1]
+      bw <- ee$Array(as.list(unname(beta[-1])))
+      prepared <- sampled_fc$map(function(f) {
+        xa  <- ee$Array(f$toArray(emb_cols))
+        eta <- ee$Number(xa$multiply(bw)$reduce(ee$Reducer$sum(), list(0L))$
+                           get(list(0L)))$add(b0)
+        mu  <- ee$Number(1)$divide(eta$multiply(-1)$exp()$add(1))$
+          clamp(1e-6, 1 - 1e-6)
+        y   <- ee$Number(f$get(LABEL_COL))
+        cw  <- y$multiply(1 - cw0)$add(cw0)      # 1 for presence, cw0 for bg
+        wgt <- mu$multiply(ee$Number(1)$subtract(mu))$multiply(cw)$max(1e-6)
+        z   <- eta$add(y$subtract(mu)$divide(wgt$divide(cw)))
+        sw  <- wgt$sqrt()
+        xs  <- ee$List(list(sw))$cat(xa$multiply(sw)$toList())
+        f$set(ee$Dictionary$fromLists(as.list(xcols), xs))$
+          set("Yw", z$multiply(sw))
+      })
+      fit <- prepared$reduceColumns(
+        reducer = ee$Reducer$linearRegression(65L, 1L),
+        selectors = as.list(c(xcols, "Yw")))$get("coefficients")
+      beta <- as.numeric(unlist(retry_curl_download(fit$getInfo())))
+      if (any(!is.finite(beta)))
+        stop("glm IRLS diverged (non-finite coefficients); the classes may ",
+             "be perfectly separable in embedding space.", call. = FALSE)
+    }
+    return(list(
+      weights       = beta[-1],
+      intercept     = beta[1],
+      link          = "logistic",
+      is_classifier = FALSE,
+      method        = method
+    ))
   } else {
     presence_fc <- sampled_fc$filter(ee$Filter$eq(LABEL_COL, 1.0))
     res <- presence_fc$reduceColumns(
@@ -480,7 +536,12 @@ predict_gee_map <- function(model_res, img) {
   } else {
     weights_ee <- ee$Image$constant(as.list(model_res$weights))$rename(emb_cols)
     prediction <- img$multiply(weights_ee)$reduce(ee$Reducer$sum())
-    
+    if (!is.null(model_res$intercept))
+      prediction <- prediction$add(model_res$intercept)
+    if (identical(model_res$link, "logistic"))
+      prediction <- ee$Image(1)$divide(
+        prediction$multiply(-1)$exp()$add(1))
+
     return(prediction$rename("similarity"))
   }
 }
@@ -553,11 +614,17 @@ predict_all_models_gee <- function(fc, models_list) {
     for (m in reducers) {
         model_res <- models_list[[m]]
         centroid_ee <- ee$Array(as.list(model_res$weights))
-        
+        b0 <- model_res$intercept
+        logistic <- identical(model_res$link, "logistic")
+
         target_col <- paste0("pred_", m)
         scored_fc <- scored_fc$map(function(f) {
             point_ee <- ee$Array(f$toArray(emb_cols))
-            score <- point_ee$multiply(centroid_ee)$reduce(ee$Reducer$sum(), list(0L))$get(list(0L))
+            score <- ee$Number(point_ee$multiply(centroid_ee)$
+              reduce(ee$Reducer$sum(), list(0L))$get(list(0L)))
+            if (!is.null(b0)) score <- score$add(b0)
+            if (logistic)
+              score <- ee$Number(1)$divide(score$multiply(-1)$exp()$add(1))
             return(f$set(target_col, score))
         })
     }

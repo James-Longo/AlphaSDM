@@ -285,10 +285,12 @@ cleanup_classifier_assets <- function(train_res) {
 #' @param scale Output resolution in metres (default 10).
 #' @param output_dir Directory to write the GeoTIFF(s) to.
 #' @param methods Character vector of models to ensemble. Defaults to
-#'   `c("svm", "rf", "gbt")`; also accepts `maxent`, `similarity`, `knn`,
-#'   `cart`, `mindist`. MaxEnt is not a default because its literature
-#'   recipe is ~10,000 RANDOM pseudo-absences; run it separately on its
-#'   own random set (see `?generate_pseudo_absences`).
+#'   `c("svm", "rf", "gbt")`; also accepts `maxent`, `glm` (logistic
+#'   regression fitted server-side by IRLS with equal total class
+#'   weights), `similarity`, `knn`, `cart`, `mindist`. MaxEnt and glm
+#'   follow the regression-family recipe of Barbet-Massin et al. (2012):
+#'   a large RANDOM pseudo-absence set suits them best (see
+#'   `?generate_pseudo_absences`).
 #' @param ensemble Logical; also export the ensemble mean map (default `TRUE`).
 #' @param aoi_year Year of the Alpha Earth mosaic to sample (default 2023).
 #' @param bg_ratio Optional absence:presence ratio for the balanced background pool
@@ -537,10 +539,12 @@ predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year
 #'   `present` column to compute evaluation metrics on it.
 #' @param scale Embedding resolution in metres (default 10, the native resolution).
 #' @param methods Character vector of models to ensemble. Defaults to
-#'   `c("svm", "rf", "gbt")`; also accepts `maxent`, `similarity`, `knn`,
-#'   `cart`, `mindist`. MaxEnt is not a default because its literature
-#'   recipe is ~10,000 RANDOM pseudo-absences; run it separately on its
-#'   own random set (see `?generate_pseudo_absences`).
+#'   `c("svm", "rf", "gbt")`; also accepts `maxent`, `glm` (logistic
+#'   regression fitted server-side by IRLS with equal total class
+#'   weights), `similarity`, `knn`, `cart`, `mindist`. MaxEnt and glm
+#'   follow the regression-family recipe of Barbet-Massin et al. (2012):
+#'   a large RANDOM pseudo-absence set suits them best (see
+#'   `?generate_pseudo_absences`).
 #' @param aoi_year Year of the Alpha Earth mosaic to sample (default 2023).
 #' @param bg_ratio Optional absence:presence ratio; downsamples the balanced background
 #'   pool (the methods whose registry entry declares `pool = "balanced"`) to
