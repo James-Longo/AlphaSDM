@@ -8,21 +8,9 @@
 > [james.longo@maine.edu](mailto:james.longo@maine.edu). Bugs and feature requests
 > are also welcome as [GitHub issues](https://github.com/James-Longo/AlphaSDM/issues).
 
-To our knowledge, AlphaSDM is the first **embedding-native** species
-distribution modeling package: your occurrence records and Google's
-[Alpha Earth satellite embeddings](https://arxiv.org/abs/2507.22291) —
-64-dimensional vectors capturing the environmental character of every
-10 m of land on Earth — are the only inputs. There are no environmental
-layers to find, download, or align, and no arbitrary choice of which
-variables to include.
+An R package for species distribution modeling at up to 10m resolution. AlphaSDM uses Google's [Alpha Earth satellite embeddings](https://arxiv.org/abs/2507.22291), 64-dimensional vectors that capture the environmental characteristics of any location on Earth, so you don't need to find, download, or align environmental layers yourself.
 
-It is also the only R package we know of in which the entire workflow —
-sampling, pseudo-absence generation, model training, evaluation, and
-spatial prediction — runs server-side on Google Earth Engine. Modeling
-at 10 m over large regions needs no local computing power beyond a web
-connection. (Related work: the [Crego et al. 2022](https://onlinelibrary.wiley.com/doi/10.1111/ddi.13491)
-GEE workflow scripts and the Python package [eeSDM](https://github.com/osgeokr/eeSDM)
-run covariate-based SDMs on Earth Engine; neither is embedding-native.)
+Everything runs on Google Earth Engine, from data extraction to model training to spatial prediction.
 
 ---
 
