@@ -227,6 +227,8 @@ causal_report <- function(cm, effects = list(), file = "causal_report.html",
                   tests = if ("estimate" %in% names(tests))
                     cbind(implication = rownames(tests), tests) else tests)
   json <- jsonlite::toJSON(payload, auto_unbox = TRUE, na = "null", digits = 4)
+  model_json <- jsonlite::toJSON(paste(as.character(g), collapse = "\n"),
+                                 auto_unbox = TRUE)
 
   html <- paste0('<title>', esc(title), '</title>
 <style>
@@ -252,6 +254,12 @@ svg{width:100%;height:auto;display:block}
 .node text{text-anchor:middle;font:13px "Iowan Old Style",Georgia,serif;fill:var(--ink)}
 .node{cursor:pointer}.node:hover ellipse,.node:focus ellipse{fill:var(--line)}
 #detail{min-height:3.2rem;color:var(--mut)}
+button{font:inherit;font-size:.85rem;background:var(--bg);color:var(--ink);
+border:1px solid var(--line);border-radius:5px;padding:.1rem .5rem;cursor:pointer}
+button:hover{background:var(--line)}
+pre{overflow-x:auto;font-size:.8rem;color:var(--mut);background:var(--bg);
+border:1px solid var(--line);border-radius:6px;padding:.6rem}
+summary{cursor:pointer}
 #detail b{color:var(--ink)}
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
 th,td{text-align:left;padding:.3rem .6rem;border-bottom:1px solid var(--line);font-size:.92rem}
@@ -267,13 +275,24 @@ markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var
 ', edge_svg, '
 ', node_svg, '
 </svg>
-<div id="detail">Click a node for its measurement provenance.</div></div>
+<div id="detail">Click a node for its measurement provenance.</div>
+<p class="mono">Legend: solid arrow = directed cause; dashed double arrow =
+unmeasured common cause. To redraw or extend this graph, <button id="cpy"
+type="button">copy the model code</button> and paste it into the Model code box at
+<a href="https://dagitty.net/dags.html" target="_blank" rel="noopener">dagitty.net</a>.</p>
+<details><summary class="mono">model code</summary><pre id="mc"></pre></details></div>
 <div class="card"><h2>Adjustment sets (backdoor, ranked by reliability)</h2><div id="adj"></div></div>
 <div class="card"><h2>DAG&ndash;data consistency</h2><div id="tests"></div></div>
 <div class="card"><h2>Estimated effects</h2><div id="effects"></div></div>
 </main>
 <script>
 const D = ', json, ';
+const MODEL = ', model_json, ';
+document.getElementById("mc").textContent = MODEL;
+document.getElementById("cpy").addEventListener("click", async e => {
+  try { await navigator.clipboard.writeText(MODEL); e.target.textContent = "copied"; }
+  catch { e.target.textContent = "select it below and copy"; }
+});
 const fmt = (x,d=3) => x==null ? "&ndash;" : Number(x).toFixed(d);
 document.querySelectorAll(".node").forEach(el => el.addEventListener("click", () => {
   const n = el.dataset.node, i = D.nodes[n];
