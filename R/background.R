@@ -1,19 +1,12 @@
-# Pseudo-absence generation following Barbet-Massin et al. (2012 MEE).
-# Two pools serve the two method groups the paper distinguishes:
-#   - the FULL pool (maxent, svm, cart, ...): a large plain-random draw,
-#     10,000 points by default (their recommendation, endorsing Phillips &
-#     Dudik 2008), never subjected to exclusion — random placement is what
-#     the paper recommends for these methods;
-#   - the BALANCED pool (rf, gbt, knn): as many points as presences, and
-#     optionally drawn OUTSIDE both the geographic neighbourhood and the
-#     environmental envelope of the presences (their "2-degree-far" + SRE
-#     recipes for classification methods), with both thresholds estimated
-#     from the presence data rather than fixed:
-#       geographic radius   = embedding-autocorrelation range
-#       environmental edge  = bias-corrected max Mahalanobis distance of
-#                             the presences to their own embedding cloud
-#     (a min/max box, the literal SRE, excludes nothing in 64 dims).
-# Every pool tops itself up until it reaches its target: coverage losses
+# Background (pseudo-absence) draws for generate_pseudo_absences(), following
+# Barbet-Massin et al. (2012 MEE). The user picks the strategy; this file
+# supplies the two optional exclusions, each estimated from the presence data
+# rather than fixed:
+#   geographic radius   = embedding-autocorrelation range
+#   environmental edge  = bias-corrected max Mahalanobis distance of
+#                         the presences to their own embedding cloud
+#   (a min/max box, the literal SRE, excludes nothing in 64 dims).
+# A draw tops itself up until it reaches its target: coverage losses
 # (water, masked pixels) and exclusion losses trigger further draws, and
 # the geographic radius relaxes stepwise before the target is ever missed,
 # because an under-sized background changes prevalence, which the paper
@@ -28,7 +21,6 @@ BG_BOOT <- 200L
 BG_OVERSAMPLE <- 3L
 BG_TOPUP_ROUNDS <- 5L
 BG_ENV_CAP <- 2000L            # presence rows used for the envelope
-BG_DEFAULT_POOL <- 10000L      # full-pool default (Barbet-Massin 2012)
 BG_DRAW_CHUNK <- 5000L         # points per probe request (adaptive)
 
 #' Embedding-autocorrelation exclusion radius.
@@ -65,7 +57,7 @@ estimate_similarity_range <- function(pres_df, region, aoi_year, scale,
                                properties = c("pair", "dist"),
                                years = list(as.integer(aoi_year)))
   rows <- read_fc_paged(samp)$features
-  emb_cols <- sprintf("A%02d", 0:63)
+  emb_cols <- EMB_BANDS
   val <- as.data.frame(do.call(rbind, lapply(rows, function(f) {
     p <- f$properties
     c(pair = as.numeric(p$pair), dist = as.numeric(p$dist),
@@ -146,42 +138,37 @@ estimate_embedding_envelope <- function(P, seed = 0L) {
 #'   envelope; threshold from `env_threshold` or, when NULL, the
 #'   bias-corrected presence maximum.
 #' @param seed Integer; varies the draw for replicate background sets.
-#' @param est Precomputed list(rng, env) to reuse across replicate draws.
-#' @return list(df, fc, n_returned, radius_m, env_threshold,
-#'   n_candidates, n_env_excluded, est)
+#' @return list(df, n_returned, radius_m, env_threshold, n_candidates,
+#'   n_env_excluded)
 #' @noRd
 generate_background_fc_gee <- function(aoi_year, count, region, scale = 10,
                                        presence_df = NULL,
                                        presence_emb = NULL,
                                        use_geo = FALSE, use_env = FALSE,
                                        radius_m = NULL, env_threshold = NULL,
-                                       seed = 0L, est = NULL) {
+                                       seed = 0L) {
   ee <- reticulate::import("ee")
   count <- as.integer(count)
-  emb_cols <- sprintf("A%02d", 0:63)
+  emb_cols <- EMB_BANDS
 
-  rng <- NULL; env <- NULL
+  env <- NULL
   if (use_geo && is.null(radius_m)) {
-    if (is.null(est)) {
-      if (is.null(presence_df))
-        stop("Geographic exclusion needs presence coordinates to estimate ",
-             "the radius; pass `radius_m` to set it directly.", call. = FALSE)
-      rng <- estimate_similarity_range(presence_df, region, aoi_year, scale,
-                                       seed = seed)
-    } else rng <- est$rng
+    if (is.null(presence_df))
+      stop("Geographic exclusion needs presence coordinates to estimate ",
+           "the radius; pass `radius_m` to set it directly.", call. = FALSE)
+    rng <- estimate_similarity_range(presence_df, region, aoi_year, scale,
+                                     seed = seed)
     radius_m <- rng$radius_m
     sdm_info(sprintf(
       "Exclusion radius %.0f m (similarity decay; baseline cos %.3f)",
       radius_m, rng$baseline), indent = 1L)
   }
   if (use_env && is.null(env_threshold)) {
-    if (is.null(est) || is.null(est$env)) {
-      if (is.null(presence_emb))
-        stop("Envelope exclusion needs presence embeddings to estimate the ",
-             "threshold; pass `env_threshold` to set it directly.",
-             call. = FALSE)
-      env <- estimate_embedding_envelope(as.matrix(presence_emb), seed = seed)
-    } else env <- est$env
+    if (is.null(presence_emb))
+      stop("Envelope exclusion needs presence embeddings to estimate the ",
+           "threshold; pass `env_threshold` to set it directly.",
+           call. = FALSE)
+    env <- estimate_embedding_envelope(as.matrix(presence_emb), seed = seed)
     env_threshold <- env$threshold
     sdm_info(sprintf(
       "Envelope: Mahalanobis threshold %.1f (bias-corrected presence max)",
@@ -203,7 +190,7 @@ generate_background_fc_gee <- function(aoi_year, count, region, scale = 10,
     bg_region <- region$difference(pres_fc$geometry()$buffer(radius_m), 100)
   }
 
-  probe_img <- alphaearth_rescale(get_embedding_image(aoi_year))
+  probe_img <- get_embedding_image(aoi_year)
   probe_1band <- probe_img$select("A00")
 
   kept <- NULL; n_cand <- 0L; n_excl <- 0L
@@ -282,13 +269,8 @@ generate_background_fc_gee <- function(aoi_year, count, region, scale = 10,
   set.seed(seed + 3L)
   if (nrow(kept) > count) kept <- kept[sample.int(nrow(kept), count), ]
   kept$year <- as.integer(aoi_year); kept$present <- 0L
-  out_fc <- get_embeddings_at_fc(upload_points_to_gee(kept), scale,
-                                 properties = c("year", "present"),
-                                 geometries = TRUE,
-                                 years = list(as.integer(aoi_year)))
-  list(df = kept, fc = out_fc, n_returned = nrow(kept),
+  list(df = kept, n_returned = nrow(kept),
        radius_m = if (use_geo) radius_m else NA_real_,
        env_threshold = if (use_env) env$threshold else NA_real_,
-       n_candidates = n_cand, n_env_excluded = n_excl,
-       est = list(rng = rng, env = env))
+       n_candidates = n_cand, n_env_excluded = n_excl)
 }

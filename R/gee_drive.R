@@ -131,12 +131,13 @@ drive_delete_file <- function(id) {
 #' @param file_dim Pixel size of each output tile. Must be a multiple of `shard_size`.
 #' @param poll_seconds Seconds between progress reports.
 #' @param keep_on_drive TRUE leaves the tiles in Drive after downloading them.
+#' @param nodata Value written for masked pixels, and flagged as nodata in the files.
 #' @return `out_dir`, containing one GeoTIFF per tile.
 #' @noRd
 ee_export_image_drive <- function(image, region, scale, out_dir,
                                   folder = "AlphaSDM", shard_size = 256L,
                                   file_dim = 4096L, poll_seconds = 15,
-                                  keep_on_drive = FALSE, valid_mask = NULL) {
+                                  keep_on_drive = FALSE, nodata = -9999) {
   ee <- reticulate::import("ee")
   if (file_dim %% shard_size != 0L)
     stop(sprintf("file_dim (%d) must be a multiple of shard_size (%d).", file_dim,
@@ -159,10 +160,6 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
   cell_deg <- cell_px * dpp
   n_rows <- max(1L, as.integer(ceiling((north - south) / cell_deg)))
   n_cols <- max(1L, as.integer(ceiling((east - west) / cell_deg)))
-  # ALPHASDM_BAND_GEOM: "transform" (default; shared grid) or "scale".
-  # ALPHASDM_BAND_MODE: "rows" (default grid) or "single" for one whole-region task.
-  use_transform <- !identical(Sys.getenv("ALPHASDM_BAND_GEOM", "transform"), "scale")
-  if (identical(Sys.getenv("ALPHASDM_BAND_MODE", "rows"), "single")) { n_rows <- 1L; n_cols <- 1L }
   single <- n_rows == 1L && n_cols == 1L
   transform <- list(dpp, 0, west, 0, -dpp, north)
 
@@ -194,20 +191,18 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
   tasks <- list()
   for (b in seq_len(n_rows)) for (cc in seq_len(n_cols)) {
     if (!has_land[b, cc]) next
-    top  <- if (single) north else north - (b - 1L) * cell_deg
-    bot  <- if (single) south else max(south, top - cell_deg)
-    left <- if (single) west  else west + (cc - 1L) * cell_deg
-    rgt  <- if (single) east  else min(east, left + cell_deg)
+    top  <- north - (b - 1L) * cell_deg; bot <- max(south, top - cell_deg)
+    left <- west + (cc - 1L) * cell_deg;  rgt <- min(east, left + cell_deg)
     cell_prefix <- if (single) prefix else sprintf("%s_r%03d_c%03d", prefix, b, cc)
     task <- ee$batch$Export$image$toDrive(
       image = image, description = cell_prefix, folder = folder,
       fileNamePrefix = cell_prefix,
       region = ee$Geometry$Rectangle(c(left, bot, rgt, top)),
       crs = "EPSG:4326",
-      crsTransform = if (use_transform) transform else NULL,
-      scale = if (use_transform) NULL else scale,
+      crsTransform = transform,
       shardSize = shard_size, fileDimensions = file_dim, skipEmptyTiles = TRUE,
-      maxPixels = 1e13, fileFormat = "GeoTIFF")
+      maxPixels = 1e13, fileFormat = "GeoTIFF",
+      formatOptions = list(noData = nodata))
     task$start()
     tasks[[cell_prefix]] <- task
   }

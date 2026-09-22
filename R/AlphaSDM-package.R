@@ -9,5 +9,5 @@
 
 ## namespace imports (kept in one place so roxygen regenerates NAMESPACE correctly)
 #' @importFrom stats na.omit runif sd setNames
-#' @importFrom utils modifyList
+#' @importFrom utils head modifyList
 NULL

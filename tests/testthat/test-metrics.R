@@ -50,14 +50,11 @@ test_that("CBI returns 0 when the score range collapses", {
   expect_equal(calculate_cbi(rep(0.5, 10), rep(0.5, 50)), 0)
 })
 
-test_that("a request Earth Engine refuses is recognised as one to escalate", {
-  # The classifier in export_image_tiled decides whether to move a tile into the
-  # batch system or give up. It missed "Computation timed out" once, which is the
-  # single most common way a fine-scale tile fails, so the cases are pinned here.
-  escalate <- function(msg) {
-    is_gee_timeout(msg) || grepl("400", msg, fixed = TRUE) ||
-      grepl("Timeout of", msg, fixed = TRUE)
-  }
+test_that("a request Earth Engine refuses is recognised as one to split", {
+  # ee_refused() decides whether export_image() splits a map tile or gives up.
+  # It missed "Computation timed out" once, which is the single most common way
+  # a fine-scale tile fails, so the cases are pinned here.
+  escalate <- ee_refused
   expect_true(escalate("ee.ee_exception.EEException: Computation timed out."))
   expect_true(escalate("User memory limit exceeded."))
   expect_true(escalate("cannot open URL: HTTP status was '400 Bad Request'"))
