@@ -2,7 +2,7 @@ citHeader("To cite AlphaSDM in publications, please use:")
 
 bibentry(
   bibtype  = "Manual",
-  title    = "AlphaSDM: Species Distribution Modeling using Alpha Earth Embeddings",
+  title    = "AlphaSDM: Species Distribution Models on AlphaEarth Satellite Embeddings",
   author   = person("James", "Longo"),
   year     = "2026",
   note     = "R package version 0.1.4",

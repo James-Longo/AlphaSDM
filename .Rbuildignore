@@ -10,3 +10,6 @@
 \.Rproj\.user
 \.tar\.gz$
 ^vignettes/.*\.Rmd\.orig$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$

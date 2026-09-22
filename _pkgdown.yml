@@ -1,0 +1,31 @@
+url: https://james-longo.github.io/AlphaSDM/
+
+template:
+  bootstrap: 5
+
+reference:
+- title: Overview
+  contents:
+  - AlphaSDM-package
+- title: Connect to Earth Engine
+  contents:
+  - setup_gee
+  - gee_status
+  - clear_gee_credentials
+- title: Prepare data
+  contents:
+  - format_data
+  - generate_pseudo_absences
+- title: Model and map
+  contents:
+  - evaluate_models
+  - generate_map
+- title: Evaluation metrics
+  contents:
+  - calculate_classifier_metrics
+  - calculate_cbi
+- title: Earth Engine tasks and assets
+  contents:
+  - sdm_gee_status
+  - sdm_clean_assets
+  - sdm_verbose

@@ -1,113 +1,81 @@
 # AlphaSDM
 
-> [!IMPORTANT]
-> AlphaSDM is in active development. Function arguments, defaults and outputs may
-> still change between versions.
->
-> If something doesn't work, or if it does, please email
-> [james.longo@maine.edu](mailto:james.longo@maine.edu). Bugs and feature requests
-> are also welcome as [GitHub issues](https://github.com/James-Longo/AlphaSDM/issues).
+[![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
 
-An R package for species distribution modeling at up to 10m resolution. AlphaSDM uses Google's [Alpha Earth satellite embeddings](https://arxiv.org/abs/2507.22291), 64-dimensional vectors that capture the environmental characteristics of any location on Earth, so you don't need to find, download, or align environmental layers yourself.
+AlphaSDM fits species distribution models and maps habitat suitability at up
+to 10 m resolution, anywhere on Earth, from occurrence records alone. It
+models species on the embeddings of AlphaEarth, Google DeepMind's geospatial
+foundation model, instead of environmental layers you collect yourself, and
+runs every step on Google Earth Engine.
 
-Everything runs on Google Earth Engine, from data extraction to model training to spatial prediction.
+<p>
+  <img src="man/figures/README-points.png" width="49%" alt="Saguaro records and pseudo-absences on a Sentinel-2 image of Tucson">
+  <img src="man/figures/README-map.png" width="49%" alt="Saguaro habitat suitability around Tucson at 30 m">
+</p>
 
----
+*Saguaro around Tucson, Arizona: GBIF records and pseudo-absences (left), and
+the fitted habitat-suitability map at 30 m (right). The full example is in
+`vignette("AlphaSDM")`.*
+
+## Why AlphaSDM
+
+- **No environmental layers.** There is nothing to find, download, reproject
+  or align; the embeddings already describe every pixel.
+- **Fine resolution everywhere.** 10 m pixels, every year from 2017, on land
+  anywhere on Earth.
+- **Nothing to download but the map.** Sampling, model fitting and prediction
+  all run on Earth Engine, so a large study area costs your computer nothing.
+- **An ensemble with calibration built in.** Support vector machine, random
+  forest and boosted trees by default, scored with AUC, TSS and the Boyce
+  index.
+- **Explicit modelling choices.** Pseudo-absence placement follows
+  Barbet-Massin et al. (2012), and AlphaSDM makes you choose the strategy
+  rather than choosing it for you.
+
+## AlphaEarth embeddings
+
+[AlphaEarth Foundations](https://arxiv.org/abs/2507.22291) is a Google
+DeepMind model that condenses optical, radar, lidar, climate and other data
+into 64 numbers per 10 m pixel per year. The annual embeddings are a public
+[Earth Engine dataset](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL),
+currently covering 2017 to 2025. Records are matched to the embeddings for the
+year they were made.
 
 ## Installation
 
 ```r
-# install.packages("devtools")
-devtools::install_github("James-Longo/AlphaSDM")
+# install.packages("pak")
+pak::pak("James-Longo/AlphaSDM")
 ```
 
----
+## Earth Engine setup
 
-## Google Earth Engine Setup
+AlphaSDM runs on your own Earth Engine account, which is free for
+noncommercial use.
 
-AlphaSDM connects to Earth Engine with your personal Google account. You set
-this up once per machine. After that, every R session connects automatically.
-
-### Prerequisites (one-time, free)
-
-1. Register for Earth Engine. Go to
-   [earthengine.google.com/signup](https://earthengine.google.com/signup/) and
-   sign in with your Google account. Earth Engine is free for noncommercial
-   use in research, education, and nonprofit projects. Registration links your
-   account to a Cloud project and gives you its Project ID (e.g.
-   `"my-ee-project"`), which is the only thing you need to pass to AlphaSDM.
-
-That's the only prerequisite. You do not need to create a service account,
-manage a JSON key, or set up billing for standard noncommercial use.
-
-### One-Time Setup
+1. [Register for Earth Engine](https://earthengine.google.com/signup/). This
+   gives you a Cloud project ID.
+2. Connect once per machine. A browser window asks you to allow access, and
+   the connection is remembered after that.
 
 ```r
 library(AlphaSDM)
-
 setup_gee(project = "your-project-id")
+gee_status()   # checks credentials, project and a live connection
 ```
 
-`setup_gee()` is designed to be run once and never thought about again:
+On a machine without a browser, use `setup_gee(auth_mode = "notebook")` to
+paste a code instead. `clear_gee_credentials()` resets everything.
 
-1. Finds your Python automatically. If any Python on your machine already has
-   `earthengine-api` (a conda env, a virtualenv, or a system Python with
-   `pip install earthengine-api`), AlphaSDM uses it directly, with no downloads.
-   It only builds a new environment as a last resort.
-2. Authenticates with one browser click, no code to paste. On a desktop or
-   laptop your browser opens, you click "Allow", and the credential is captured
-   automatically. The saved credentials are long-lived; you are not asked again.
-3. Remembers your project. The Project ID is saved locally.
+## Example
 
-Re-running `setup_gee()` is safe: if you are already connected it detects the
-working credentials and returns immediately with *"Already connected to Earth
-Engine. Nothing to do."*
-
-### Check your connection
-
-```r
-gee_status()
-#> ┌─ AlphaSDM: Google Earth Engine connection
-#>     ‣ [OK  ] Python env : .../earthengine-api
-#>     ‣ [OK  ] Credentials: present, user account (OAuth)
-#>     ‣ [OK  ] Project    : my-ee-project
-#>     ‣ [OK  ] Live check : connected
-#>   ✔ Earth Engine is set up. No action needed.
-```
-
-### Headless / remote machines (SSH, HPC, containers)
-
-On a machine with no local browser, `setup_gee()` detects this and prints a URL
-to open on any device; you approve access and paste the short code back once. To
-force this flow explicitly:
-
-```r
-setup_gee(project = "your-project-id", auth_mode = "notebook")
-```
-
-### Resetting Credentials
-
-To switch accounts or troubleshoot:
-
-```r
-clear_gee_credentials()
-setup_gee(project = "your-project-id")   # re-authenticate
-```
-
----
-
-## Worked Example
-
-A complete, reproducible run on public data: saguaro (*Carnegiea gigantea*)
-records from GBIF around Tucson, Arizona. The full walkthrough, with a GBIF
-download helper and explanations, is in
-`vignette("AlphaSDM")`.
+Download one year of saguaro records from GBIF, add pseudo-absences, evaluate
+the default ensemble on a spatial holdout, and map suitability:
 
 ```r
 library(AlphaSDM)
-setup_gee()   # first time: setup_gee(project = "your-cloud-project")
 
-# 1. Download one year of precise GBIF records (public API, no account needed)
 url <- paste0("https://api.gbif.org/v1/occurrence/search?",
               "scientificName=Carnegiea%20gigantea&year=2022",
               "&hasCoordinate=true&hasGeospatialIssue=false",
@@ -117,205 +85,51 @@ obs <- do.call(rbind, lapply(c(0, 300), function(offset)
   jsonlite::fromJSON(paste0(url, "&offset=", offset))$results[
     , c("decimalLongitude", "decimalLatitude", "year")]))
 
-# 2. Format, then add pseudo-absences
 pres <- format_data(obs, coords = c("decimalLongitude", "decimalLatitude"), year = "year")
 occ  <- generate_pseudo_absences(pres, aoi = "bbox", strategy = "combined",
                                  n = nrow(pres), aoi_year = 2022)
 
-# 3. Evaluate the default ensemble on a spatial holdout
 set.seed(1)
 test <- stats::kmeans(occ[, c("longitude", "latitude")], centers = 5)$cluster == 1
 fit  <- evaluate_models(occ[!test, ], predict_coords = occ[test, ])
 fit$metrics$ensemble
 
-# 4. Map suitability over the whole study area
 maps <- generate_map(occ, aoi = "bbox", scale = 30, aoi_year = 2022,
                      output_dir = "saguaro")
-plot(stars::read_stars(maps$ensemble_map))
 ```
 
-## Quick Start
+`generate_map()` writes one GeoTIFF per model plus the ensemble. Maps download
+straight from Earth Engine in parallel tiles; a map too large for that goes
+through Earth Engine's batch system and Google Drive instead, which is slower.
 
-### 1. Format your data
+## Models
 
-Get your presence/absence records into the expected format. Coordinates must be longitude and latitude in decimal degrees on WGS84 (EPSG:4326), which is what GPS units and databases like GBIF and eBird report. Projected coordinates (UTM metres and the like) are rejected; reproject them first with `sf::st_transform(x, 4326)`. A year column is required so each record is matched to the embedding for the year it was recorded.
+The default ensemble is `c("svm", "rf", "gbt")`. `methods =` also accepts
+`"maxent"`, `"glm"`, `"cart"`, `"knn"`, `"mindist"` and `"similarity"`, all
+fitted on Earth Engine; see `?evaluate_models`.
 
-The Alpha Earth embeddings are annual and currently cover 2017 to 2025. `format_data()` drops any record dated outside that window and reports how many it removed. If the temporal gap does not matter for your question, set those records to 2017 to keep them and match them against the earliest available embedding.
+## Related packages
 
-```r
-library(AlphaSDM)
+biomod2, flexsdm, ENMeval, sdm and Wallace fit species distribution models on
+environmental layers you supply; AlphaSDM replaces those layers with one
+embedding dataset and moves the computation to Earth Engine. blockCV builds
+spatial cross-validation folds, which pair well with `evaluate_models()`. rgee
+is the general-purpose R interface to Earth Engine.
 
-formatted_data <- format_data(
-  my_raw_df, 
-  coords = c("lon", "lat"), 
-  year = "obs_year", 
-  presence = "occurrence"
-)
-```
+## Getting help
 
-### 2. Presence-only data? Generate pseudo-absences
-
-Every model needs absences. If your records are presence-only, where the
-artificial absences go is a modelling decision with real consequences
-(Barbet-Massin et al. 2012), so AlphaSDM asks you to make it explicitly
-rather than making it for you:
-
-```r
-formatted_data <- generate_pseudo_absences(
-  formatted_data,
-  aoi      = "path/to/my_study_area.shp",  # where absences may be placed
-  strategy = "combined",                    # random | disk | envelope | combined
-  n        = 10000
-)
-```
-
-`?generate_pseudo_absences` explains the four strategies and which models
-each one suits. The disk radius and environmental envelope are estimated
-from your presences (and reported) unless you set them yourself. Skip this
-step entirely if your data already has real absences.
-
-### 3. Evaluate models
-
-Hold out part of your data and score it. Include the `present` column in
-the holdout to get metrics:
-
-```r
-test_rows <- sample(nrow(formatted_data), 50)
-
-metrics <- evaluate_models(
-  data = formatted_data[-test_rows, ],
-  predict_coords = formatted_data[test_rows, ],
-  scale = 10,
-  aoi_year = 2023
-)
-
-# Access metrics like AUC, TSS, and CBI
-print(metrics$metrics$ensemble)
-```
-
-For k-fold cross-validation, repeat this with your own fold assignments
-(spatial folds are worth the trouble; see e.g. the blockCV package) and
-average the metrics.
-
-### 4. Generate maps
-
-Create maps for an area of interest. You can define the AOI in two ways:
-
-```r
-# Option 1: A center point with a radius (in meters)
-aoi <- list(lat = 44.5, lon = -71.5, radius = 50000)
-
-# Option 2: A path to any spatial file (Shapefile, GeoJSON, GeoPackage, KML, etc.)
-# Any CRS works here: the file carries its projection, so it is reprojected
-# to WGS84 automatically. Only bare coordinate columns can't be.
-aoi <- "path/to/my_study_area.shp"
-```
-
-```r
-results <- generate_map(
-  data = formatted_data,
-  aoi = aoi,
-  scale = 10,           
-  aoi_year = 2023,      
-  methods = c("rf", "similarity"),
-  output_dir = "results/my_species"
-)
-```
-
----
-
-## Key Features
-
-*   Resolution: model habitat at up to 10m, anywhere on the globe, using Google's 64-band Alpha Earth satellite embeddings.
-*   Fully server-side: no environmental data to download. All data extraction, model training, and prediction happens on Google Earth Engine.
-*   Built-in models: nine modeling methods plus an ensemble, all trained and
-    applied server-side. See [Built-in Models](#built-in-models) below.
-
----
-
-## Built-in Models
-
-Pass any of these to the `methods =` argument of `evaluate_models()` or
-`generate_map()`. The default is `c("svm", "rf", "gbt")`: three methods that
-make different modelling assumptions, so averaging them is worth more than
-averaging variations on the same idea.
-
-
-| `methods` value | Model | Earth Engine backend |
-| --- | --- | --- |
-| `"svm"` | Support Vector Machine (default EPSILON_SVR, RBF kernel) | [`ee.Classifier.libsvm`](https://developers.google.com/earth-engine/apidocs/ee-classifier-libsvm) |
-| `"rf"` | Random Forest | [`ee.Classifier.smileRandomForest`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilerandomforest) |
-| `"gbt"` | Gradient Boosted Trees | [`ee.Classifier.smileGradientTreeBoost`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilegradienttreeboost) |
-| `"maxent"` | MaxEnt | [`ee.Classifier.amnhMaxent`](https://developers.google.com/earth-engine/apidocs/ee-classifier-amnhmaxent) |
-| `"cart"` | Classification and Regression Tree | [`ee.Classifier.smileCart`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilecart) |
-| `"knn"` | k-Nearest Neighbors | [`ee.Classifier.smileKNN`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smileknn) |
-| `"mindist"` | Minimum Distance to class centroid | [`ee.Classifier.minimumDistance`](https://developers.google.com/earth-engine/apidocs/ee-classifier-minimumdistance) |
-| `"naivebayes"` | Naive Bayes (see note below) | [`ee.Classifier.smileNaiveBayes`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilenaivebayes) |
-| `"glm"` | Logistic regression, fitted server-side by IRLS | [`ee.Reducer.linearRegression`](https://developers.google.com/earth-engine/apidocs/ee-reducer-linearregression) |
-| `"similarity"` | Dot product against the mean presence embedding | `ee.Reducer.mean` |
-
-Selecting more than one method also produces an ensemble map and score: the
-equal-weighted mean of the members.
-
-Two caveats worth knowing:
-
-*   `"naivebayes"` is exposed for completeness but is not recommended.
-    `smileNaiveBayes` assumes positive-integer features and discards negative
-    inputs, so it collapses to roughly random performance on the signed Alpha
-    Earth embeddings.
-*   The lighter methods (`similarity`, `knn`, `cart`, `mindist`) are cheaper to fit
-    but less expressive than the default four. `similarity` in particular is a single
-    dot product against the mean presence embedding, with no fitted decision boundary.
-
----
-
-## How Requests Run: Two Paths
-
-AlphaSDM chooses between two execution paths based on the size of the request.
-The choice is automatic; the console messages tell you which path you are on.
-
-Small and medium requests run through Earth Engine's interactive services and
-arrive in seconds to a few minutes.
-
-Requests too large for interactive services move to Earth Engine's
-[batch system](https://developers.google.com/earth-engine/guides/processing_environments),
-which allows far more computation per step. On this path:
-
-*   Training data with many points is sampled and stored server-side in
-    chunks, so no single step has to hold the whole dataset.
-*   Tree models (random forest, CART) are trained as their own server-side
-    job and stored, then applied from storage. The other methods are fitted
-    in place at whatever size the batch system can hold.
-*   The map is computed as many small, independent export jobs, and the
-    finished tiles are written to an `AlphaSDM` folder in the Google Drive
-    of the account you connected. Expect files to appear there mid-run:
-    AlphaSDM downloads each tile, verifies it, and then removes it, so
-    nothing accumulates in your storage.
-
-The stable path is slower: a regional map at 10 m runs for hours, with
-progress reported the whole way. In return, size stops being a failure mode.
-
-Large maps are delivered as a directory of aligned GeoTIFF tiles rather than
-one raster; mosaic them if needed with `terra::vrt()` or `gdalbuildvrt`.
-
----
+Report bugs and request features in
+[GitHub issues](https://github.com/James-Longo/AlphaSDM/issues), or email
+[james.longo@maine.edu](mailto:james.longo@maine.edu). AlphaSDM is in active
+development, so arguments and defaults may still change.
 
 ## Citation
 
-If AlphaSDM contributes to work you publish, please cite it. From R:
+Run `citation("AlphaSDM")` in R, or use GitHub's "Cite this repository"
+button, which reads [`CITATION.cff`](CITATION.cff).
 
-```r
-citation("AlphaSDM")
-```
+## License
 
-The repository also carries a [`CITATION.cff`](CITATION.cff), so GitHub's
-"Cite this repository" button produces BibTeX and APA entries directly.
-
-## License and Credits
-
-AlphaSDM is released under the [MIT License](LICENSE.md): you are free to use,
-modify and redistribute it, including in commercial work, provided the copyright
-notice is retained. If you use it in research, a citation is asked for as an
-academic courtesy rather than a licence condition.
-
-This package uses the [Alpha Earth Embedding](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL) dataset provided by Google.
+MIT; see [LICENSE.md](LICENSE.md). The AlphaEarth embeddings are provided by
+Google under the terms of the
+[Earth Engine dataset](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL).

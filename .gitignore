@@ -12,3 +12,4 @@
 # Secrets
 .env
 .DS_Store
+docs/
