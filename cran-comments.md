@@ -1,3 +1,9 @@
+## Test environments
+
+* Local: Ubuntu Linux, R 4.3.3
+* win-builder: Windows, R-devel
+* mac-builder: macOS (arm64), R-release
+
 ## R CMD check results
 
 0 errors | 0 warnings | 1 note
