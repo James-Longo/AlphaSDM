@@ -99,8 +99,8 @@ maps <- generate_map(occ, aoi = "bbox", scale = 30, aoi_year = 2022,
 ```
 
 `generate_map()` writes one GeoTIFF per model plus the ensemble. Maps download
-straight from Earth Engine in parallel tiles; a map too large for that goes
-through Earth Engine's batch system and Google Drive instead, which is slower.
+straight from Earth Engine in tiles; a map Earth Engine will not compute that
+way goes through its batch system and Google Drive instead, which is slower.
 
 ## Models
 
@@ -120,7 +120,7 @@ is the general-purpose R interface to Earth Engine.
 
 Report bugs and request features in
 [GitHub issues](https://github.com/James-Longo/AlphaSDM/issues), or email
-[james.longo@maine.edu](mailto:james.longo@maine.edu). AlphaSDM is in active
+[james.longo.birds@gmail.com](mailto:james.longo.birds@gmail.com). AlphaSDM is in active
 development, so arguments and defaults may still change.
 
 ## Citation

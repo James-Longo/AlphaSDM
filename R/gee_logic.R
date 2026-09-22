@@ -628,30 +628,34 @@ GEE_REFUSAL_PATTERN <- paste(GEE_LIMIT_PATTERN, "400", "Total request size",
 #' @noRd
 ee_refused <- function(msg) grepl(GEE_REFUSAL_PATTERN, msg, ignore.case = TRUE)
 
+#' Whether a downloaded file is a GeoTIFF
+#' @noRd
+is_tiff <- function(path) {
+  file.exists(path) && file.size(path) > 8 &&
+    rawToChar(readBin(path, "raw", 2L)) %in% c("II", "MM")
+}
+
 #' Download one map tile, retrying transient failures
 #'
-#' Runs in a worker process of export_image()'s download pool, so it is
-#' self-contained: base R only, and everything it needs arrives in `job`
-#' (`url`, `path`, `tries`, `refusal_pattern`).
+#' A refusal (see ee_refused()) is returned at once, since asking again does
+#' not help.
+#' @param url,path Download URL and destination file.
+#' @param tries Attempts before giving up, with exponential backoff.
 #' @return TRUE, or the last error message.
 #' @noRd
-fetch_tile <- function(job) {
-  options(timeout = 0)  # a tile takes as long as Earth Engine takes to compute it
-  if (!is.null(job$error)) return(job$error)
+fetch_tile <- function(url, path, tries = 5L) {
   last <- "unknown error"
-  for (k in seq_len(job$tries)) {
+  for (k in seq_len(tries)) {
     warn <- ""
     res <- tryCatch(withCallingHandlers({
-      utils::download.file(job$url, job$path, mode = "wb", quiet = TRUE)
-      ok <- file.exists(job$path) && file.size(job$path) > 8 &&
-        rawToChar(readBin(job$path, "raw", 2L)) %in% c("II", "MM")
-      if (ok) TRUE else "empty response"
+      utils::download.file(url, path, mode = "wb", quiet = TRUE)
+      if (is_tiff(path)) TRUE else "empty response"
     }, warning = function(w) {
       warn <<- conditionMessage(w); invokeRestart("muffleWarning")
     }), error = function(e) conditionMessage(e))
     if (isTRUE(res)) return(TRUE)
     last <- if (nzchar(warn)) warn else res
-    if (grepl(job$refusal_pattern, last, ignore.case = TRUE)) return(last)
+    if (ee_refused(last)) return(last)
     Sys.sleep(2^k)
   }
   last
@@ -683,14 +687,16 @@ export_image <- function(image, region, scale, dsn, nodata = -9999) {
   ee <- reticulate::import("ee")
   MAX_BYTES   <- 30e6  # under getDownloadURL's 32 MB response cap
   MIN_TILE_PX <- 128L
-  # Requests in flight. Measured on a full 10 m map: 16 was no faster than 8,
-  # since Earth Engine limits each account's compute, and 8 stays well under the
-  # concurrent-request quota.
-  CONCURRENT  <- 8L
+  # Requests in flight. Earth Engine limits the compute each account gets, so
+  # more requests do not mean more throughput: on six 10 m tiles, 1, 2, 4 and 8
+  # at a time took 153, 111, 128 and 127 s.
+  CONCURRENT  <- 2L
   TRIES       <- 5L
 
-  # fetch_tile() lifts the download deadline; restore the caller's afterwards.
+  # No download deadline: a tile takes as long as Earth Engine takes to compute
+  # it, and the server decides when a request is refused.
   old_timeout <- getOption("timeout")
+  options(timeout = 0)
   on.exit(options(timeout = old_timeout), add = TRUE)
 
   # One global pixel grid in EPSG:4326, so tiles line up exactly when stitched.
@@ -721,20 +727,6 @@ export_image <- function(image, region, scale, dsn, nodata = -9999) {
     dimensions = sprintf("%dx%d", t[3], t[4])))
   tile_path <- function(t) file.path(tile_dir, sprintf("t_%d_%d_%d_%d.tif", t[1], t[2], t[3], t[4]))
 
-  # Tiles download in a pool of worker processes that keeps CONCURRENT requests
-  # in flight, so one slow tile never holds up the rest. URLs are made here,
-  # where the Earth Engine session lives; workers only download them.
-  cl <- NULL
-  on.exit(if (!is.null(cl)) parallel::stopCluster(cl), add = TRUE)
-  worker <- fetch_tile
-  environment(worker) <- baseenv()
-  job_for <- function(t) {
-    url <- tryCatch(tile_url(t), error = function(e) e)
-    list(url = if (!inherits(url, "error")) url, path = tile_path(t), tries = TRIES,
-         refusal_pattern = GEE_REFUSAL_PATTERN,
-         error = if (inherits(url, "error")) conditionMessage(url))
-  }
-
   pending <- cut(0L, 0L, W, H, cap_px)
   sdm_info(sprintf("Downloading %d x %d px as %d tile%s", W, H, length(pending),
                    if (length(pending) == 1L) "" else "s"), indent = 2L)
@@ -745,18 +737,23 @@ export_image <- function(image, region, scale, dsn, nodata = -9999) {
     pending <- unlist(lapply(pending, function(t)
       if (max(t[3], t[4]) > cap_px) cut(t[1], t[2], t[3], t[4], cap_px) else list(t)),
       recursive = FALSE)
-    # A few rounds of work per worker at a time, so URLs are fresh when used and a
-    # refusal shrinks the tiles still waiting.
-    batch   <- pending[seq_len(min(4L * CONCURRENT, length(pending)))]
+    # CONCURRENT tiles download at once; any that fail are retried one by one,
+    # so their error can be read.
+    batch   <- pending[seq_len(min(CONCURRENT, length(pending)))]
     pending <- pending[-seq_along(batch)]
-    jobs    <- lapply(batch, job_for)
-    results <- if (length(jobs) == 1L) list(worker(jobs[[1]])) else {
-      if (is.null(cl)) cl <- parallel::makeCluster(min(CONCURRENT, length(jobs) + length(pending)))
-      parallel::parLapplyLB(cl, jobs, worker)
-    }
+    paths   <- vapply(batch, tile_path, "")
+    urls    <- lapply(batch, function(t) tryCatch(tile_url(t), error = function(e) e))
+    ok_url  <- !vapply(urls, inherits, logical(1), "error")
+    if (any(ok_url))
+      try(suppressWarnings(utils::download.file(unlist(urls[ok_url]), paths[ok_url],
+                                                method = "libcurl", mode = "wb",
+                                                quiet = TRUE)), silent = TRUE)
     for (i in seq_along(batch)) {
-      t <- batch[[i]]; res <- results[[i]]
-      if (isTRUE(res)) { got <- c(got, jobs[[i]]$path); next }
+      t <- batch[[i]]
+      res <- if (!ok_url[i]) conditionMessage(urls[[i]])
+             else if (is_tiff(paths[i])) TRUE
+             else fetch_tile(urls[[i]], paths[i], TRIES)
+      if (isTRUE(res)) { got <- c(got, paths[i]); next }
       if (!ee_refused(res))
         stop(sprintf("Map tile download failed after %d tries: %s", TRIES, res), call. = FALSE)
       if (max(t[3], t[4]) <= MIN_TILE_PX) { refused_at_min <- res; break }
