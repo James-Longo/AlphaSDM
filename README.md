@@ -96,6 +96,44 @@ setup_gee(project = "your-project-id")   # re-authenticate
 
 ---
 
+## Worked Example
+
+A complete, reproducible run on public data: saguaro (*Carnegiea gigantea*)
+records from GBIF around Tucson, Arizona. The full walkthrough, with a GBIF
+download helper and explanations, is in
+`vignette("AlphaSDM")`.
+
+```r
+library(AlphaSDM)
+setup_gee()   # first time: setup_gee(project = "your-cloud-project")
+
+# 1. Download one year of precise GBIF records (public API, no account needed)
+url <- paste0("https://api.gbif.org/v1/occurrence/search?",
+              "scientificName=Carnegiea%20gigantea&year=2022",
+              "&hasCoordinate=true&hasGeospatialIssue=false",
+              "&coordinateUncertaintyInMeters=0,30",
+              "&decimalLongitude=-111.4,-110.6&decimalLatitude=31.9,32.6&limit=300")
+obs <- do.call(rbind, lapply(c(0, 300), function(offset)
+  jsonlite::fromJSON(paste0(url, "&offset=", offset))$results[
+    , c("decimalLongitude", "decimalLatitude", "year")]))
+
+# 2. Format, then add pseudo-absences
+pres <- format_data(obs, coords = c("decimalLongitude", "decimalLatitude"), year = "year")
+occ  <- generate_pseudo_absences(pres, aoi = "bbox", strategy = "combined",
+                                 n = nrow(pres), aoi_year = 2022)
+
+# 3. Evaluate the default ensemble on a spatial holdout
+set.seed(1)
+test <- stats::kmeans(occ[, c("longitude", "latitude")], centers = 5)$cluster == 1
+fit  <- evaluate_models(occ[!test, ], predict_coords = occ[test, ])
+fit$metrics$ensemble
+
+# 4. Map suitability over the whole study area
+maps <- generate_map(occ, aoi = "bbox", scale = 30, aoi_year = 2022,
+                     output_dir = "saguaro")
+plot(stars::read_stars(maps$ensemble_map))
+```
+
 ## Quick Start
 
 ### 1. Format your data
@@ -213,11 +251,11 @@ averaging variations on the same idea.
 | `"knn"` | k-Nearest Neighbors | [`ee.Classifier.smileKNN`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smileknn) |
 | `"mindist"` | Minimum Distance to class centroid | [`ee.Classifier.minimumDistance`](https://developers.google.com/earth-engine/apidocs/ee-classifier-minimumdistance) |
 | `"naivebayes"` | Naive Bayes (see note below) | [`ee.Classifier.smileNaiveBayes`](https://developers.google.com/earth-engine/apidocs/ee-classifier-smilenaivebayes) |
+| `"glm"` | Logistic regression, fitted server-side by IRLS | [`ee.Reducer.linearRegression`](https://developers.google.com/earth-engine/apidocs/ee-reducer-linearregression) |
 | `"similarity"` | Dot product against the mean presence embedding | `ee.Reducer.mean` |
 
-Selecting more than one method also produces an ensemble map and score. It is
-equal-weighted by default; `evaluate_models(weighted_ensemble = TRUE)` weights
-members by their cross-validated AUC instead.
+Selecting more than one method also produces an ensemble map and score: the
+equal-weighted mean of the members.
 
 Two caveats worth knowing:
 
