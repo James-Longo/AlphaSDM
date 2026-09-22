@@ -31,6 +31,7 @@ test_that("a plain random draw needs no presence data", {
 })
 
 test_that("format_data standardizes presence-only data with a directive", {
+  local_coverage_window()
   d <- data.frame(longitude = c(-66.5, -66.6), latitude = c(47.2, 47.3),
                   year = c(2022, 2023))
   ok <- format_data(d, coords = c("longitude", "latitude"), year = "year")

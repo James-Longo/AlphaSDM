@@ -1,7 +1,7 @@
 # AlphaSDM
 
 [![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/James-Longo/AlphaSDM/blob/main/LICENSE.md)
 
 AlphaSDM fits species distribution models and maps habitat suitability at up
 to 10 m resolution, anywhere on Earth, from occurrence records alone. It
@@ -126,10 +126,10 @@ development, so arguments and defaults may still change.
 ## Citation
 
 Run `citation("AlphaSDM")` in R, or use GitHub's "Cite this repository"
-button, which reads [`CITATION.cff`](CITATION.cff).
+button, which reads [`CITATION.cff`](https://github.com/James-Longo/AlphaSDM/blob/main/CITATION.cff).
 
 ## License
 
-MIT; see [LICENSE.md](LICENSE.md). The AlphaEarth embeddings are provided by
+MIT; see [LICENSE.md](https://github.com/James-Longo/AlphaSDM/blob/main/LICENSE.md). The AlphaEarth embeddings are provided by
 Google under the terms of the
 [Earth Engine dataset](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL).

@@ -3,6 +3,9 @@
 0 errors | 0 warnings | 1 note
 
 * This is a new submission.
+* The words flagged as possibly misspelled in DESCRIPTION (AlphaEarth,
+  embeddings, geospatial, et al.) are correct: AlphaEarth is the name of the
+  Google DeepMind model whose embeddings the package uses.
 
 ## Notes for the reviewer
 
