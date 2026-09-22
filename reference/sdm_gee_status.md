@@ -25,3 +25,11 @@ sdm_gee_status(active_only = TRUE, since_minutes = 180)
 
 A data frame of tasks with \`description\`, \`state\` and \`age_min\`,
 invisibly. Also prints them.
+
+## Examples
+
+``` r
+if (FALSE) { # \dontrun{
+sdm_gee_status(active_only = FALSE)
+} # }
+```

@@ -152,3 +152,12 @@ generate_map(
 
 A named list of output file paths, with one \`\<method\>\_map\` entry
 per model, plus \`ensemble_map\` when more than one method is requested.
+
+## Examples
+
+``` r
+if (FALSE) { # \dontrun{
+maps <- generate_map(occ, aoi = "bbox", scale = 30, output_dir = tempdir())
+maps$ensemble_map
+} # }
+```

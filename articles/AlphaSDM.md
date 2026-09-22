@@ -145,9 +145,8 @@ informative number here.
 [`generate_map()`](https://james-longo.github.io/AlphaSDM/reference/generate_map.md)
 refits the models on all the data and writes one GeoTIFF per model plus
 the ensemble mean. `aoi = "bbox"` maps the whole area the points cover,
-about 75 by 78 km. At 30 m that is six map tiles, which download from
-Earth Engine in parallel in about three minutes; the native 10 m
-resolution (`scale = 10`) takes about ten.
+about 75 by 78 km. At 30 m that is six map tiles and takes a few
+minutes; the native 10 m resolution (`scale = 10`) takes longer.
 
 \
 `maps`` ``<-`` `[`generate_map`](https://james-longo.github.io/AlphaSDM/reference/generate_map.md)`(``occ``, aoi ``=`` ``"bbox"``, scale ``=`` ``30``, aoi_year ``=`` ``2022``,`\

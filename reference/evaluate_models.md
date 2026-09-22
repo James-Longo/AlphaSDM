@@ -148,3 +148,14 @@ A list containing \`methods\`, \`model_metadata\`, \`point_predictions\`
 and, when \`predict_coords\` has a \`present\` column, per-model and
 ensemble \`metrics\`. For cross-validation, split the data yourself and
 call this once per fold with the fold's holdout as \`predict_coords\`.
+
+## Examples
+
+``` r
+if (FALSE) { # \dontrun{
+# `occ` holds presences and absences, e.g. from generate_pseudo_absences().
+test <- sample(nrow(occ), round(nrow(occ) / 5))
+fit  <- evaluate_models(occ[-test, ], predict_coords = occ[test, ])
+fit$metrics$ensemble
+} # }
+```

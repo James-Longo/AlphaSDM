@@ -8,10 +8,13 @@ server-side on Google Earth Engine.
 
 Useful links:
 
+- <https://james-longo.github.io/AlphaSDM/>
+
 - <https://github.com/James-Longo/AlphaSDM>
 
 - Report bugs at <https://github.com/James-Longo/AlphaSDM/issues>
 
 ## Author
 
-**Maintainer**: James Longo <james.longo.birds@gmail.com>
+**Maintainer**: James Longo <james.longo.birds@gmail.com> \[copyright
+holder\]

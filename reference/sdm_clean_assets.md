@@ -46,3 +46,11 @@ it is still pending or running, or if it is newer than
 \`older_than_hours\`, so a job in progress in another session is not
 disturbed. A large export can run for many hours, which is why the
 default is deliberately generous.
+
+## Examples
+
+``` r
+if (FALSE) { # \dontrun{
+sdm_clean_assets(dry_run = TRUE)   # list what would be removed
+} # }
+```

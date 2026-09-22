@@ -35,3 +35,13 @@ A single number in \[-1, 1\], the Spearman correlation between window
 position and the predicted-to-expected ratio. Returns 0 when there are
 no presence scores, when all scores are equal, or when the correlation
 is undefined.
+
+## Examples
+
+``` r
+set.seed(1)
+background <- runif(500)
+presences  <- rbeta(50, 4, 2)   # presences sit at higher scores
+calculate_cbi(presences, c(presences, background))
+#> [1] 0.5549083
+```

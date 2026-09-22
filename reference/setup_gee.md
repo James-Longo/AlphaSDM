@@ -1,10 +1,8 @@
-# Set Up Google Earth Engine for AlphaSDM (one-time)
+# Connect AlphaSDM to Google Earth Engine (one-time)
 
-Connects AlphaSDM to Google Earth Engine using your personal Google
-account. You only ever need to run this once per machine: it
-authenticates through a single browser click and saves long-lived
-credentials, so every future R session connects automatically with no
-further prompts.
+Signs in to Google Earth Engine with your own Google account and saves
+your project ID, so later R sessions connect on their own. Run it once
+per machine; running it again when already connected does nothing.
 
 ## Usage
 
@@ -16,41 +14,45 @@ setup_gee(project = NULL, force = FALSE, auth_mode = NULL)
 
 - project:
 
-  Google Cloud / Earth Engine project ID (e.g., `"my-ee-project"`). If
-  `NULL`, the saved project is reused, or you are prompted
-  interactively.
+  Earth Engine (Google Cloud) project ID, for example `"my-ee-project"`.
+  If `NULL`, the saved project is used, or you are asked for one.
 
 - force:
 
-  If `TRUE`, re-authenticate even if valid credentials already exist.
+  If `TRUE`, sign in again even if valid credentials exist.
 
 - auth_mode:
 
-  Optional override for the Earth Engine authorization flow, passed
-  straight to `ee$Authenticate()`. Leave `NULL` (recommended) to let
-  AlphaSDM choose: `"localhost"` (one-click, no paste) on a machine with
-  a browser, and `"notebook"` on a detected headless/remote session. Set
-  `"notebook"` yourself to force the paste-a-code flow, or `"gcloud"` if
-  you use the gcloud CLI.
+  Earth Engine sign-in flow, passed to `ee.Authenticate()`. Leave `NULL`
+  to use `"localhost"` (a browser click) where a browser is available
+  and `"notebook"` (paste a code) where it is not. `"gcloud"` uses the
+  gcloud command-line tool.
 
 ## Value
 
-Invisibly `TRUE` on success, or `FALSE` if a step (such as the Python
-install) requires you to restart R and re-run.
+Invisibly, `TRUE` once connected.
 
 ## Details
 
-**Before you start** you need a free Earth Engine account. Sign up at
+You need a free Earth Engine account first: register at
 <https://earthengine.google.com/signup/>. Earth Engine is free for
-noncommercial, research, education, and nonprofit use. Registration
-links your Google account to a Cloud project (its ID is what you pass as
-`project`).
+noncommercial, research, education and nonprofit use, and registration
+gives you the Cloud project ID to pass as `project`.
 
-**The authentication is a browser click, not a code to paste.** On a
-desktop or laptop, `setup_gee()` opens your browser, you click
-**Allow**, and the credential is captured automatically over a local
-loopback port (`auth_mode = "localhost"`). Nothing is copied or pasted,
-and the saved credentials do not expire with normal use.
+Signing in opens your browser, where you click **Allow**. The Earth
+Engine client stores the resulting credentials in its own configuration
+folder, as it does for every tool that uses Earth Engine. AlphaSDM saves
+only the project ID, in `tools::R_user_dir("AlphaSDM", "config")`.
 
-Re-running `setup_gee()` when you are already connected is a harmless
-no-op; it detects the working credentials and returns immediately.
+The Earth Engine Python client (`earthengine-api`) is provided through
+reticulate, which sets up a Python environment for it the first time it
+is needed, unless you have pointed reticulate at a Python of your own.
+
+## Examples
+
+``` r
+if (FALSE) { # \dontrun{
+# Needs an Earth Engine account and an interactive session.
+setup_gee(project = "my-ee-project")
+} # }
+```

@@ -26,3 +26,19 @@ A named list: \`cbi\`, \`auc_roc\`, \`auc_prg\`, \`tss\`, \`ba\` and
 within one call, since every metric except \`cor\` depends on the
 ranking alone. When either class is empty the list is filled with the
 no-skill values.
+
+## Examples
+
+``` r
+set.seed(1)
+presences <- rbeta(50, 4, 2)
+absences  <- rbeta(200, 2, 4)
+str(calculate_classifier_metrics(presences, absences))
+#> List of 6
+#>  $ cbi    : num 0.988
+#>  $ auc_roc: num 0.895
+#>  $ auc_prg: num 0.908
+#>  $ tss    : num 0.64
+#>  $ ba     : num 0.82
+#>  $ cor    : num 0.59
+```

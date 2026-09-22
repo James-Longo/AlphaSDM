@@ -9,11 +9,11 @@
 ## Connect to Earth Engine
 
 - [`setup_gee()`](https://james-longo.github.io/AlphaSDM/reference/setup_gee.md)
-  : Set Up Google Earth Engine for AlphaSDM (one-time)
+  : Connect AlphaSDM to Google Earth Engine (one-time)
 - [`gee_status()`](https://james-longo.github.io/AlphaSDM/reference/gee_status.md)
-  : Report the Google Earth Engine Connection Status
+  : Report the Google Earth Engine connection status
 - [`clear_gee_credentials()`](https://james-longo.github.io/AlphaSDM/reference/clear_gee_credentials.md)
-  : Clear All GEE Credentials and Configuration
+  : Forget the saved Earth Engine project, and optionally sign out
 
 ## Prepare data
 

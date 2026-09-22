@@ -18,3 +18,10 @@ sdm_verbose(verbose = TRUE)
 ## Value
 
 \`verbose\`, invisibly. Called for its effect on package state.
+
+## Examples
+
+``` r
+sdm_verbose(FALSE)   # silence progress messages
+sdm_verbose(TRUE)
+```
