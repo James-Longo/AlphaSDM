@@ -5,6 +5,6 @@ bibentry(
   title    = "AlphaSDM: Species Distribution Modeling using Alpha Earth Embeddings",
   author   = person("James", "Longo"),
   year     = "2026",
-  note     = "R package version 0.1.0",
+  note     = "R package version 0.1.4",
   url      = "https://github.com/James-Longo/AlphaSDM"
 )
