@@ -1,0 +1,150 @@
+# Evaluate SDM models on Alpha Earth embeddings
+
+Trains the model ensemble on Google Earth Engine and scores an
+independent set of coordinates. Training data must contain absences:
+real ones, or pseudo-absences from \[generate_pseudo_absences()\].
+Presence-only input is rejected with directions.
+
+## Usage
+
+``` r
+evaluate_models(
+  data,
+  predict_coords = NULL,
+  scale = 10,
+  methods = NULL,
+  aoi_year = NULL,
+  bg_ratio = NULL,
+  bg_replicates = TRUE,
+  balance_trees = TRUE,
+  n_trees = 100L,
+  min_leaf_population = 5L,
+  bag_fraction = 0.5,
+  shrinkage = 0.005,
+  max_nodes = 6L,
+  variables_per_split = NULL,
+  svm_type = "EPSILON_SVR",
+  svm_kernel = "RBF",
+  svm_cost = 10,
+  svm_gamma = 0.05,
+  maxent_beta = 1,
+  maxent_features = "auto",
+  knn_k = NULL,
+  knn_search_method = NULL,
+  knn_metric = NULL,
+  async = FALSE,
+  persist_classifier = FALSE,
+  gee_project = NULL,
+  options = list()
+)
+```
+
+## Arguments
+
+- data:
+
+  Data frame of training records with \`longitude\`, \`latitude\`,
+  \`year\` and a \`present\` column (1 = presence; include 0 rows to
+  supply real absences).
+
+- predict_coords:
+
+  Data frame of coordinates to score (required). Include a \`present\`
+  column to compute evaluation metrics on it.
+
+- scale:
+
+  Embedding resolution in metres (default 10, the native resolution).
+
+- methods:
+
+  Character vector of models to ensemble. Defaults to \`c("svm", "rf",
+  "gbt")\`; also accepts \`maxent\`, \`glm\` (logistic regression fitted
+  server-side by IRLS with equal total class weights), \`similarity\`,
+  \`knn\`, \`cart\`, \`mindist\`. MaxEnt and glm follow the
+  regression-family recipe of Barbet-Massin et al. (2012): a large
+  RANDOM pseudo-absence set suits them best (see
+  \`?generate_pseudo_absences\`).
+
+- aoi_year:
+
+  Year of the Alpha Earth mosaic to sample (default 2023).
+
+- bg_ratio:
+
+  Optional absence:presence ratio for the balanced background pool (the
+  methods whose registry entry declares \`pool = "balanced"\`).
+  Overrides \`balance_trees\` when set.
+
+- bg_replicates:
+
+  Logical (default TRUE). Train the balanced-pool methods (rf, gbt, knn)
+  on k = min(10, ceil(10000/pool size)) replicate thinned subsets of the
+  absences and average their predictions (Barbet-Massin et al. 2012,
+  Table 1: several runs when few pseudo-absences are used). Requires
+  \`bg_ratio\` thinning to be active; methods on the full pool are never
+  replicated.
+
+- balance_trees:
+
+  Logical (default \`TRUE\`). When \`TRUE\`, rf/gbt and knn train on a
+  balanced 1:1 background while svm/maxent use the full background;
+  \`FALSE\` gives the trees all background points.
+
+- n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes,
+  variables_per_split:
+
+  Tree-model (rf/gbt) hyperparameters.
+
+- svm_type, svm_kernel, svm_cost, svm_gamma:
+
+  libsvm hyperparameters (default EPSILON_SVR / RBF / cost 10 / gamma
+  0.05).
+
+- maxent_beta, maxent_features:
+
+  MaxEnt regularisation multiplier and feature classes (\`"auto"\` or a
+  combination of L/Q/H/P/T).
+
+- knn_k:
+
+  Neighbours for kNN (default 15). Also fixes the output resolution: the
+  surface can take only \`k + 1\` distinct values. Raise alongside
+  \`bg_ratio\`.
+
+- knn_search_method:
+
+  kNN neighbour search: \`"AUTO"\`, \`"LINEAR_SEARCH"\`, \`"KD_TREE"\`
+  or \`"COVER_TREE"\`. Note \`KD_TREE\` ignores \`knn_metric\`.
+
+- knn_metric:
+
+  kNN distance metric: \`"EUCLIDEAN"\`, \`"MAHALANOBIS"\`,
+  \`"MANHATTAN"\` or \`"BRAYCURTIS"\`. Only honoured for search methods
+  that use it.
+
+- async:
+
+  Logical; use asynchronous GEE export for large prediction sets.
+
+- persist_classifier:
+
+  Logical (default \`FALSE\`); persist internally-persistable
+  classifiers (RF/CART) to a temporary GEE asset before scoring.
+
+- gee_project:
+
+  Optional Earth Engine project override (normally set via
+  \[setup_gee()\]).
+
+- options:
+
+  Named list of advanced options; \`batch_size\` sets how many
+  coordinates are scored per Earth Engine request (default 4000).
+
+## Value
+
+A list containing \`methods\`, \`model_metadata\`, \`point_predictions\`
+and, when \`predict_coords\` has a \`present\` column, per-model and
+ensemble \`metrics\`. For cross-validation, split the data yourself and
+call this once per fold with the fold's holdout as \`predict_coords\`.

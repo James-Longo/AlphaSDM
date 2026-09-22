@@ -1,0 +1,65 @@
+# Standardize occurrence records for AlphaSDM
+
+Standardizes an input data frame for the AlphaSDM pipeline: renames the
+coordinate, year and presence columns to the package's lowercase names,
+drops everything else, and filters to the years Alpha Earth covers.
+
+## Usage
+
+``` r
+format_data(data, coords, year, presence = NULL, species = NULL, label = NULL)
+```
+
+## Arguments
+
+- data:
+
+  A data frame of survey records. Coordinates must be longitude and
+  latitude in decimal degrees on WGS84 (EPSG:4326), the system GPS units
+  and most occurrence databases (GBIF, eBird) report in. A data frame
+  carries no CRS information, so nothing can be reprojected on your
+  behalf: projected coordinates such as UTM metres are rejected, and
+  coordinates in another geographic datum are not detectable and will be
+  treated as WGS84. Reproject with \`sf::st_transform(x, 4326)\` before
+  formatting if needed.
+
+- coords:
+
+  Character vector of length 2 naming the longitude and latitude
+  columns, longitude first: \`c(longitude_col, latitude_col)\`. Values
+  must be decimal degrees on WGS84 (EPSG:4326); see Details.
+
+- year:
+
+  A character string naming the year or date column. Dates are reduced
+  to their year. Records outside the Alpha Earth window are dropped.
+
+- presence:
+
+  Optional. Name of the presence column, holding 1 for presence and 0
+  for absence. Omit it to treat every record as a presence.
+
+- species:
+
+  Optional. Name of the species column.
+
+- label:
+
+  Optional. Short name for this data set, used only to label the console
+  summary line, for example "Training" or "Evaluation".
+
+## Value
+
+A data frame with \`longitude\`, \`latitude\`, \`year\` and \`present\`
+columns, ready for \[evaluate_models()\] or \[generate_map()\]. Rows are
+ordered presences first. Fewer rows come back than went in whenever
+records are dropped for coverage, missing values or duplication; each
+drop is reported as a message.
+
+## Details
+
+The embeddings are annual. Records dated outside the covered window are
+dropped and the number removed is reported; set them to the first
+covered year to keep them instead. The window is read from the Earth
+Engine collection, so it tracks each annual release. This means
+\`format_data()\` needs a connection: run \[setup_gee()\] first.

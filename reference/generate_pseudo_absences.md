@@ -1,0 +1,129 @@
+# Generate pseudo-absences for presence-only data
+
+Presence-only records cannot be modelled directly: every method in
+AlphaSDM needs absence or background data, and how that background is
+placed is a modelling decision with real consequences (Barbet-Massin et
+al. 2012, \*Methods in Ecology and Evolution\* 3:327-338). This function
+makes that decision explicit. It draws pseudo-absences inside \`aoi\`
+under the strategy you choose, reports every threshold it used, and
+returns your presences and the new absences as one data frame ready for
+\[evaluate_models()\] or \[generate_map()\].
+
+## Usage
+
+``` r
+generate_pseudo_absences(
+  data,
+  aoi,
+  strategy,
+  n = 10000L,
+  radius_m = NULL,
+  env_threshold = NULL,
+  aoi_year = NULL,
+  scale = 10,
+  seed = 0L,
+  gee_project = NULL
+)
+```
+
+## Arguments
+
+- data:
+
+  Formatted presence records from \[format_data()\] (standard
+  \`longitude\`, \`latitude\`, \`year\`, \`present\` columns, all
+  presences). The workflow is format first, then add absences:
+
+      pres <- format_data(obs, coords = c("lon", "lat"), year = "yr")
+      data <- generate_pseudo_absences(pres, aoi = ..., strategy = ...)
+      evaluate_models(data)
+
+- aoi:
+
+  Where absences may be placed: an \`ee.Geometry\`, a \`list(lon, lat,
+  radius)\`, a path to a vector file, or the string \`"bbox"\` to use
+  the presence bounding box (an explicit choice, not a silent default —
+  a bounding box is rarely the right availability frame for clustered
+  records).
+
+- strategy:
+
+  One of \`"random"\`, \`"disk"\`, \`"envelope"\`, \`"combined"\`. No
+  default: this is the modelling decision.
+
+- n:
+
+  Number of pseudo-absences (default 10000, Barbet-Massin et al. 2012;
+  use about the presence count for \`"combined"\` feeding tree methods).
+
+- radius_m:
+
+  Disk radius in metres; NULL estimates it from the
+  embedding-autocorrelation range and reports it.
+
+- env_threshold:
+
+  Mahalanobis envelope threshold; NULL uses the bias-corrected presence
+  maximum and reports it.
+
+- aoi_year:
+
+  Embedding year for placement checks (default: latest Alpha Earth
+  year).
+
+- scale:
+
+  Sampling scale in metres (default 10).
+
+- seed:
+
+  Integer seed for the draws.
+
+- gee_project:
+
+  Optional Earth Engine cloud project.
+
+## Value
+
+A data frame with \`longitude\`, \`latitude\`, \`year\`, \`present\`
+(your presences as 1, pseudo-absences as 0), ready for
+\[evaluate_models()\] or \[generate_map()\] directly, carrying the
+settings used in \`attr(, "pa_settings")\`.
+
+## Details
+
+Strategies, following Barbet-Massin et al. (2012):
+
+- \`"random"\`:
+
+  Uniform over the AOI. Their recommendation for regression-style
+  methods and MaxEnt (with \`n = 10000\`). MaxEnt is not in the default
+  ensemble for exactly this reason: give it its own random set and run
+  \`methods = "maxent"\` separately.
+
+- \`"disk"\`:
+
+  Their "2-degree-far": only beyond a distance from every presence.
+  \`radius_m = NULL\` estimates the distance at which embedding
+  similarity to the presences decays to the regional baseline, and
+  reports it; pass a number to choose it yourself.
+
+- \`"envelope"\`:
+
+  Their SRE, in embedding space: only outside the presence environmental
+  envelope, measured as Mahalanobis distance to the presence cloud.
+  \`env_threshold = NULL\` uses the bias-corrected maximum distance
+  among the presences themselves.
+
+- \`"combined"\`:
+
+  Both exclusions at once. Their recommendation for classification and
+  machine-learning methods (rf, gbt) with \`n\` near the number of
+  presences; validated here on Bicknell's Thrush (real-absence AUC) and
+  \*Prunus africana\* (Boyce index).
+
+Supply is guaranteed: every strategy redraws until \`n\` points with
+satellite coverage survive the active exclusions; \`"disk"\` and
+\`"combined"\` halve the radius stepwise rather than come up short (the
+envelope never relaxes, since points inside it are the likely false
+absences the strategy exists to avoid).

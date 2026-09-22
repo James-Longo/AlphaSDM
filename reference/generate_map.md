@@ -1,0 +1,154 @@
+# Generate an SDM suitability map
+
+Trains the model ensemble on Google Earth Engine and exports a
+continuous habitat-suitability raster over an area of interest, one
+GeoTIFF per model plus the ensemble. The maps download directly from
+Earth Engine in tiles; only a map Earth Engine will not compute tile by
+tile goes through its batch system and Google Drive, which is slower.
+
+## Usage
+
+``` r
+generate_map(
+  data,
+  aoi,
+  scale = 10,
+  output_dir = getwd(),
+  methods = NULL,
+  ensemble = TRUE,
+  aoi_year = NULL,
+  bg_ratio = NULL,
+  bg_replicates = TRUE,
+  balance_trees = TRUE,
+  n_trees = 100L,
+  min_leaf_population = 5L,
+  bag_fraction = 0.5,
+  shrinkage = 0.005,
+  max_nodes = 6L,
+  variables_per_split = NULL,
+  svm_type = "EPSILON_SVR",
+  svm_kernel = "RBF",
+  svm_cost = 10,
+  svm_gamma = 0.05,
+  maxent_beta = 1,
+  maxent_features = "auto",
+  knn_k = NULL,
+  knn_search_method = NULL,
+  knn_metric = NULL,
+  persist_classifier = FALSE,
+  gee_project = NULL
+)
+```
+
+## Arguments
+
+- data:
+
+  Data frame of training records with \`longitude\`, \`latitude\`,
+  \`year\` and a \`present\` column (1 = presence; include 0 rows to
+  supply real absences).
+
+- aoi:
+
+  Area of interest: a pre-built \`ee.Geometry\`, a list with
+  \`lon\`/\`lat\`/\`radius\`, a path to a vector file readable by
+  \[sf::st_read()\], or \`"bbox"\` for the bounding box of \`data\`
+  (presences and absences).
+
+- scale:
+
+  Output resolution in metres (default 10).
+
+- output_dir:
+
+  Directory to write the GeoTIFF(s) to.
+
+- methods:
+
+  Character vector of models to ensemble. Defaults to \`c("svm", "rf",
+  "gbt")\`; also accepts \`maxent\`, \`glm\` (logistic regression fitted
+  server-side by IRLS with equal total class weights), \`similarity\`,
+  \`knn\`, \`cart\`, \`mindist\`. MaxEnt and glm follow the
+  regression-family recipe of Barbet-Massin et al. (2012): a large
+  RANDOM pseudo-absence set suits them best (see
+  \`?generate_pseudo_absences\`).
+
+- ensemble:
+
+  Logical; also export the ensemble mean map (default \`TRUE\`).
+
+- aoi_year:
+
+  Year of the Alpha Earth mosaic to sample (default 2023).
+
+- bg_ratio:
+
+  Optional absence:presence ratio for the balanced background pool (the
+  methods whose registry entry declares \`pool = "balanced"\`).
+  Overrides \`balance_trees\` when set.
+
+- bg_replicates:
+
+  Logical (default TRUE). Train the balanced-pool methods (rf, gbt, knn)
+  on k = min(10, ceil(10000/pool size)) replicate thinned subsets of the
+  absences and average their predictions (Barbet-Massin et al. 2012,
+  Table 1: several runs when few pseudo-absences are used). Requires
+  \`bg_ratio\` thinning to be active; methods on the full pool are never
+  replicated.
+
+- balance_trees:
+
+  Logical (default \`TRUE\`). When \`TRUE\`, rf/gbt and knn train on a
+  balanced 1:1 background while svm/maxent use the full background;
+  \`FALSE\` gives the trees all background points.
+
+- n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes,
+  variables_per_split:
+
+  Tree-model (rf/gbt) hyperparameters.
+
+- svm_type, svm_kernel, svm_cost, svm_gamma:
+
+  libsvm hyperparameters (default EPSILON_SVR / RBF / cost 10 / gamma
+  0.05).
+
+- maxent_beta, maxent_features:
+
+  MaxEnt regularisation multiplier and feature classes (\`"auto"\` or a
+  combination of L/Q/H/P/T).
+
+- knn_k:
+
+  Neighbours for kNN (default 15). Also fixes the output resolution: the
+  surface can take only \`k + 1\` distinct values. Raise alongside
+  \`bg_ratio\`.
+
+- knn_search_method:
+
+  kNN neighbour search: \`"AUTO"\`, \`"LINEAR_SEARCH"\`, \`"KD_TREE"\`
+  or \`"COVER_TREE"\`. Note \`KD_TREE\` ignores \`knn_metric\`.
+
+- knn_metric:
+
+  kNN distance metric: \`"EUCLIDEAN"\`, \`"MAHALANOBIS"\`,
+  \`"MANHATTAN"\` or \`"BRAYCURTIS"\`. Only honoured for search methods
+  that use it.
+
+- persist_classifier:
+
+  Logical; whether to store internally-persistable classifiers
+  (currently RF/CART) as a temporary GEE asset before mapping. Defaults
+  to \`FALSE\`: map exports run through Earth Engine's batch system,
+  which evaluates the model inline, so storing it first adds a wait
+  without changing the result. Ignored for methods that cannot persist
+  (SVM/GBT/MaxEnt).
+
+- gee_project:
+
+  Optional Earth Engine project override (normally set via
+  \[setup_gee()\]).
+
+## Value
+
+A named list of output file paths, with one \`\<method\>\_map\` entry
+per model, plus \`ensemble_map\` when more than one method is requested.
