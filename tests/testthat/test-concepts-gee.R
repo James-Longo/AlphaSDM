@@ -53,14 +53,14 @@ test_that("derive_concepts runs end to end on a small region", {
   set.seed(11)
   # A handful of points near Plattsburgh NY; similarity keeps the fit light
   # and gives projection a linear direction to test.
-  pts <- data.frame(longitude = stats::runif(12, -73.65, -73.55),
-                    latitude  = stats::runif(12, 44.45, 44.55),
-                    year = 2023, present = 1)
+  pts <- data.frame(longitude = stats::runif(24, -73.65, -73.55),
+                    latitude  = stats::runif(24, 44.45, 44.55),
+                    year = 2023, present = rep(c(1, 0), each = 12))
   aoi <- ee$Geometry$Rectangle(c(-73.7, 44.4, -73.5, 44.6))
   sae <- make_test_sae()
 
   fit <- suppressMessages(
-    evaluate_models(pts, methods = "similarity", cv_folds = 0L,
+    evaluate_models(pts, methods = "similarity",
                     predict_coords = pts, scale = 10))
   res <- suppressMessages(
     derive_concepts(fit, method = c("selection", "projection", "ablation"),

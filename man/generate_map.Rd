@@ -39,7 +39,8 @@ generate_map(
 and a `present` column (1 = presence; include 0 rows to supply real absences).}
 
 \item{aoi}{Area of interest: a pre-built `ee.Geometry`, a list with `lon`/`lat`/`radius`,
-or a path to a vector file readable by [sf::st_read()].}
+a path to a vector file readable by [sf::st_read()], or `"bbox"` for the
+bounding box of `data` (presences and absences).}
 
 \item{scale}{Output resolution in metres (default 10).}
 
@@ -77,7 +78,8 @@ the trees all background points.}
 \item{svm_type, svm_kernel, svm_cost, svm_gamma}{libsvm hyperparameters (default
 EPSILON_SVR / RBF / cost 10 / gamma 0.05).}
 
-\item{maxent_beta, maxent_features}{MaxEnt regularisation multiplier and feature classes.}
+\item{maxent_beta, maxent_features}{MaxEnt regularisation multiplier and feature
+classes (`"auto"` or a combination of L/Q/H/P/T).}
 
 \item{knn_k}{Neighbours for kNN (default 15). Also fixes the output resolution:
 the surface can take only `k + 1` distinct values. Raise alongside `bg_ratio`.}
@@ -103,5 +105,7 @@ A named list of output file paths, with one `<method>_map` entry per
 \description{
 Trains the model ensemble on Google Earth Engine and exports a continuous
 habitat-suitability raster over an area of interest, one GeoTIFF per model plus
-the ensemble. Export is Drive-free (tiled `getDownloadURL`).
+the ensemble. The maps download directly from Earth Engine in tiles; only a map
+Earth Engine will not compute tile by tile goes through its batch system and
+Google Drive, which is slower.
 }

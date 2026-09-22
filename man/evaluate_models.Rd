@@ -38,7 +38,7 @@ evaluate_models(
 \item{data}{Data frame of training records with `longitude`, `latitude`, `year`
 and a `present` column (1 = presence; include 0 rows to supply real absences).}
 
-\item{predict_coords}{Optional data frame of coordinates to score. Include a
+\item{predict_coords}{Data frame of coordinates to score (required). Include a
 `present` column to compute evaluation metrics on it.}
 
 \item{scale}{Embedding resolution in metres (default 10, the native resolution).}
@@ -53,9 +53,9 @@ a large RANDOM pseudo-absence set suits them best (see
 
 \item{aoi_year}{Year of the Alpha Earth mosaic to sample (default 2023).}
 
-\item{bg_ratio}{Optional absence:presence ratio; downsamples the balanced background
-pool (the methods whose registry entry declares `pool = "balanced"`) to
-`bg_ratio * n_presence`. Overrides `balance_trees` when set.}
+\item{bg_ratio}{Optional absence:presence ratio for the balanced background pool
+(the methods whose registry entry declares `pool = "balanced"`). Overrides
+`balance_trees` when set.}
 
 \item{bg_replicates}{Logical (default TRUE). Train the balanced-pool
 methods (rf, gbt, knn) on k = min(10, ceil(10000/pool size))
@@ -65,8 +65,8 @@ few pseudo-absences are used). Requires `bg_ratio` thinning to be
 active; methods on the full pool are never replicated.}
 
 \item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
-balanced 1:1 background while svm/maxent use the full background; set `FALSE`
-to train the trees on all background points too.}
+balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
+the trees all background points.}
 
 \item{n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes, variables_per_split}{Tree-model (rf/gbt) hyperparameters.}
 
@@ -87,9 +87,8 @@ the surface can take only `k + 1` distinct values. Raise alongside `bg_ratio`.}
 
 \item{async}{Logical; use asynchronous GEE export for large prediction sets.}
 
-\item{persist_classifier}{Logical; persist internally-persistable classifiers (RF/CART)
-to a temporary GEE asset. Defaults to `FALSE` here: cross-validation refits per fold,
-where per-fold persistence is pure overhead. (Map generation defaults it `TRUE`.)}
+\item{persist_classifier}{Logical (default `FALSE`); persist internally-persistable
+classifiers (RF/CART) to a temporary GEE asset before scoring.}
 
 \item{gee_project}{Optional Earth Engine project override (normally set via [setup_gee()]).}
 
@@ -104,8 +103,8 @@ A list containing `methods`, `model_metadata`,
   holdout as `predict_coords`.
 }
 \description{
-Trains the model ensemble on Google Earth Engine and either cross-validates it
-and/or scores an independent set of coordinates. Training data must contain
+Trains the model ensemble on Google Earth Engine and scores an independent set
+of coordinates. Training data must contain
 absences: real ones, or pseudo-absences from [generate_pseudo_absences()].
 Presence-only input is rejected with directions.
 }

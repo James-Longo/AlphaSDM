@@ -1,9 +1,15 @@
 # ---- Configuration and credential helpers ----
 
+#' Path to the AlphaSDM config file holding the saved project id
+#' @noRd
+.alphasdm_config_file <- function() {
+    file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json")
+}
+
 #' Read saved GEE project ID from AlphaSDM config
 #' @noRd
 .read_saved_project <- function() {
-    f <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json")
+    f <- .alphasdm_config_file()
     if (!file.exists(f)) return(NULL)
     tryCatch(jsonlite::fromJSON(f)$gee_project, error = function(e) NULL)
 }
@@ -11,10 +17,9 @@
 #' Save GEE project ID to AlphaSDM config
 #' @noRd
 .save_project <- function(project) {
-    dir <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM")
-    dir.create(dir, showWarnings = FALSE, recursive = TRUE)
-    jsonlite::write_json(list(gee_project = project),
-                         file.path(dir, "config.json"), auto_unbox = TRUE)
+    f <- .alphasdm_config_file()
+    dir.create(dirname(f), showWarnings = FALSE, recursive = TRUE)
+    jsonlite::write_json(list(gee_project = project), f, auto_unbox = TRUE)
 }
 
 #' Path to the live GEE credentials file (the one the ee client reads)
@@ -54,7 +59,7 @@
     live <- .gee_live_cred_path(); if (!file.exists(live)) return(invisible(FALSE))
     dir.create(store, showWarnings = FALSE, recursive = TRUE)
     ok <- file.copy(live, file.path(store, "credentials"), overwrite = TRUE)
-    proj_cfg <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json")
+    proj_cfg <- .alphasdm_config_file()
     if (file.exists(proj_cfg)) file.copy(proj_cfg, file.path(store, "config.json"), overwrite = TRUE)
     invisible(ok)
 }
@@ -73,8 +78,8 @@
     ok <- file.copy(src, .gee_live_cred_path(), overwrite = TRUE)
     proj_src <- file.path(store, "config.json")
     if (file.exists(proj_src)) {
-        dir.create(file.path(Sys.getenv("HOME"), ".config", "AlphaSDM"), showWarnings = FALSE, recursive = TRUE)
-        file.copy(proj_src, file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json"), overwrite = TRUE)
+        dir.create(dirname(.alphasdm_config_file()), showWarnings = FALSE, recursive = TRUE)
+        file.copy(proj_src, .alphasdm_config_file(), overwrite = TRUE)
     }
     invisible(ok)
 }
@@ -166,7 +171,7 @@
 #' "service account" for a key file, or NA if no credentials are on disk.
 #' @noRd
 .gee_auth_type <- function() {
-    f <- file.path(Sys.getenv("HOME"), ".config", "earthengine", "credentials")
+    f <- .gee_live_cred_path()
     if (!file.exists(f)) return(NA_character_)
     info <- tryCatch(jsonlite::fromJSON(f), error = function(e) NULL)
     if (is.null(info)) return("unknown")
@@ -251,10 +256,6 @@
 #'   the Python install) requires you to restart R and re-run.
 #' @export
 setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
-    if (!requireNamespace("rgee", quietly = TRUE)) {
-        stop("The 'rgee' package is required. Install it with: install.packages('rgee')")
-    }
-
     # Python environment. If any interpreter reticulate can reach already has
     # earthengine-api, bind to it and install nothing. That skips the slow
     # rgee::ee_install() rebuild, and on a machine where reticulate cannot find a
@@ -420,19 +421,17 @@ setup_gee <- function(project = NULL, force = FALSE, auth_mode = NULL) {
 clear_gee_credentials <- function() {
     # WARNING: the four steps below delete stored credentials and configuration.
     # Clear rgee's own credentials.
-    if (requireNamespace("rgee", quietly = TRUE)) {
-        try(rgee::ee_clean_user_credentials(), silent = TRUE)
-    }
+    try(rgee::ee_clean_user_credentials(), silent = TRUE)
 
     # Clear the earthengine configuration directory.
-    ee_cfg <- file.path(Sys.getenv("HOME"), ".config", "earthengine")
+    ee_cfg <- dirname(.gee_live_cred_path())
     if (dir.exists(ee_cfg)) {
         unlink(ee_cfg, recursive = TRUE)
         sdm_done(sprintf("Removed: %s", ee_cfg))
     }
 
     # Clear the project id saved by this package.
-    config_file <- file.path(Sys.getenv("HOME"), ".config", "AlphaSDM", "config.json")
+    config_file <- .alphasdm_config_file()
     if (file.exists(config_file)) {
         unlink(config_file)
         sdm_done(sprintf("Removed: %s", config_file))
@@ -511,10 +510,6 @@ ensure_gee_authenticated <- function(project = NULL) {
     # Already initialised in this R session.
     if (isTRUE(getOption("AlphaSDM.gee_initialized"))) {
         return(TRUE)
-    }
-
-    if (!requireNamespace("rgee", quietly = TRUE)) {
-        stop("The 'rgee' package is required. Install it with: install.packages('rgee')")
     }
 
     # Restore credentials from the durable store when the live copy has been wiped,

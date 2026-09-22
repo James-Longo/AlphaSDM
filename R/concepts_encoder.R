@@ -3,8 +3,6 @@
 # (dev/02_train_sae.R) and ships as data; users only ever run the encoder as
 # image math on Earth Engine.
 
-# alphaearth_rescale() lives in gee_logic.R; every SAE consumer uses it.
-
 #' Band names for the m concept bands
 #' @noRd
 concept_band_names <- function(m) {
@@ -88,7 +86,7 @@ load_sae_weights <- function(path = NULL) {
 #' @return n x m activation matrix, columns named as the concept bands.
 #' @noRd
 sae_encode <- function(X, sae) {
-  X <- alphaearth_rescale(as.matrix(X))
+  X <- as.matrix(X)
   A <- sweep(X, 2L, sae$b_pre) %*% t(sae$W_enc)
   A <- sweep(A, 2L, sae$b_enc, `+`)
   A[A < 0] <- 0
@@ -156,10 +154,10 @@ ee_topk_zero <- function(acts, m, k) {
 #' @noRd
 ee_concept_activations <- function(image, sae, select_concepts = NULL) {
   ee <- reticulate::import("ee")
-  emb_cols <- sprintf("A%02d", 0:63)
+  emb_cols <- EMB_BANDS
   bands <- concept_band_names(sae$m)
 
-  centered <- alphaearth_rescale(image$select(emb_cols))$
+  centered <- image$select(emb_cols)$
     subtract(ee$Image$constant(as.list(unname(sae$b_pre)))$rename(emb_cols))
   arr <- centered$toArray()$toArray(1L)                          # 64 x 1
 

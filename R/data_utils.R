@@ -209,7 +209,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
     # reject presence-only input until then.
     if (all(result$present == 1)) {
         sdm_warn(paste0("Presence-only records: generate pseudo-absences ",
-                        "before modelling —"))
+                        "before modelling \u2014"))
         sdm_info("pa <- generate_pseudo_absences(this_data, aoi = ..., strategy = ...)",
                  indent = 1L)
     }

@@ -10,13 +10,15 @@
 #' @noRd
 is_gee_timeout <- function(e) {
   msg <- if (inherits(e, "condition")) conditionMessage(e) else as.character(e)
-  grepl("Computation timed out", msg, fixed = TRUE) ||
-    grepl("User memory limit exceeded", msg, fixed = TRUE) ||
-    grepl("Collection query aborted", msg, fixed = TRUE) ||
-    grepl("Too many concurrent aggregations", msg, fixed = TRUE) ||
-    grepl("computation took too long", msg, ignore.case = TRUE) ||
-    grepl("out of memory", msg, ignore.case = TRUE)
+  grepl(GEE_LIMIT_PATTERN, msg, ignore.case = TRUE)
 }
+
+#' Messages Earth Engine uses for a request that exceeded its compute budget
+#' @noRd
+GEE_LIMIT_PATTERN <- paste(c(
+  "Computation timed out", "User memory limit exceeded", "Collection query aborted",
+  "Too many concurrent aggregations", "computation took too long", "out of memory"),
+  collapse = "|")
 
 #' Resolve a writable Earth Engine folder for temporary exports
 #' @param project Earth Engine project id, or NULL to use the saved one.
@@ -99,12 +101,9 @@ ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
 #' may be absent on a young task; the caller gets whatever is available.
 #'
 #' @param op_name Operation name from `task$status()[["name"]]`.
-#' @param drive_prefix For a Drive export, the file name prefix. During the final
-#'   upload stage the file count is the only signal that still moves, so it is
-#'   counted to keep a working export from looking stalled.
 #' @return A string to append to a progress line, empty when nothing is reported yet.
 #' @noRd
-ee_task_progress <- function(op_name, drive_prefix = NULL) {
+ee_task_progress <- function(op_name) {
   if (is.null(op_name) || !nzchar(op_name)) return("")
   ee <- reticulate::import("ee")
   m <- tryCatch(ee$data$getOperation(op_name)$metadata, error = function(e) NULL)
@@ -122,29 +121,9 @@ ee_task_progress <- function(op_name, drive_prefix = NULL) {
   if (!is.null(pct)) bits <- c(bits, sprintf("%.1f%%", 100 * pct))
   eecu <- one(m$batchEecuUsageSeconds)
   if (!is.null(eecu)) bits <- c(bits, sprintf("%.0f EECU-s", eecu))
-  if (!is.null(drive_prefix)) {
-    fl <- tryCatch(drive_list_files(drive_prefix), error = function(e) NULL)
-    if (!is.null(fl) && nrow(fl))
-      bits <- c(bits, sprintf("%d tiles, %.1f GB written", nrow(fl),
-                              sum(fl$bytes, na.rm = TRUE) / 1024^3))
-  }
   if (!length(bits)) "" else paste0(" [", paste(bits, collapse = ", "), "]")
 }
 
-#' Poll an export task until it finishes
-#'
-#' Prints roughly one line a minute so a long export shows progress rather than
-#' sitting silent.
-#'
-#' @param handle A handle from `ee_start_fc_export()`.
-#' @param poll_seconds Seconds between status checks.
-#' @param max_minutes Overall limit. NULL, the default, waits for as long as the
-#'   task runs; Earth Engine ends its own tasks, so this does not wait forever.
-#'   Set ALPHASDM_MAX_WAIT_MINUTES for an unattended run that must not block.
-#' @param max_queue_minutes Give up if the task has not started within this long.
-#'   NULL, the default, waits: queueing is normal scheduling, not a fault.
-#' @return The asset id. Errors when the task fails, is cancelled, or gives up.
-#' @noRd
 #' Print the live task-monitor links, once per session
 #'
 #' Batch tasks can sit in Google's queue for hours when the monthly EECU
@@ -164,6 +143,20 @@ sdm_task_monitor_hint <- function(project = NULL) {
   invisible()
 }
 
+#' Poll an export task until it finishes
+#'
+#' Prints roughly one line a minute so a long export shows progress rather than
+#' sitting silent.
+#'
+#' @param handle A handle from `ee_start_fc_export()`.
+#' @param poll_seconds Seconds between status checks.
+#' @param max_minutes Overall limit. NULL, the default, waits for as long as the
+#'   task runs; Earth Engine ends its own tasks, so this does not wait forever.
+#'   Set ALPHASDM_MAX_WAIT_MINUTES for an unattended run that must not block.
+#' @param max_queue_minutes Give up if the task has not started within this long.
+#'   NULL, the default, waits: queueing is normal scheduling, not a fault.
+#' @return The asset id. Errors when the task fails, is cancelled, or gives up.
+#' @noRd
 ee_await_export <- function(handle, poll_seconds = 15, max_minutes = NULL,
                             max_queue_minutes = NULL) {
   sdm_task_monitor_hint()
@@ -201,7 +194,7 @@ ee_await_export <- function(handle, poll_seconds = 15, max_minutes = NULL,
     if (!identical(state, last_state) || elapsed - last_beat >= 60) {
       lbl <- switch(state, READY = "queued", RUNNING = "running", tolower(state))
       sdm_info(sprintf("export %s server-side ...%s (%s elapsed)", lbl,
-                       ee_task_progress(st[["name"]], handle$drive_prefix),
+                       ee_task_progress(st[["name"]]),
                        if (elapsed < 600) sprintf("%.0fs", elapsed)
                        else sprintf("%.0f min", elapsed / 60)), indent = 2L)
       last_beat <- elapsed; last_state <- state

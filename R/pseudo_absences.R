@@ -102,10 +102,7 @@ generate_pseudo_absences <- function(data, aoi, strategy,
   yrs <- alphaearth_year_range()
   if (is.null(aoi_year)) aoi_year <- yrs[2]
 
-  aoi_geom <- if (identical(aoi, "bbox")) {
-    ee$Geometry$Rectangle(c(min(pres$longitude), min(pres$latitude),
-                            max(pres$longitude), max(pres$latitude)))
-  } else resolve_aoi(aoi, ee)
+  aoi_geom <- resolve_aoi(aoi, ee, data = pres)
 
   use_geo <- strategy %in% c("disk", "combined")
   use_env <- strategy %in% c("envelope", "combined")
@@ -122,7 +119,7 @@ generate_pseudo_absences <- function(data, aoi, strategy,
                                years = as.list(unique(as.integer(
                                  c(pres$year, aoi_year)))))
     pe <- read_fc_paged(ps$limit(2000L))$features
-    emb_cols <- sprintf("A%02d", 0:63)
+    emb_cols <- EMB_BANDS
     pres_emb <- do.call(rbind, lapply(pe, function(f)
       vapply(emb_cols, function(cn) {
         v <- f$properties[[cn]]

@@ -1,11 +1,3 @@
-test_that("the shared rescale is the identity", {
-  # The whole package reads raw asset values; if this convention ever changes,
-  # the SAE weights must be retrained on the rescaled sample and this test
-  # updated with them.
-  x <- matrix(stats::runif(64, -1, 1), 1, 64)
-  expect_identical(alphaearth_rescale(x), x)
-})
-
 test_that("concept band names are zero-padded and unique", {
   expect_equal(concept_band_names(512)[1], "C001")
   expect_equal(concept_band_names(512)[512], "C512")

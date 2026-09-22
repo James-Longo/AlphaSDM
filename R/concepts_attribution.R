@@ -144,10 +144,10 @@ ee_region_means <- function(img, region, scale, project = NULL) {
 ablation_scores <- function(model_res, sae, concept_ids, year, region, scale,
                             project = NULL, maps = FALSE) {
   ee <- reticulate::import("ee")
-  emb_cols <- sprintf("A%02d", 0:63)
+  emb_cols <- EMB_BANDS
   bands <- concept_band_names(sae$m)
 
-  emb <- alphaearth_rescale(get_embedding_image(year))
+  emb <- get_embedding_image(year)
   act <- ee_concept_activations(emb, sae, select_concepts = concept_ids)
   base_pred <- predict_gee_map(model_res, emb)
 
@@ -255,21 +255,15 @@ derive_concepts <- function(sdm, method = "selection",
     sdm_section("Concept attribution: selection")
     pres_df <- ctx$data[ctx$data$present == 1,
                         c("longitude", "latitude", "year"), drop = FALSE]
-    n_bg <- if (is.null(ctx$count)) nrow(pres_df) else as.integer(ctx$count)
+    n_bg <- nrow(pres_df)
     sdm_info(sprintf("Sampling concept activations at %d presences ...", nrow(pres_df)),
              indent = 1L)
     pres_mat <- sample_concept_activations(pres_df, sae, ctx$scale, ctx$gee_project)
 
     sdm_info(sprintf("Drawing and sampling %d background points ...", n_bg), indent = 1L)
-    ee <- reticulate::import("ee")
     # Selection scores compare use against AVAILABILITY, so the background
     # stays a plain random draw; exclusion would change the estimand.
-    bg_fc <- generate_background_fc_gee(yr, n_bg, reg)$fc
-    bg_info <- retry_curl_download(bg_fc$getInfo())
-    bg_df <- do.call(rbind, lapply(bg_info$features, function(f) {
-      data.frame(longitude = f$geometry$coordinates[[1]],
-                 latitude  = f$geometry$coordinates[[2]], year = yr)
-    }))
+    bg_df <- generate_background_fc_gee(yr, n_bg, reg)$df
     bg_mat <- sample_concept_activations(bg_df, sae, ctx$scale, ctx$gee_project)
 
     n_na <- sum(!stats::complete.cases(pres_mat)) + sum(!stats::complete.cases(bg_mat))

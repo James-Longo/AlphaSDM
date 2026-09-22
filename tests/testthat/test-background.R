@@ -19,7 +19,7 @@ test_that("envelope correction widens with fewer presences", {
   expect_gt(gap(30), gap(1000))
 })
 
-test_that("legacy path requires no presence data and keeps the FC contract", {
+test_that("a plain random draw needs no presence data", {
   skip_if_not(identical(Sys.getenv("ALPHASDM_LIVE_TESTS"), "1"),
               "live GEE test")
   ensure_gee_authenticated()
@@ -27,8 +27,7 @@ test_that("legacy path requires no presence data and keeps the FC contract", {
   reg <- ee$Geometry$Rectangle(c(-66.5, 46.5, -66.4, 46.6))
   bg <- generate_background_fc_gee(2023L, 25L, reg)
   expect_true(is.na(bg$radius_m))
-  info <- bg$fc$limit(3L)$getInfo()
-  expect_equal(info$features[[1]]$properties$present, 0L)
+  expect_true(all(bg$df$present == 0L))
 })
 
 test_that("format_data standardizes presence-only data with a directive", {
