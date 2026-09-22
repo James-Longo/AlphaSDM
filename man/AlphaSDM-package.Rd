@@ -13,13 +13,14 @@ Google Earth Engine.
 \seealso{
 Useful links:
 \itemize{
+  \item \url{https://james-longo.github.io/AlphaSDM/}
   \item \url{https://github.com/James-Longo/AlphaSDM}
   \item Report bugs at \url{https://github.com/James-Longo/AlphaSDM/issues}
 }
 
 }
 \author{
-\strong{Maintainer}: James Longo \email{james.longo.birds@gmail.com}
+\strong{Maintainer}: James Longo \email{james.longo.birds@gmail.com} [copyright holder]
 
 }
 \keyword{internal}

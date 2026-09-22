@@ -30,7 +30,7 @@ evaluate_models(data)
 \item{aoi}{Where absences may be placed: an `ee.Geometry`, a
 `list(lon, lat, radius)`, a path to a vector file, or the string
 `"bbox"` to use the presence bounding box (an explicit choice, not a
-silent default — a bounding box is rarely the right availability
+silent default; a bounding box is rarely the right availability
 frame for clustered records).}
 
 \item{strategy}{One of `"random"`, `"disk"`, `"envelope"`,
@@ -97,4 +97,12 @@ satellite coverage survive the active exclusions; `"disk"` and
 `"combined"` halve the radius stepwise rather than come up short (the
 envelope never relaxes, since points inside it are the likely false
 absences the strategy exists to avoid).
+}
+\examples{
+\dontrun{
+pres <- format_data(records, coords = c("lon", "lat"), year = "year")
+occ  <- generate_pseudo_absences(pres, aoi = "bbox", strategy = "combined",
+                                 n = nrow(pres))
+table(occ$present)
+}
 }

@@ -27,3 +27,9 @@ A single number in [-1, 1], the Spearman correlation between window
 Measures how far the ratio of predicted to expected presences rises with
 suitability. A well calibrated model gives a value near 1, a random one near 0.
 }
+\examples{
+set.seed(1)
+background <- runif(500)
+presences  <- rbeta(50, 4, 2)   # presences sit at higher scores
+calculate_cbi(presences, c(presences, background))
+}

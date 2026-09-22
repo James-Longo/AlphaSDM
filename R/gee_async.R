@@ -26,7 +26,7 @@ GEE_LIMIT_PATTERN <- paste(c(
 #' @noRd
 async_asset_root <- function(project = NULL) {
   ee <- reticulate::import("ee")
-  if (is.null(project) || !nzchar(project)) project <- .read_saved_project()
+  project <- .resolve_project(project)
   if (!is.null(project) && nzchar(project)) return(sprintf("projects/%s/assets", project))
 
   # Last resort. On a Cloud project ee.data.getAssetRoots() returns the project's
@@ -133,7 +133,7 @@ ee_task_progress <- function(op_name) {
 sdm_task_monitor_hint <- function(project = NULL) {
   if (isTRUE(.alphasdm_env$task_hint_printed)) return(invisible())
   .alphasdm_env$task_hint_printed <- TRUE
-  if (is.null(project) || !nzchar(project)) project <- .read_saved_project()
+  project <- .resolve_project(project)
   sdm_info("Watch batch tasks live: https://code.earthengine.google.com/tasks",
            indent = 1L)
   if (!is.null(project) && nzchar(project))
@@ -215,8 +215,13 @@ ee_await_export <- function(handle, poll_seconds = 15, max_minutes = NULL,
 #' @param since_minutes Only include tasks created within this many minutes.
 #' @return A data frame of tasks with `description`, `state` and `age_min`,
 #'   invisibly. Also prints them.
+#' @examples
+#' \dontrun{
+#' sdm_gee_status(active_only = FALSE)
+#' }
 #' @export
 sdm_gee_status <- function(active_only = TRUE, since_minutes = 180) {
+  ensure_gee_authenticated()
   ee  <- reticulate::import("ee")
   ops <- tryCatch(ee$data$listOperations(), error = function(e) NULL)
   if (is.null(ops) || length(ops) == 0) { sdm_info("No Earth Engine tasks found."); return(invisible(NULL)) }
@@ -351,9 +356,14 @@ ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_mi
 #' @param project Earth Engine project id, or NULL to use the saved one.
 #' @param quiet If TRUE, do not print anything.
 #' @return The asset ids removed, or the ones that would be, invisibly.
+#' @examples
+#' \dontrun{
+#' sdm_clean_assets(dry_run = TRUE)   # list what would be removed
+#' }
 #' @export
 sdm_clean_assets <- function(older_than_hours = 48, dry_run = FALSE,
                              project = NULL, quiet = FALSE) {
+  ensure_gee_authenticated(project)
   ee <- reticulate::import("ee")
   ensure_gee_authenticated(project = project)
   root <- async_asset_root(project)

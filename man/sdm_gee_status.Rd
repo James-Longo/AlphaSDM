@@ -21,3 +21,8 @@ Lists the export and classifier tasks AlphaSDM has started, with each task's sta
 and age. Call it from a second session to see what Earth Engine is doing while a
 long run is in progress.
 }
+\examples{
+\dontrun{
+sdm_gee_status(active_only = FALSE)
+}
+}

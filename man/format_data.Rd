@@ -49,3 +49,11 @@ them instead. The window is read from the Earth Engine collection, so it tracks
 each annual release. This means `format_data()` needs a connection: run
 [setup_gee()] first.
 }
+\examples{
+\dontrun{
+# Checks the years against the embeddings' coverage, so it needs Earth Engine.
+records <- data.frame(lon = c(-111.05, -111.10), lat = c(32.25, 32.30),
+                      year = 2022)
+pres <- format_data(records, coords = c("lon", "lat"), year = "year")
+}
+}

@@ -13,6 +13,11 @@
 #'   position and the predicted-to-expected ratio. Returns 0 when there are no
 #'   presence scores, when all scores are equal, or when the correlation is
 #'   undefined.
+#' @examples
+#' set.seed(1)
+#' background <- runif(500)
+#' presences  <- rbeta(50, 4, 2)   # presences sit at higher scores
+#' calculate_cbi(presences, c(presences, background))
 #' @export
 calculate_cbi <- function(pos_scores, all_scores, window_width = 0.1, n_bins = 100) {
   pos_scores <- pos_scores[!is.na(pos_scores)]
@@ -63,6 +68,11 @@ calculate_cbi <- function(pos_scores, all_scores, window_width = 0.1, n_bins = 1
 #'   single number. Scores need only be on a common scale within one call, since
 #'   every metric except `cor` depends on the ranking alone. When either class is
 #'   empty the list is filled with the no-skill values.
+#' @examples
+#' set.seed(1)
+#' presences <- rbeta(50, 4, 2)
+#' absences  <- rbeta(200, 2, 4)
+#' str(calculate_classifier_metrics(presences, absences))
 #' @export
 calculate_classifier_metrics <- function(scores_pos, scores_neg) {
   scores_pos <- scores_pos[!is.na(scores_pos)]

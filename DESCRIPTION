@@ -1,10 +1,10 @@
 Package: AlphaSDM
 Title: Species Distribution Models on AlphaEarth Satellite Embeddings
-Version: 0.1.4
+Version: 0.2.0
 Authors@R:
     person("James", "Longo",
            email = "james.longo.birds@gmail.com",
-           role = c("aut", "cre"))
+           role = c("aut", "cre", "cph"))
 Description: Fits species distribution models and maps habitat suitability
     at up to 10 m resolution from occurrence records alone, using the
     AlphaEarth Foundations satellite embeddings (Brown et al. 2025)
@@ -13,15 +13,17 @@ Description: Fits species distribution models and maps habitat suitability
     none need to be sourced or aligned. Provides tools to format occurrence
     records, place pseudo-absences, train and evaluate an ensemble of machine
     learning models, and export habitat-suitability rasters. Sampling, model
-    training and prediction all run on 'Google Earth Engine'.
+    training and prediction all run on 'Google Earth Engine', which requires a
+    free account for noncommercial use.
 License: MIT + file LICENSE
+SystemRequirements: Python (>= 3.9) with the 'earthengine-api' module;
+    'reticulate' installs it automatically when needed.
 Encoding: UTF-8
+Language: en-US
 RoxygenNote: 7.3.3
 Imports:
     jsonlite,
-    parallel,
-    reticulate,
-    rgee,
+    reticulate (>= 1.41),
     sf,
     stats,
     utils

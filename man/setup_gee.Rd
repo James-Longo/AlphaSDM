@@ -2,48 +2,48 @@
 % Please edit documentation in R/install.R
 \name{setup_gee}
 \alias{setup_gee}
-\title{Set Up Google Earth Engine for AlphaSDM (one-time)}
+\title{Connect AlphaSDM to Google Earth Engine (one-time)}
 \usage{
 setup_gee(project = NULL, force = FALSE, auth_mode = NULL)
 }
 \arguments{
-\item{project}{Google Cloud / Earth Engine project ID (e.g.,
-\code{"my-ee-project"}). If \code{NULL}, the saved project is reused, or you
-are prompted interactively.}
+\item{project}{Earth Engine (Google Cloud) project ID, for example
+\code{"my-ee-project"}. If \code{NULL}, the saved project is used, or you
+are asked for one.}
 
-\item{force}{If \code{TRUE}, re-authenticate even if valid credentials
-already exist.}
+\item{force}{If \code{TRUE}, sign in again even if valid credentials exist.}
 
-\item{auth_mode}{Optional override for the Earth Engine authorization flow,
-passed straight to \code{ee$Authenticate()}. Leave \code{NULL} (recommended)
-to let AlphaSDM choose: \code{"localhost"} (one-click, no paste) on a
-machine with a browser, and \code{"notebook"} on a detected headless/remote
-session. Set \code{"notebook"} yourself to force the paste-a-code flow, or
-\code{"gcloud"} if you use the gcloud CLI.}
+\item{auth_mode}{Earth Engine sign-in flow, passed to
+\code{ee.Authenticate()}. Leave \code{NULL} to use \code{"localhost"} (a
+browser click) where a browser is available and \code{"notebook"} (paste a
+code) where it is not. \code{"gcloud"} uses the gcloud command-line tool.}
 }
 \value{
-Invisibly \code{TRUE} on success, or \code{FALSE} if a step (such as
-  the Python install) requires you to restart R and re-run.
+Invisibly, \code{TRUE} once connected.
 }
 \description{
-Connects AlphaSDM to Google Earth Engine using your personal Google account.
-You only ever need to run this once per machine: it authenticates through a
-single browser click and saves long-lived credentials, so every future R
-session connects automatically with no further prompts.
+Signs in to Google Earth Engine with your own Google account and saves your
+project ID, so later R sessions connect on their own. Run it once per
+machine; running it again when already connected does nothing.
 }
 \details{
-\strong{Before you start} you need a free Earth Engine account. Sign up at
+You need a free Earth Engine account first: register at
 \url{https://earthengine.google.com/signup/}. Earth Engine is free for
-noncommercial, research, education, and nonprofit use. Registration links
-your Google account to a Cloud project (its ID is what you pass as
-\code{project}).
+noncommercial, research, education and nonprofit use, and registration gives
+you the Cloud project ID to pass as \code{project}.
 
-\strong{The authentication is a browser click, not a code to paste.} On a
-desktop or laptop, \code{setup_gee()} opens your browser, you click
-\strong{Allow}, and the credential is captured automatically over a local
-loopback port (\code{auth_mode = "localhost"}). Nothing is copied or pasted,
-and the saved credentials do not expire with normal use.
+Signing in opens your browser, where you click \strong{Allow}. The Earth
+Engine client stores the resulting credentials in its own configuration
+folder, as it does for every tool that uses Earth Engine. AlphaSDM saves only
+the project ID, in \code{tools::R_user_dir("AlphaSDM", "config")}.
 
-Re-running \code{setup_gee()} when you are already connected is a harmless
-no-op; it detects the working credentials and returns immediately.
+The Earth Engine Python client (\code{earthengine-api}) is provided through
+\pkg{reticulate}, which sets up a Python environment for it the first time
+it is needed, unless you have pointed reticulate at a Python of your own.
+}
+\examples{
+\dontrun{
+# Needs an Earth Engine account and an interactive session.
+setup_gee(project = "my-ee-project")
+}
 }

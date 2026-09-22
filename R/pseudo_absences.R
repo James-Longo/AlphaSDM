@@ -46,7 +46,7 @@
 #' @param aoi Where absences may be placed: an `ee.Geometry`, a
 #'   `list(lon, lat, radius)`, a path to a vector file, or the string
 #'   `"bbox"` to use the presence bounding box (an explicit choice, not a
-#'   silent default — a bounding box is rarely the right availability
+#'   silent default; a bounding box is rarely the right availability
 #'   frame for clustered records).
 #' @param strategy One of `"random"`, `"disk"`, `"envelope"`,
 #'   `"combined"`. No default: this is the modelling decision.
@@ -66,6 +66,13 @@
 #'   (your presences as 1, pseudo-absences as 0), ready for
 #'   [evaluate_models()] or [generate_map()] directly, carrying the
 #'   settings used in `attr(, "pa_settings")`.
+#' @examples
+#' \dontrun{
+#' pres <- format_data(records, coords = c("lon", "lat"), year = "year")
+#' occ  <- generate_pseudo_absences(pres, aoi = "bbox", strategy = "combined",
+#'                                  n = nrow(pres))
+#' table(occ$present)
+#' }
 #' @export
 generate_pseudo_absences <- function(data, aoi, strategy,
                                      n = 10000L,

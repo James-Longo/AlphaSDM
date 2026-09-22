@@ -2,24 +2,25 @@
 % Please edit documentation in R/install.R
 \name{gee_status}
 \alias{gee_status}
-\title{Report the Google Earth Engine Connection Status}
+\title{Report the Google Earth Engine connection status}
 \usage{
 gee_status(check_live = TRUE)
 }
 \arguments{
-\item{check_live}{If \code{TRUE} (default), perform a small server round-trip
-to confirm the credentials actually work, not just that they are on disk.}
+\item{check_live}{If \code{TRUE} (default), make a small request to confirm
+that the credentials work, not only that they are on disk.}
 }
 \value{
 Invisibly, a named list of the status fields.
 }
 \description{
-Prints a quick diagnostic of how AlphaSDM is connected to Earth Engine:
-which Python environment is bound, whether saved credentials exist and are
-the personal-account (OAuth) type, which project is configured, and whether a
-live connection succeeds. Use it to confirm setup or to troubleshoot.
+Prints whether the Earth Engine client is available, whether sign-in
+credentials exist and of which kind, which project is configured, and
+whether a live connection succeeds. To monitor running Earth Engine tasks,
+use \code{\link{sdm_gee_status}} instead.
 }
-\details{
-Note: this reports the *connection*. To monitor running server-side export
-tasks, use \code{\link{sdm_gee_status}} instead.
+\examples{
+\dontrun{
+gee_status()
+}
 }

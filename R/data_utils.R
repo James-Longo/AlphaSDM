@@ -33,6 +33,13 @@
 #'   ready for [evaluate_models()] or [generate_map()]. Rows are ordered presences
 #'   first. Fewer rows come back than went in whenever records are dropped for
 #'   coverage, missing values or duplication; each drop is reported as a message.
+#' @examples
+#' \dontrun{
+#' # Checks the years against the embeddings' coverage, so it needs Earth Engine.
+#' records <- data.frame(lon = c(-111.05, -111.10), lat = c(32.25, 32.30),
+#'                       year = 2022)
+#' pres <- format_data(records, coords = c("lon", "lat"), year = "year")
+#' }
 #' @export
 format_data <- function(data, coords, year, presence = NULL, species = NULL, label = NULL) {
     if (!isTRUE(.alphasdm_env$standardization_active)) {

@@ -16,3 +16,7 @@ sdm_verbose(verbose = TRUE)
 Every progress line the package prints is a message, not a warning or a print,
 so this suppresses all of them at once. Errors are unaffected.
 }
+\examples{
+sdm_verbose(FALSE)   # silence progress messages
+sdm_verbose(TRUE)
+}

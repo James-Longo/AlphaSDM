@@ -21,3 +21,9 @@ A named list: `cbi`, `auc_roc`, `auc_prg`, `tss`, `ba` and `cor`, each a
 \description{
 Calculate discrimination and calibration metrics
 }
+\examples{
+set.seed(1)
+presences <- rbeta(50, 4, 2)
+absences  <- rbeta(200, 2, 4)
+str(calculate_classifier_metrics(presences, absences))
+}

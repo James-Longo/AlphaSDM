@@ -15,6 +15,9 @@
 #'
 #' @param verbose Logical. FALSE suppresses all non-error output.
 #' @return `verbose`, invisibly. Called for its effect on package state.
+#' @examples
+#' sdm_verbose(FALSE)   # silence progress messages
+#' sdm_verbose(TRUE)
 #' @export
 sdm_verbose <- function(verbose = TRUE) {
   .alphasdm_env$verbose <- isTRUE(verbose)

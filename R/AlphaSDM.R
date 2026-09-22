@@ -329,6 +329,11 @@ cleanup_classifier_assets <- function(train_res) {
 #' @param gee_project Optional Earth Engine project override (normally set via [setup_gee()]).
 #' @return A named list of output file paths, with one `<method>_map` entry per
 #'   model, plus `ensemble_map` when more than one method is requested.
+#' @examples
+#' \dontrun{
+#' maps <- generate_map(occ, aoi = "bbox", scale = 30, output_dir = tempdir())
+#' maps$ensemble_map
+#' }
 #' @export
 generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          methods = NULL, ensemble = TRUE, aoi_year = NULL, bg_ratio = NULL,
@@ -497,6 +502,13 @@ predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year
 #'   column, per-model and ensemble `metrics`. For cross-validation,
 #'   split the data yourself and call this once per fold with the fold's
 #'   holdout as `predict_coords`.
+#' @examples
+#' \dontrun{
+#' # `occ` holds presences and absences, e.g. from generate_pseudo_absences().
+#' test <- sample(nrow(occ), round(nrow(occ) / 5))
+#' fit  <- evaluate_models(occ[-test, ], predict_coords = occ[test, ])
+#' fit$metrics$ensemble
+#' }
 #' @export
 evaluate_models <- function(data, predict_coords = NULL, scale = 10,
                             methods = NULL, aoi_year = NULL, bg_ratio = NULL,

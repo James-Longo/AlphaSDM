@@ -2,11 +2,21 @@
 % Please edit documentation in R/install.R
 \name{clear_gee_credentials}
 \alias{clear_gee_credentials}
-\title{Clear All GEE Credentials and Configuration}
+\title{Forget the saved Earth Engine project, and optionally sign out}
 \usage{
 clear_gee_credentials()
 }
+\value{
+Invisibly, \code{TRUE}.
+}
 \description{
-Removes all locally stored GEE credentials and the saved project ID.
-After calling this, you will need to run \code{\link{setup_gee}} again.
+Removes the project ID AlphaSDM saved. In an interactive session it then
+offers to delete the Earth Engine sign-in credentials as well; those are
+shared by every tool on this computer that uses Earth Engine, so they are
+kept unless you agree. Run \code{\link{setup_gee}} afterwards to reconnect.
+}
+\examples{
+\dontrun{
+clear_gee_credentials()
+}
 }

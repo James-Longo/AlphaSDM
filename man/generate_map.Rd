@@ -109,3 +109,9 @@ the ensemble. The maps download directly from Earth Engine in tiles; only a map
 Earth Engine will not compute tile by tile goes through its batch system and
 Google Drive, which is slower.
 }
+\examples{
+\dontrun{
+maps <- generate_map(occ, aoi = "bbox", scale = 30, output_dir = tempdir())
+maps$ensemble_map
+}
+}

@@ -108,3 +108,11 @@ of coordinates. Training data must contain
 absences: real ones, or pseudo-absences from [generate_pseudo_absences()].
 Presence-only input is rejected with directions.
 }
+\examples{
+\dontrun{
+# `occ` holds presences and absences, e.g. from generate_pseudo_absences().
+test <- sample(nrow(occ), round(nrow(occ) / 5))
+fit  <- evaluate_models(occ[-test, ], predict_coords = occ[test, ])
+fit$metrics$ensemble
+}
+}

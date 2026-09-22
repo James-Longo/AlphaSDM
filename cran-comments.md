@@ -1,0 +1,17 @@
+## R CMD check results
+
+0 errors | 0 warnings | 1 note
+
+* This is a new submission.
+
+## Notes for the reviewer
+
+* AlphaSDM runs its computation on Google Earth Engine, which needs a free
+  account and interactive sign-in. Examples that contact Earth Engine are
+  therefore wrapped in `\dontrun{}`; the examples that run offline
+  (`calculate_cbi()`, `calculate_classifier_metrics()`, `sdm_verbose()`) are
+  not. Tests that need Earth Engine skip unless explicitly enabled.
+* The vignette is precomputed from `vignettes/AlphaSDM.Rmd.orig`, so building
+  it needs no credentials or network access.
+* The Earth Engine Python client is declared with `reticulate::py_require()`;
+  the package itself installs no software.
