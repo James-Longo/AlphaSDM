@@ -68,13 +68,12 @@ decision (Barbet-Massin et al. 2012), so AlphaSDM asks you to choose a
 strategy. `"combined"` keeps them away from the presences both geographically
 and in embedding space, the recipe recommended for the tree models in the
 default ensemble. `aoi = "bbox"` draws them inside the bounding box of the
-presences, and `aoi_year` reads them from the same year's embeddings as the
-records.
+presences, and each is read from the same year's embeddings as the records.
 
 
 ``` r
 occ <- generate_pseudo_absences(pres, aoi = "bbox", strategy = "combined",
-                                n = nrow(pres), aoi_year = 2022)
+                                n = nrow(pres))
 table(occ$present)
 #> 
 #>   0   1 
@@ -142,7 +141,7 @@ pres_2023 <- format_data(gbif_records(2023),
                          coords = c("decimalLongitude", "decimalLatitude"),
                          year = "year")
 test <- generate_pseudo_absences(pres_2023, aoi = "bbox", strategy = "random",
-                                 n = 2000, aoi_year = 2023)
+                                 n = 2000)
 
 fit <- evaluate_models(data = occ, predict_coords = test)
 
@@ -154,10 +153,10 @@ knitr::kable(metrics[, c("auc_roc", "auc_prg", "tss", "cbi")], digits = 3)
 
 |         | auc_roc| auc_prg|   tss|   cbi|
 |:--------|-------:|-------:|-----:|-----:|
-|svm      |   0.807|   0.786| 0.486| 0.330|
-|rf       |   0.775|   0.726| 0.423| 0.906|
-|gbt      |   0.727|   0.661| 0.331| 0.737|
-|ensemble |   0.770|   0.723| 0.392| 0.725|
+|svm      |   0.807|   0.786| 0.486| 0.294|
+|rf       |   0.766|   0.705| 0.400| 0.911|
+|gbt      |   0.722|   0.639| 0.339| 0.745|
+|ensemble |   0.762|   0.703| 0.383| 0.730|
 
 
 
@@ -197,12 +196,12 @@ knitr::kable(svm[, c("auc_roc", "auc_prg", "tss", "cbi")], digits = 3)
 
 |                            | auc_roc| auc_prg|   tss|   cbi|
 |:---------------------------|-------:|-------:|-----:|-----:|
-|default (linear classifier) |   0.807|   0.786| 0.486| 0.330|
-|regression, RBF kernel      |   0.792|   0.722| 0.462| 0.959|
+|default (linear classifier) |   0.807|   0.786| 0.486| 0.294|
+|regression, RBF kernel      |   0.792|   0.722| 0.463| 0.959|
 
 
 
-The Boyce index rises from 0.33 to
+The Boyce index rises from 0.29 to
 0.96. The same `params` work in
 `generate_map()`. In a real study, choose settings using the training records,
 for example by cross-validation, rather than the test records.

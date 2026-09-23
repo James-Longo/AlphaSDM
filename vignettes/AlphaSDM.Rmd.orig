@@ -76,12 +76,11 @@ decision (Barbet-Massin et al. 2012), so AlphaSDM asks you to choose a
 strategy. `"combined"` keeps them away from the presences both geographically
 and in embedding space, the recipe recommended for the tree models in the
 default ensemble. `aoi = "bbox"` draws them inside the bounding box of the
-presences, and `aoi_year` reads them from the same year's embeddings as the
-records.
+presences, and each is read from the same year's embeddings as the records.
 
 ```{r pseudo-absences}
 occ <- generate_pseudo_absences(pres, aoi = "bbox", strategy = "combined",
-                                n = nrow(pres), aoi_year = 2022)
+                                n = nrow(pres))
 table(occ$present)
 ```
 
@@ -142,7 +141,7 @@ pres_2023 <- format_data(gbif_records(2023),
                          coords = c("decimalLongitude", "decimalLatitude"),
                          year = "year")
 test <- generate_pseudo_absences(pres_2023, aoi = "bbox", strategy = "random",
-                                 n = 2000, aoi_year = 2023)
+                                 n = 2000)
 
 fit <- evaluate_models(data = occ, predict_coords = test)
 

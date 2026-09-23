@@ -91,12 +91,12 @@ coords <- c("decimalLongitude", "decimalLatitude")
 # Fit on 2022 records with pseudo-absences
 pres <- format_data(gbif_records(2022), coords = coords, year = "year")
 occ  <- generate_pseudo_absences(pres, aoi = "bbox", strategy = "combined",
-                                 n = nrow(pres), aoi_year = 2022)
+                                 n = nrow(pres))
 
 # Test on 2023 records against random background
 pres_2023 <- format_data(gbif_records(2023), coords = coords, year = "year")
 test <- generate_pseudo_absences(pres_2023, aoi = "bbox", strategy = "random",
-                                 n = 2000, aoi_year = 2023)
+                                 n = 2000)
 fit  <- evaluate_models(occ, predict_coords = test)
 fit$metrics$ensemble
 
