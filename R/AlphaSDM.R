@@ -1,57 +1,19 @@
-#' Build the per-method hyperparameter list
+#' Split user settings into one list per method
 #'
 #' Shared by [evaluate_models()] and [generate_map()] so that the model you
-#' evaluate is the model you map. Each method starts from the shared tree
-#' arguments and then takes its own overrides.
-#'
-#' Every override is conditional on the corresponding argument still holding its
-#' default, so an explicit value from the caller always wins.
+#' evaluate is the model you map. Names that are not among `methods` are an
+#' error, so a typo such as `gmb` does not silently leave a model on defaults.
 #' @noRd
-build_method_params <- function(methods, n_trees, min_leaf_population, bag_fraction,
-                                shrinkage, max_nodes, variables_per_split,
-                                svm_type, svm_kernel, svm_cost, svm_gamma,
-                                maxent_beta, maxent_features,
-                                knn_k, knn_search_method, knn_metric) {
-  base <- list(numberOfTrees = n_trees, minLeafPopulation = min_leaf_population,
-               bagFraction = bag_fraction, shrinkage = shrinkage,
-               maxNodes = max_nodes, variablesPerSplit = variables_per_split)
-  p <- setNames(lapply(methods, function(m) base), methods)
-  has <- function(m) m %in% methods
-
-  # gbt: many shallow trees taking small steps.
-  if (has("gbt") && n_trees == 100L)    p$gbt$numberOfTrees <- 150L
-  if (has("gbt") && shrinkage == 0.005) p$gbt$shrinkage     <- 0.05
-
-  # rf: the opposite. It averages many low-bias trees, so it wants depth the shared
-  # defaults do not give, and a split subset near sqrt of the 64 embedding bands.
-  if (has("rf") && n_trees == 100L)                 p$rf$numberOfTrees      <- 500L
-  if (has("rf") && is.null(variables_per_split))    p$rf$variablesPerSplit  <- 8L
-  if (has("rf") && max_nodes == 6L)                 p$rf$maxNodes           <- NULL
-  if (has("rf") && min_leaf_population == 5L)       p$rf$minLeafPopulation  <- 1L
-
-  if (has("svm")) {
-    p$svm$svmType    <- svm_type
-    p$svm$kernelType <- svm_kernel
-    p$svm$cost       <- svm_cost
-    p$svm$gamma      <- svm_gamma
-  }
-  # MaxEnt, in the style of ENMeval: a regularisation multiplier and feature classes.
-  if (has("maxent")) p$maxent <- modifyList(p$maxent, maxent_tuning_params(maxent_beta, maxent_features))
-
-  # k sets the resolution of the kNN surface, not just its smoothness. In PROBABILITY
-  # mode the score is the positive-vote fraction, so it can take only k + 1 distinct
-  # values. Raise it alongside bg_ratio: k should stay a small share of the balanced
-  # pool, or the vote smooths away the signal.
-  if (has("knn") && !is.null(knn_k)) p$knn$k <- as.integer(knn_k)
-  # searchMethod and metric are unset by default, so Earth Engine chooses them. Both
-  # matter. The documentation warns that results vary by search method "for distance
-  # ties and probability values", and KD_TREE ignores the metric, as does AUTO at low
-  # dimensions. Set searchMethod to LINEAR_SEARCH or COVER_TREE whenever the metric
-  # is meant to apply.
-  if (has("knn") && !is.null(knn_search_method)) p$knn$searchMethod <- as.character(knn_search_method)
-  if (has("knn") && !is.null(knn_metric))        p$knn$metric       <- as.character(knn_metric)
-
-  p
+method_settings <- function(methods, params) {
+  if (length(params) && (is.null(names(params)) || any(!nzchar(names(params)))))
+    stop("`params` must be a named list with one entry per model, e.g. ",
+         "list(gbt = list(shrinkage = 0.01)).", call. = FALSE)
+  extra <- setdiff(names(params), methods)
+  if (length(extra))
+    stop(sprintf("`params` has settings for %s, which %s not in `methods`.",
+                 paste(extra, collapse = ", "), if (length(extra) > 1) "are" else "is"),
+         call. = FALSE)
+  setNames(lapply(methods, function(m) params[[m]]), methods)
 }
 
 #' The default model ensemble
@@ -309,18 +271,16 @@ cleanup_classifier_assets <- function(train_res) {
 #' @param balance_trees Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
 #'   balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
 #'   the trees all background points.
-#' @param n_trees,min_leaf_population,bag_fraction,shrinkage,max_nodes,variables_per_split
-#'   Tree-model (rf/gbt) hyperparameters.
-#' @param svm_type,svm_kernel,svm_cost,svm_gamma libsvm hyperparameters (default
-#'   EPSILON_SVR / RBF / cost 10 / gamma 0.05).
-#' @param maxent_beta,maxent_features MaxEnt regularisation multiplier and feature
-#'   classes (`"auto"` or a combination of L/Q/H/P/T).
-#' @param knn_k Neighbours for kNN (default 15). Also fixes the output resolution:
-#'   the surface can take only `k + 1` distinct values. Raise alongside `bg_ratio`.
-#' @param knn_search_method kNN neighbour search: `"AUTO"`, `"LINEAR_SEARCH"`,
-#'   `"KD_TREE"` or `"COVER_TREE"`. Note `KD_TREE` ignores `knn_metric`.
-#' @param knn_metric kNN distance metric: `"EUCLIDEAN"`, `"MAHALANOBIS"`,
-#'   `"MANHATTAN"` or `"BRAYCURTIS"`. Only honoured for search methods that use it.
+#' @param params Named list of settings for individual models, using the
+#'   argument names of the Earth Engine classifier, for example
+#'   `list(gbt = list(shrinkage = 0.01), svm = list(kernelType = "RBF"))`.
+#'   Every model uses Earth Engine's defaults except where Earth Engine needs a
+#'   value or its default cannot work on these data: `rf` uses 500 trees and
+#'   `gbt` 150, since Earth Engine requires a number, and `knn` uses 15
+#'   neighbours, since Earth Engine's single neighbour gives a two-value map.
+#'   See the Earth Engine reference for `ee.Classifier.smileRandomForest`,
+#'   `smileGradientTreeBoost`, `libsvm`, `amnhMaxent`, `smileKNN` and
+#'   `smileCart` for every available setting.
 #' @param persist_classifier Logical; whether to store internally-persistable
 #'   classifiers (currently RF/CART) as a temporary GEE asset before mapping.
 #'   Defaults to `FALSE`: map exports run through Earth Engine's batch system,
@@ -339,11 +299,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
                          methods = NULL, ensemble = TRUE, aoi_year = NULL, bg_ratio = NULL,
                          bg_replicates = TRUE,
                          balance_trees = TRUE,
-                         n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
-                         shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
-                         svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
-                         maxent_beta = 1, maxent_features = "auto",
-                         knn_k = NULL, knn_search_method = NULL, knn_metric = NULL,
+                         params = list(),
                          persist_classifier = FALSE,
                          gee_project = NULL) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
@@ -364,10 +320,7 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
 
   aoi_geom <- resolve_aoi(aoi, ee, data = data)
 
-  method_params <- build_method_params(
-    methods, n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes,
-    variables_per_split, svm_type, svm_kernel, svm_cost, svm_gamma,
-    maxent_beta, maxent_features, knn_k, knn_search_method, knn_metric)
+  method_params <- method_settings(methods, params)
   train_res <- fit_gee_models(data, methods, scale, method_params, bg_ratio = bg_ratio, bg_replicates = bg_replicates, persist_classifier = persist_classifier, project = gee_project)
   on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp classifier assets on exit
 
@@ -380,12 +333,12 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
   # single request that reads the embeddings once.
   #
   # The ensemble is the per-pixel mean of the members on their own scales, and
-  # those scales do not agree. rf, gbt, maxent and knn return probabilities on
-  # [0, 1]. similarity is a dot product against the presence centroid, so it is
-  # signed and capped at that centroid's norm. mindist is a difference of
-  # distances, signed and about twice as wide. svm under its EPSILON_SVR default
-  # regresses the 0/1 label without clamping, so it can fall outside [0, 1]
-  # altogether. Mixing these lets the widest-spread member pull the mean around,
+  # those scales do not agree. rf, gbt, maxent, knn and a classification svm
+  # return probabilities on [0, 1]. similarity is a dot product against the
+  # presence centroid, so it is signed and capped at that centroid's norm.
+  # mindist is a difference of distances, signed and about twice as wide. A
+  # regression svm (EPSILON_SVR) regresses the 0/1 label without clamping, so it
+  # can fall outside [0, 1]. Mixing these lets the widest-spread member pull the mean around,
   # and the result is then not on a probability scale. Averaging within one
   # family, such as the default svm/rf/gbt tier, behaves.
   bands <- lapply(methods, function(m) predict_gee_map(train_res$models[[m]], img_mosaic)$rename(m))
@@ -514,11 +467,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
                             methods = NULL, aoi_year = NULL, bg_ratio = NULL,
                             bg_replicates = TRUE,
                             balance_trees = TRUE,
-                            n_trees = 100L, min_leaf_population = 5L, bag_fraction = 0.5,
-                            shrinkage = 0.005, max_nodes = 6L, variables_per_split = NULL,
-                            svm_type = "EPSILON_SVR", svm_kernel = "RBF", svm_cost = 10, svm_gamma = 0.05,
-                            maxent_beta = 1, maxent_features = "auto",
-                            knn_k = NULL, knn_search_method = NULL, knn_metric = NULL,
+                            params = list(),
                             async = FALSE,
                             persist_classifier = FALSE,
                             gee_project = NULL,
@@ -550,10 +499,7 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
          "the data yourself and call evaluate_models() once per fold.",
          call. = FALSE)
 
-  method_params <- build_method_params(
-    methods, n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes,
-    variables_per_split, svm_type, svm_kernel, svm_cost, svm_gamma,
-    maxent_beta, maxent_features, knn_k, knn_search_method, knn_metric)
+  method_params <- method_settings(methods, params)
   # Area of interest: the bounding box of the prediction targets.
   aoi_geom <- resolve_aoi("bbox", ee, data = predict_coords)
 

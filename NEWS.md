@@ -1,3 +1,23 @@
+# AlphaSDM (development version)
+
+* Model settings are now given per model with `params`, using Earth Engine's
+  argument names, for example `params = list(gbt = list(shrinkage = 0.01))`.
+  This replaces the separate arguments `n_trees`, `shrinkage`, `svm_cost`,
+  `knn_k` and the rest, which applied to several models at once and could
+  silently override values equal to their defaults. Misspelt settings are now
+  an error.
+* Every model uses Earth Engine's defaults, except the tree counts Earth Engine
+  requires (`rf` 500, `gbt` 150) and `knn`, which uses 15 neighbours because
+  Earth Engine's single neighbour gives a two-value map. The SVM is now Earth
+  Engine's default linear classifier, and boosted trees use Earth Engine's
+  learning rate, which gives better-calibrated probabilities.
+* Fixed classification SVMs (C_SVC, NU_SVC) returning inverted scores. Their
+  probability depended on the order of the training rows, which Earth Engine
+  does not preserve; the training table is now sorted before fitting.
+* Removed naive Bayes, which discards negative values and so cannot use the
+  signed embeddings.
+* The vignette now tests models on the following year's records.
+
 # AlphaSDM 0.2.0
 
 First CRAN release.

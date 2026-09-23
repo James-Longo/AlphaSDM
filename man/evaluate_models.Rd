@@ -13,21 +13,7 @@ evaluate_models(
   bg_ratio = NULL,
   bg_replicates = TRUE,
   balance_trees = TRUE,
-  n_trees = 100L,
-  min_leaf_population = 5L,
-  bag_fraction = 0.5,
-  shrinkage = 0.005,
-  max_nodes = 6L,
-  variables_per_split = NULL,
-  svm_type = "EPSILON_SVR",
-  svm_kernel = "RBF",
-  svm_cost = 10,
-  svm_gamma = 0.05,
-  maxent_beta = 1,
-  maxent_features = "auto",
-  knn_k = NULL,
-  knn_search_method = NULL,
-  knn_metric = NULL,
+  params = list(),
   async = FALSE,
   persist_classifier = FALSE,
   gee_project = NULL,
@@ -68,22 +54,16 @@ active; methods on the full pool are never replicated.}
 balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
 the trees all background points.}
 
-\item{n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes, variables_per_split}{Tree-model (rf/gbt) hyperparameters.}
-
-\item{svm_type, svm_kernel, svm_cost, svm_gamma}{libsvm hyperparameters (default
-EPSILON_SVR / RBF / cost 10 / gamma 0.05).}
-
-\item{maxent_beta, maxent_features}{MaxEnt regularisation multiplier and feature
-classes (`"auto"` or a combination of L/Q/H/P/T).}
-
-\item{knn_k}{Neighbours for kNN (default 15). Also fixes the output resolution:
-the surface can take only `k + 1` distinct values. Raise alongside `bg_ratio`.}
-
-\item{knn_search_method}{kNN neighbour search: `"AUTO"`, `"LINEAR_SEARCH"`,
-`"KD_TREE"` or `"COVER_TREE"`. Note `KD_TREE` ignores `knn_metric`.}
-
-\item{knn_metric}{kNN distance metric: `"EUCLIDEAN"`, `"MAHALANOBIS"`,
-`"MANHATTAN"` or `"BRAYCURTIS"`. Only honoured for search methods that use it.}
+\item{params}{Named list of settings for individual models, using the
+argument names of the Earth Engine classifier, for example
+`list(gbt = list(shrinkage = 0.01), svm = list(kernelType = "RBF"))`.
+Every model uses Earth Engine's defaults except where Earth Engine needs a
+value or its default cannot work on these data: `rf` uses 500 trees and
+`gbt` 150, since Earth Engine requires a number, and `knn` uses 15
+neighbours, since Earth Engine's single neighbour gives a two-value map.
+See the Earth Engine reference for `ee.Classifier.smileRandomForest`,
+`smileGradientTreeBoost`, `libsvm`, `amnhMaxent`, `smileKNN` and
+`smileCart` for every available setting.}
 
 \item{async}{Logical; use asynchronous GEE export for large prediction sets.}
 

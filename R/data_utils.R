@@ -190,12 +190,9 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
     # Drop duplicates, keeping the presence when a coordinate and year appear as
     # both presence and absence.
     #
-    # The presence-first sort is also the pipeline's row-order contract. GEE's libsvm
-    # takes its positive class from the first label it sees in the training data, and
-    # the SVM score flip in predict_gee_map() assumes that class is presence (1).
-    # Emitting presences first here holds that invariant at the data boundary, so no
-    # later stage has to re-sort. order() is stable, so the original order survives
-    # within each class.
+    # Presences first, for readability. Nothing downstream depends on this order:
+    # Earth Engine does not preserve it, so the SVM sorts its own training table.
+    # order() is stable, so the original order survives within each class.
     rows_before <- nrow(result)
 
     key_cols <- setdiff(names(result), "present")

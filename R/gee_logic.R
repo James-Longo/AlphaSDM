@@ -152,29 +152,33 @@ points_geojson <- function(df) {
 #'   score     : band / property produced by `classify()` to read
 #'   transform : how to convert the raw `score` into presence-suitability
 #'     - "none"        score is already P(presence) (the SMILE probability of class 1)
-#'     - "invert"      use `1 - score` (libsvm reports the probability of the
-#'                     FIRST class it saw in training; see format_data row-order contract)
 #'     - "mindist_raw" `score` is a RAW distance array `[d_absence, d_presence]`;
 #'                     use `d_absence - d_presence` so closer-to-presence ranks higher
 #'                     (minimumDistance has no PROBABILITY output mode)
+#'   defaults  : settings AlphaSDM changes from Earth Engine's defaults. Only
+#'               two kinds: a tree count, which Earth Engine requires, and a
+#'               setting whose Earth Engine default cannot work on these data.
 #'
-#' One caveat on the signed Alpha Earth embeddings: smileNaiveBayes assumes
-#' positive-integer features and discards negative inputs, so it cannot use
-#' embeddings that span [-1, 1]. It is registered for completeness and is not
-#' a sensible choice here.
+#' smileNaiveBayes is deliberately absent: it assumes non-negative features and
+#' discards negative inputs, so it cannot use embeddings that span [-1, 1].
 #' @noRd
 GEE_CLASSIFIER_METHODS <- list(
-  rf         = list(fn = "smileRandomForest",      output = "PROBABILITY", score = "classification", transform = "none", pool = "balanced", persistable = TRUE),
-  gbt        = list(fn = "smileGradientTreeBoost", output = "PROBABILITY", score = "classification", transform = "none", pool = "balanced"),
+  rf         = list(fn = "smileRandomForest",      output = "PROBABILITY", score = "classification", transform = "none", pool = "balanced", persistable = TRUE,
+                    defaults = list(numberOfTrees = 500L)),
+  gbt        = list(fn = "smileGradientTreeBoost", output = "PROBABILITY", score = "classification", transform = "none", pool = "balanced",
+                    defaults = list(numberOfTrees = 150L)),
   maxent     = list(fn = "amnhMaxent",             output = "PROBABILITY", score = "probability",    transform = "none"),
-  # The svm entry below is the classification-SVM case, C_SVC or NU_SVC. For a
-  # regression SVM, which is the EPSILON_SVR default and also NU_SVR,
-  # resolve_clf_spec() swaps it to REGRESSION with transform "none" so the regressed
-  # 0/1 score is read directly. build_gee_clf_params() holds the defaults.
-  svm        = list(fn = "libsvm",                 output = "PROBABILITY", score = "classification", transform = "invert"),
+  # Earth Engine's default SVM is a linear classifier (C_SVC). For a regression
+  # SVM (svmType EPSILON_SVR or NU_SVR), resolve_clf_spec() switches to
+  # REGRESSION output and reads the regressed 0/1 score directly.
+  svm        = list(fn = "libsvm",                 output = "PROBABILITY", score = "classification", transform = "none"),
   cart       = list(fn = "smileCart",              output = "PROBABILITY", score = "classification", transform = "none", persistable = TRUE),
-  knn        = list(fn = "smileKNN",               output = "PROBABILITY", score = "classification", transform = "none", pool = "balanced"),
-  naivebayes = list(fn = "smileNaiveBayes",        output = "PROBABILITY", score = "classification", transform = "none"),
+  # k sets the resolution of the kNN surface: in PROBABILITY mode the score is
+  # the positive-vote fraction among k neighbours, so it takes only k + 1
+  # values. Earth Engine's k = 1 can only give a two-value map; 15 gives 16 levels.
+  # Lower it for a small training set, since smile requires k < n_train.
+  knn        = list(fn = "smileKNN",               output = "PROBABILITY", score = "classification", transform = "none", pool = "balanced",
+                    defaults = list(k = 15L)),
   mindist    = list(fn = "minimumDistance",        output = "RAW",         score = "classification", transform = "mindist_raw")
 )
 
@@ -201,91 +205,45 @@ method_pool <- function(method) {
 
 #' Build constructor arguments for a GEE classifier
 #'
-#' Picks only the arguments each `ee.Classifier` factory accepts out of the
-#' shared parameter list, coercing integer-typed arguments and dropping NULLs.
+#' Earth Engine's defaults, then AlphaSDM's defaults for the method (the
+#' registry's `defaults`), then the user's settings, in that order of priority.
+#' Settings use Earth Engine's argument names.
 #' @noRd
-build_gee_clf_params <- function(method, params) {
-  int_or_null <- function(x) if (!is.null(x)) as.integer(x) else NULL
-  # Tree arguments. libsvm and amnhMaxent reject these, so they are stripped for
-  # those two rather than listed per method.
-  tree_core <- c("numberOfTrees", "minLeafPopulation", "bagFraction", "shrinkage",
-                 "maxNodes", "variablesPerSplit", "lambda_", "polynomial", "batch_size")
-
-  p <- switch(method,
-    rf = list(
-      numberOfTrees     = int_or_null(params$numberOfTrees),
-      variablesPerSplit = int_or_null(params$variablesPerSplit),
-      minLeafPopulation = int_or_null(params$minLeafPopulation),
-      bagFraction       = params$bagFraction,
-      maxNodes          = int_or_null(params$maxNodes)
-    ),
-    gbt = list(
-      numberOfTrees = int_or_null(params$numberOfTrees),
-      shrinkage     = params$shrinkage,
-      maxNodes      = int_or_null(params$maxNodes)
-    ),
-    cart = list(
-      maxNodes          = int_or_null(params$maxNodes),
-      minLeafPopulation = int_or_null(params$minLeafPopulation)
-    ),
-    knn = list(
-      # k sets the resolution of the output surface, not just its smoothness. In
-      # PROBABILITY mode the score is the positive-vote fraction among k neighbours,
-      # so it can take only k + 1 distinct values. At k = 5 that is a 6-level
-      # suitability map, too coarse to rank cells or to threshold. 15 keeps the
-      # neighbourhood local and gives 16 levels. Lower it for a small training set:
-      # smile requires k < n_train.
-      k            = int_or_null(if (!is.null(params$k)) params$k else 15L),
-      searchMethod = params$searchMethod,
-      metric       = params$metric
-    ),
-    naivebayes = list(
-      lambda = params$lambda
-    ),
-    mindist = list(
-      metric   = params$metric,
-      kNearest = int_or_null(params$kNearest)
-    ),
-    svm = {
-      sp <- params[setdiff(names(params), tree_core)]
-      # Defaults: EPSILON_SVR with an RBF kernel, cost 10, gamma 0.05. Regressing the
-      # 0/1 label gives a continuous score, which suits ranking better than the
-      # discrete class probability a C_SVC produces. RBF is O(n^2) in the number of
-      # training points, so for a very large training set pass kernelType = "LINEAR",
-      # which scales as O(n x d).
-      if (is.null(sp$svmType))    sp$svmType    <- "EPSILON_SVR"
-      if (is.null(sp$kernelType)) sp$kernelType <- "RBF"
-      if (is.null(sp$cost))       sp$cost       <- 10
-      if (is.null(sp$gamma))      sp$gamma      <- 0.05
-      # gamma applies only to the POLY, RBF and SIGMOID kernels. libsvm errors if it
-      # is sent with a LINEAR kernel, so drop it there.
-      if (identical(sp$kernelType, "LINEAR")) sp$gamma <- NULL
-      sp
-    },
-    maxent = params[setdiff(names(params), tree_core)],
-    stop("Unsupported classifier method: ", method)
-  )
+build_gee_clf_params <- function(method, params = NULL) {
+  p <- utils::modifyList(as.list(GEE_CLASSIFIER_METHODS[[method]]$defaults),
+                         as.list(params))
+  # Earth Engine wants integers for these; R users type 300, not 300L.
+  int_args <- c("numberOfTrees", "variablesPerSplit", "minLeafPopulation",
+                "maxNodes", "k", "kNearest", "seed")
+  for (a in intersect(names(p), int_args)) p[[a]] <- as.integer(p[[a]])
+  # gamma applies only to the POLY, RBF and SIGMOID kernels; libsvm errors if it
+  # is sent with a linear kernel.
+  if (identical(method, "svm") && identical(p$kernelType, "LINEAR")) p$gamma <- NULL
   p[!vapply(p, is.null, logical(1))]
 }
 
-#' Build amnhMaxent tuning params from a regularization multiplier + feature classes
+#' Stop on settings the Earth Engine classifier does not take
 #'
-#' The two ENMeval-style maxent levers (Muscarella 2014, Radosavljevic & Anderson 2014):
-#' `beta` is the regularization multiplier (higher = simpler/smoother) and `features`
-#' is a feature-class string: "auto" keeps GEE's sample-size-based autoFeature, else a
-#' combination of L/Q/H/P/T (e.g. "LQH") turns autoFeature off and toggles those classes.
+#' Reads the argument names from Earth Engine's own function signature, so a
+#' misspelt setting fails with the list of valid ones instead of being ignored.
 #' @noRd
-maxent_tuning_params <- function(beta = 1, features = "auto") {
-  mp <- list(betaMultiplier = beta)
-  if (!is.null(features) && !identical(features, "auto")) {
-    mp$autoFeature <- FALSE
-    mp$linear      <- TRUE
-    mp$quadratic   <- grepl("Q", features, ignore.case = TRUE)
-    mp$hinge       <- grepl("H", features, ignore.case = TRUE)
-    mp$product     <- grepl("P", features, ignore.case = TRUE)
-    mp$threshold   <- grepl("T", features, ignore.case = TRUE)
-  }
-  mp
+check_clf_params <- function(method, params) {
+  fn   <- GEE_CLASSIFIER_METHODS[[method]]$fn
+  args <- reticulate::import("ee")$ApiFunction$lookup(paste0("Classifier.", fn))$getSignature()$args
+  valid <- vapply(args, function(a) a$name, character(1))
+  bad <- setdiff(names(params), valid)
+  if (length(bad))
+    stop(sprintf("Unknown setting%s for %s: %s. ee.Classifier.%s takes: %s.",
+                 if (length(bad) > 1) "s" else "", method, paste(bad, collapse = ", "),
+                 fn, paste(valid, collapse = ", ")), call. = FALSE)
+  invisible(TRUE)
+}
+
+#' Whether SVM settings describe a regression (EPSILON_SVR or NU_SVR) rather than
+#' a classification SVM; Earth Engine's default type is the classifier C_SVC.
+#' @noRd
+svm_is_regression <- function(params) {
+  isTRUE(params$svmType %in% c("EPSILON_SVR", "NU_SVR"))
 }
 
 #' Resolve the output-mode / score / transform spec for a trained classifier
@@ -300,8 +258,7 @@ maxent_tuning_params <- function(beta = 1, features = "auto") {
 resolve_clf_spec <- function(method, filtered_params) {
   spec <- GEE_CLASSIFIER_METHODS[[method]]
   if (method == "svm") {
-    svm_type <- if (!is.null(filtered_params$svmType)) filtered_params$svmType else "EPSILON_SVR"
-    if (svm_type %in% c("EPSILON_SVR", "NU_SVR")) {
+    if (svm_is_regression(filtered_params)) {
       spec$output    <- "REGRESSION"
       spec$score     <- "classification"
       spec$transform <- "none"
@@ -342,11 +299,19 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
   sampled_fc <- sampled_fc$map(function(f) {
     f$set(LABEL_COL, ee$Number(f$get(class_property))$toInt())
   })
+  # A classification SVM's probability refers to one class chosen by the order
+  # libsvm meets the labels in, and Earth Engine does not preserve row order
+  # through sampling, merging and stored tables. Sorting absences first fixes
+  # the order; measured, the score is then the probability of presence (AUC
+  # 0.81 on the saguaro test, 0.19 with presences first).
+  if (identical(method, "svm") && !svm_is_regression(build_gee_clf_params("svm", params)))
+    sampled_fc <- sampled_fc$sort(LABEL_COL)
 
   if (is_classifier) {
     clf_factory <- ee$Classifier[[GEE_CLASSIFIER_METHODS[[method]]$fn]]
 
     filtered_params <- build_gee_clf_params(method, params)
+    check_clf_params(method, filtered_params)
     spec <- resolve_clf_spec(method, filtered_params)
     clf <- do.call(clf_factory, filtered_params)
     clf <- clf$setOutputMode(spec$output)
@@ -507,9 +472,6 @@ predict_gee_map <- function(model_res, img) {
       prediction <- flat$select("d_absence")$subtract(flat$select("d_presence"))
     } else {
       prediction <- classified$select(spec$score)
-      if (spec$transform == "invert") {
-        prediction <- ee$Image(1.0)$subtract(prediction)
-      }
     }
 
     return(prediction$rename("similarity"))
@@ -583,8 +545,6 @@ predict_all_models_gee <- function(fc, models_list) {
         arr <- ee$Array(f$get(score_col))
         f$set(target_col, arr$get(list(0L))$subtract(arr$get(list(1L))))
       })
-    } else if (spec$transform == "invert") {
-      scored_fc <- scored_fc$map(function(f) f$set(target_col, ee$Number(1.0)$subtract(f$get(score_col))))
     } else {
       scored_fc <- scored_fc$map(function(f) f$set(target_col, f$get(score_col)))
     }
