@@ -100,7 +100,7 @@ test <- generate_pseudo_absences(pres_2023, aoi = "bbox", strategy = "random",
 fit  <- evaluate_models(occ, predict_coords = test)
 fit$metrics$ensemble
 
-maps <- generate_map(occ, aoi = "bbox", scale = 30, aoi_year = 2022,
+maps <- generate_map(occ, aoi = "bbox", scale = 30,
                      output_dir = "saguaro")
 ```
 

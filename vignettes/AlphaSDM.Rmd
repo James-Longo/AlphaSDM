@@ -216,7 +216,7 @@ minutes; the native 10 m resolution (`scale = 10`) takes longer.
 
 
 ``` r
-maps <- generate_map(occ, aoi = "bbox", scale = 30, aoi_year = 2022,
+maps <- generate_map(occ, aoi = "bbox", scale = 30,
                      output_dir = file.path(tempdir(), "saguaro"))
 plot(stars::read_stars(maps$ensemble_map), main = "Saguaro suitability, 30 m",
      col = grDevices::hcl.colors(20, "YlGn", rev = TRUE))
