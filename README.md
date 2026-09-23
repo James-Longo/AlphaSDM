@@ -70,28 +70,34 @@ paste a code instead. `clear_gee_credentials()` resets everything.
 
 ## Example
 
-Download one year of saguaro records from GBIF, add pseudo-absences, evaluate
-the default ensemble on a spatial holdout, and map suitability:
+Download saguaro records from GBIF, fit the default ensemble on 2022 records,
+test it on 2023 records, and map suitability:
 
 ```r
 library(AlphaSDM)
 
-url <- paste0("https://api.gbif.org/v1/occurrence/search?",
-              "scientificName=Carnegiea%20gigantea&year=2022",
-              "&hasCoordinate=true&hasGeospatialIssue=false",
-              "&coordinateUncertaintyInMeters=0,30",
-              "&decimalLongitude=-111.4,-110.6&decimalLatitude=31.9,32.6&limit=300")
-obs <- do.call(rbind, lapply(c(0, 300), function(offset)
-  jsonlite::fromJSON(paste0(url, "&offset=", offset))$results[
-    , c("decimalLongitude", "decimalLatitude", "year")]))
+gbif_records <- function(year) {
+  url <- paste0("https://api.gbif.org/v1/occurrence/search?",
+                "scientificName=Carnegiea%20gigantea&year=", year,
+                "&hasCoordinate=true&hasGeospatialIssue=false",
+                "&coordinateUncertaintyInMeters=0,30",
+                "&decimalLongitude=-111.4,-110.6&decimalLatitude=31.9,32.6&limit=300")
+  do.call(rbind, lapply(c(0, 300), function(offset)
+    jsonlite::fromJSON(paste0(url, "&offset=", offset))$results[
+      , c("decimalLongitude", "decimalLatitude", "year")]))
+}
+coords <- c("decimalLongitude", "decimalLatitude")
 
-pres <- format_data(obs, coords = c("decimalLongitude", "decimalLatitude"), year = "year")
+# Fit on 2022 records with pseudo-absences
+pres <- format_data(gbif_records(2022), coords = coords, year = "year")
 occ  <- generate_pseudo_absences(pres, aoi = "bbox", strategy = "combined",
                                  n = nrow(pres), aoi_year = 2022)
 
-set.seed(1)
-test <- stats::kmeans(occ[, c("longitude", "latitude")], centers = 5)$cluster == 1
-fit  <- evaluate_models(occ[!test, ], predict_coords = occ[test, ])
+# Test on 2023 records against random background
+pres_2023 <- format_data(gbif_records(2023), coords = coords, year = "year")
+test <- generate_pseudo_absences(pres_2023, aoi = "bbox", strategy = "random",
+                                 n = 2000, aoi_year = 2023)
+fit  <- evaluate_models(occ, predict_coords = test)
 fit$metrics$ensemble
 
 maps <- generate_map(occ, aoi = "bbox", scale = 30, aoi_year = 2022,

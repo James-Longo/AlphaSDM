@@ -25,22 +25,26 @@ registration. After that, AlphaSDM connects on its own.
 
 ## Get occurrence records
 
-The GBIF occurrence API is public and needs no account. This query asks for
-2022 records inside a box around Tucson, keeping only those with coordinates
-accurate to 30 m, which suits 10 m embeddings. The API returns at most 300
-records per request, so it takes two pages.
+The GBIF occurrence API is public and needs no account. This helper asks for
+one year of records inside a box around Tucson, keeping only those with
+coordinates accurate to 30 m, which suits 10 m embeddings. The API returns at
+most 300 records per request, so it reads two pages. The models are fitted on
+the 2022 records; the 2023 records are kept aside to test them.
 
 
 ``` r
-url <- paste0(
-  "https://api.gbif.org/v1/occurrence/search?",
-  "scientificName=Carnegiea%20gigantea&year=2022",
-  "&hasCoordinate=true&hasGeospatialIssue=false",
-  "&coordinateUncertaintyInMeters=0,30",
-  "&decimalLongitude=-111.4,-110.6&decimalLatitude=31.9,32.6&limit=300")
-obs <- do.call(rbind, lapply(c(0, 300), function(offset)
-  jsonlite::fromJSON(paste0(url, "&offset=", offset))$results[
-    , c("decimalLongitude", "decimalLatitude", "year")]))
+gbif_records <- function(year) {
+  url <- paste0(
+    "https://api.gbif.org/v1/occurrence/search?",
+    "scientificName=Carnegiea%20gigantea&year=", year,
+    "&hasCoordinate=true&hasGeospatialIssue=false",
+    "&coordinateUncertaintyInMeters=0,30",
+    "&decimalLongitude=-111.4,-110.6&decimalLatitude=31.9,32.6&limit=300")
+  do.call(rbind, lapply(c(0, 300), function(offset)
+    jsonlite::fromJSON(paste0(url, "&offset=", offset))$results[
+      , c("decimalLongitude", "decimalLatitude", "year")]))
+}
+obs <- gbif_records(2022)
 nrow(obs)
 #> [1] 438
 ```
@@ -124,20 +128,23 @@ the forested upper Santa Catalina Mountains to the northeast and the irrigated
 farmland of the Avra Valley to the west, with a few in town and around the
 open-pit mine to the south.
 
-## Evaluate on a spatial holdout
+## Evaluate on the next year's records
 
-Hold out one spatial cluster of points, presences and absences alike, fit the
-default ensemble (svm, rf and gbt) on the rest, and score the holdout. A
-spatial holdout is harder than a random one, because the models must transfer
-to ground they have not seen.
+The fairest test uses records the models have never seen. Here that is the
+2023 records, scored against background points drawn at random across the
+study area from the 2023 embeddings. The pseudo-absences are used only for
+training: scoring against them would reward the rule that placed them, not the
+models.
 
 
 ``` r
-set.seed(1)
-occ$block <- stats::kmeans(occ[, c("longitude", "latitude")], centers = 5)$cluster
-test <- occ$block == 1
+pres_2023 <- format_data(gbif_records(2023),
+                         coords = c("decimalLongitude", "decimalLatitude"),
+                         year = "year")
+test <- generate_pseudo_absences(pres_2023, aoi = "bbox", strategy = "random",
+                                 n = 2000, aoi_year = 2023)
 
-fit <- evaluate_models(data = occ[!test, ], predict_coords = occ[test, ])
+fit <- evaluate_models(data = occ, predict_coords = test)
 
 metrics <- do.call(rbind, lapply(fit$metrics, as.data.frame))
 knitr::kable(metrics[, c("auc_roc", "auc_prg", "tss", "cbi")], digits = 3)
@@ -147,24 +154,64 @@ knitr::kable(metrics[, c("auc_roc", "auc_prg", "tss", "cbi")], digits = 3)
 
 |         | auc_roc| auc_prg|   tss|   cbi|
 |:--------|-------:|-------:|-----:|-----:|
-|svm      |   1.000|   0.976| 1.000| 0.802|
-|rf       |   1.000|   0.976| 1.000| 0.861|
-|gbt      |   0.986|   0.923| 0.891| 0.443|
-|ensemble |   0.998|   0.968| 0.968| 0.864|
+|svm      |   0.807|   0.786| 0.486| 0.330|
+|rf       |   0.775|   0.726| 0.423| 0.906|
+|gbt      |   0.727|   0.661| 0.331| 0.737|
+|ensemble |   0.770|   0.723| 0.392| 0.725|
 
 
 
-Read these scores with care. The held-out absences are pseudo-absences, placed
-where the landscape looks least like saguaro habitat, so they are easier to
-tell from presences than real absences would be. For an honest measure of
-discrimination, score real survey absences. The Boyce index (`cbi`) measures
-calibration and needs only presences, so it is the more informative number
-here.
+The background includes plenty of real saguaro habitat, so AUC cannot reach 1
+here even for a perfect model; it measures how well the models separate the
+2023 records from the landscape as a whole. The continuous Boyce index (`cbi`;
+Hirzel et al. 2006) is the metric designed for presence-only data: it asks
+whether places the model rates more suitable hold proportionally more of the
+new records than chance would give, and ranges from -1 to 1. The ensemble
+scores 0.73.
+
+## Adjust a model's settings
+
+Every model uses Earth Engine's defaults for its classifier unless you change
+them (the few exceptions are listed in `?evaluate_models`). To change a
+setting, pass `params`: a list with one entry per model, using Earth Engine's
+argument names.
+
+Earth Engine's default SVM is a linear classifier. Above, it ranks the 2023
+records well but scores poorly on the Boyce index, because its probabilities
+crowd towards 1. A regression SVM with a radial kernel gives a continuous
+suitability score instead:
+
+
+``` r
+svm_rbf <- list(svmType = "EPSILON_SVR", kernelType = "RBF", cost = 10,
+                gamma = 0.05)
+fit_svm <- evaluate_models(data = occ, predict_coords = test, methods = "svm",
+                           params = list(svm = svm_rbf))
+
+svm <- rbind(`default (linear classifier)` = metrics["svm", ],
+             `regression, RBF kernel` = as.data.frame(fit_svm$metrics$svm))
+knitr::kable(svm[, c("auc_roc", "auc_prg", "tss", "cbi")], digits = 3)
+```
+
+
+
+|                            | auc_roc| auc_prg|   tss|   cbi|
+|:---------------------------|-------:|-------:|-----:|-----:|
+|default (linear classifier) |   0.807|   0.786| 0.486| 0.330|
+|regression, RBF kernel      |   0.792|   0.722| 0.462| 0.959|
+
+
+
+The Boyce index rises from 0.33 to
+0.96. The same `params` work in
+`generate_map()`. In a real study, choose settings using the training records,
+for example by cross-validation, rather than the test records.
 
 ## Map suitability
 
 `generate_map()` refits the models on all the data and writes one GeoTIFF per
-model plus the ensemble mean. `aoi = "bbox"` maps the whole area the points
+model plus the ensemble mean. It takes the same `params` as
+`evaluate_models()`. `aoi = "bbox"` maps the whole area the points
 cover, about 75 by 78 km. At 30 m that is six map tiles and takes a few
 minutes; the native 10 m resolution (`scale = 10`) takes longer.
 
@@ -182,8 +229,12 @@ Suitability follows the slopes and drainages of the Tucson Mountains and the
 foothills ringing the city, and fades on the valley floors, the farmland and
 the high Catalinas.
 
-## Reference
+## References
 
 Barbet-Massin, M., Jiguet, F., Albert, C. H. & Thuiller, W. (2012). Selecting
 pseudo-absences for species distribution models: how, where and how many?
 *Methods in Ecology and Evolution* 3, 327-338.
+
+Hirzel, A. H., Le Lay, G., Helfer, V., Randin, C. & Guisan, A. (2006).
+Evaluating the ability of habitat suitability models to predict species
+presences. *Ecological Modelling* 199, 142-152.
