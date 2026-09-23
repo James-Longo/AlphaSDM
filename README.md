@@ -114,14 +114,6 @@ The default ensemble is `c("svm", "rf", "gbt")`. `methods =` also accepts
 `"maxent"`, `"glm"`, `"cart"`, `"knn"`, `"mindist"` and `"similarity"`, all
 fitted on Earth Engine; see `?evaluate_models`.
 
-## Related packages
-
-biomod2, flexsdm, ENMeval, sdm and Wallace fit species distribution models on
-environmental layers you supply; AlphaSDM replaces those layers with one
-embedding dataset and moves the computation to Earth Engine. blockCV builds
-spatial cross-validation folds, which pair well with `evaluate_models()`. rgee
-is the general-purpose R interface to Earth Engine.
-
 ## Getting help
 
 Report bugs and request features in
