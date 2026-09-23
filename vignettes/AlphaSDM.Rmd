@@ -153,10 +153,10 @@ knitr::kable(metrics[, c("auc_roc", "auc_prg", "tss", "cbi")], digits = 3)
 
 |         | auc_roc| auc_prg|   tss|   cbi|
 |:--------|-------:|-------:|-----:|-----:|
-|svm      |   0.807|   0.786| 0.486| 0.294|
+|svm      |   0.807|   0.786| 0.486| 0.355|
 |rf       |   0.766|   0.705| 0.400| 0.911|
-|gbt      |   0.722|   0.639| 0.339| 0.745|
-|ensemble |   0.762|   0.703| 0.383| 0.730|
+|gbt      |   0.721|   0.632| 0.336| 0.713|
+|ensemble |   0.762|   0.703| 0.382| 0.730|
 
 
 
@@ -196,12 +196,12 @@ knitr::kable(svm[, c("auc_roc", "auc_prg", "tss", "cbi")], digits = 3)
 
 |                            | auc_roc| auc_prg|   tss|   cbi|
 |:---------------------------|-------:|-------:|-----:|-----:|
-|default (linear classifier) |   0.807|   0.786| 0.486| 0.294|
+|default (linear classifier) |   0.807|   0.786| 0.486| 0.355|
 |regression, RBF kernel      |   0.792|   0.722| 0.463| 0.959|
 
 
 
-The Boyce index rises from 0.29 to
+The Boyce index rises from 0.36 to
 0.96. The same `params` work in
 `generate_map()`. In a real study, choose settings using the training records,
 for example by cross-validation, rather than the test records.
