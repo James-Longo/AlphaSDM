@@ -244,7 +244,7 @@ clear_gee_credentials <- function() {
 #' Prints whether the Earth Engine client is available, whether sign-in
 #' credentials exist and of which kind, which project is configured, and
 #' whether a live connection succeeds. To monitor running Earth Engine tasks,
-#' use \code{\link{sdm_gee_status}} instead.
+#' use \code{\link{gee_tasks}} instead.
 #'
 #' @param check_live If \code{TRUE} (default), make a small request to confirm
 #'   that the credentials work, not only that they are on disk.

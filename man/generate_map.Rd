@@ -9,14 +9,12 @@ generate_map(
   aoi,
   scale = 10,
   output_dir = getwd(),
-  methods = NULL,
+  methods = c("svm", "rf", "gbt"),
   ensemble = TRUE,
   aoi_year = NULL,
-  bg_ratio = NULL,
+  bg_ratio = 1,
   bg_replicates = TRUE,
-  balance_trees = TRUE,
   params = list(),
-  persist_classifier = FALSE,
   gee_project = NULL
 )
 }
@@ -42,11 +40,13 @@ a large RANDOM pseudo-absence set suits them best (see
 
 \item{ensemble}{Logical; also export the ensemble mean map (default `TRUE`).}
 
-\item{aoi_year}{Year of the Alpha Earth mosaic to sample (default 2023).}
+\item{aoi_year}{Year of the embeddings to map. By default, the most common
+year in `data`.}
 
-\item{bg_ratio}{Optional absence:presence ratio for the balanced background pool
-(the methods whose registry entry declares `pool = "balanced"`). Overrides
-`balance_trees` when set.}
+\item{bg_ratio}{Absence-to-presence ratio for the models that train on a
+balanced pool (rf, gbt and knn): their absences are thinned at random to
+`bg_ratio` times the number of presences. Default 1. `NULL` gives them
+every absence. svm and maxent always use every absence.}
 
 \item{bg_replicates}{Logical (default TRUE). Train the balanced-pool
 methods (rf, gbt, knn) on k = min(10, ceil(10000/pool size))
@@ -54,10 +54,6 @@ replicate thinned subsets of the absences and average their
 predictions (Barbet-Massin et al. 2012, Table 1: several runs when
 few pseudo-absences are used). Requires `bg_ratio` thinning to be
 active; methods on the full pool are never replicated.}
-
-\item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
-balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
-the trees all background points.}
 
 \item{params}{Named list of settings for individual models, using the
 argument names of the Earth Engine classifier, for example
@@ -69,12 +65,6 @@ neighbours, since Earth Engine's single neighbour gives a two-value map.
 See the Earth Engine reference for `ee.Classifier.smileRandomForest`,
 `smileGradientTreeBoost`, `libsvm`, `amnhMaxent`, `smileKNN` and
 `smileCart` for every available setting.}
-
-\item{persist_classifier}{Logical; whether to store internally-persistable
-classifiers (currently RF/CART) as a temporary GEE asset before mapping.
-Defaults to `FALSE`: map exports run through Earth Engine's batch system,
-which evaluates the model inline, so storing it first adds a wait without
-changing the result. Ignored for methods that cannot persist (SVM/GBT/MaxEnt).}
 
 \item{gee_project}{Optional Earth Engine project override (normally set via [setup_gee()]).}
 }

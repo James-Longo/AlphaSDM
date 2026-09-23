@@ -23,9 +23,7 @@ reference:
 - title: Evaluation metrics
   contents:
   - calculate_classifier_metrics
-  - calculate_cbi
 - title: Earth Engine tasks and assets
   contents:
-  - sdm_gee_status
-  - sdm_clean_assets
-  - sdm_verbose
+  - gee_tasks
+  - gee_clean_assets

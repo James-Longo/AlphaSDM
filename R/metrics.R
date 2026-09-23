@@ -13,12 +13,7 @@
 #'   position and the predicted-to-expected ratio. Returns 0 when there are no
 #'   presence scores, when all scores are equal, or when the correlation is
 #'   undefined.
-#' @examples
-#' set.seed(1)
-#' background <- runif(500)
-#' presences  <- rbeta(50, 4, 2)   # presences sit at higher scores
-#' calculate_cbi(presences, c(presences, background))
-#' @export
+#' @noRd
 calculate_cbi <- function(pos_scores, all_scores, window_width = 0.1, n_bins = 100) {
   pos_scores <- pos_scores[!is.na(pos_scores)]
   all_scores <- all_scores[!is.na(all_scores)]

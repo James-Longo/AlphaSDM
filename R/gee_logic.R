@@ -9,8 +9,10 @@ retry_curl_download <- function(expr, max_retries = 5, initial_delay = 1) {
     }
 
     msg <- as.character(res)
-    is_retryable <- grepl("429", msg) || grepl("Computation timed out", msg) ||
-      grepl("Unknown Error", msg) || grepl("cannot open the connection", msg)
+    # Transient failures only. A compute limit ("Computation timed out") is not
+    # fixed by asking again; callers route those through a batch export instead.
+    is_retryable <- grepl("429", msg) || grepl("Unknown Error", msg) ||
+      grepl("cannot open the connection", msg)
 
     if (is_retryable && i < max_retries) {
       delay <- initial_delay * (2^(i - 1)) + runif(1, 0, 1)

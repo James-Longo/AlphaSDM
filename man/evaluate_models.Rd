@@ -6,26 +6,22 @@
 \usage{
 evaluate_models(
   data,
-  predict_coords = NULL,
+  predict_coords,
   scale = 10,
-  methods = NULL,
-  aoi_year = NULL,
-  bg_ratio = NULL,
+  methods = c("svm", "rf", "gbt"),
+  bg_ratio = 1,
   bg_replicates = TRUE,
-  balance_trees = TRUE,
   params = list(),
-  async = FALSE,
-  persist_classifier = FALSE,
-  gee_project = NULL,
-  options = list()
+  gee_project = NULL
 )
 }
 \arguments{
 \item{data}{Data frame of training records with `longitude`, `latitude`, `year`
 and a `present` column (1 = presence; include 0 rows to supply real absences).}
 
-\item{predict_coords}{Data frame of coordinates to score (required). Include a
-`present` column to compute evaluation metrics on it.}
+\item{predict_coords}{Data frame of records to score, with `longitude`,
+`latitude` and `year` (as from [format_data()]). Include a `present` column
+to compute evaluation metrics.}
 
 \item{scale}{Embedding resolution in metres (default 10, the native resolution).}
 
@@ -37,11 +33,10 @@ follow the regression-family recipe of Barbet-Massin et al. (2012):
 a large RANDOM pseudo-absence set suits them best (see
 `?generate_pseudo_absences`).}
 
-\item{aoi_year}{Year of the Alpha Earth mosaic to sample (default 2023).}
-
-\item{bg_ratio}{Optional absence:presence ratio for the balanced background pool
-(the methods whose registry entry declares `pool = "balanced"`). Overrides
-`balance_trees` when set.}
+\item{bg_ratio}{Absence-to-presence ratio for the models that train on a
+balanced pool (rf, gbt and knn): their absences are thinned at random to
+`bg_ratio` times the number of presences. Default 1. `NULL` gives them
+every absence. svm and maxent always use every absence.}
 
 \item{bg_replicates}{Logical (default TRUE). Train the balanced-pool
 methods (rf, gbt, knn) on k = min(10, ceil(10000/pool size))
@@ -49,10 +44,6 @@ replicate thinned subsets of the absences and average their
 predictions (Barbet-Massin et al. 2012, Table 1: several runs when
 few pseudo-absences are used). Requires `bg_ratio` thinning to be
 active; methods on the full pool are never replicated.}
-
-\item{balance_trees}{Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
-balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
-the trees all background points.}
 
 \item{params}{Named list of settings for individual models, using the
 argument names of the Earth Engine classifier, for example
@@ -65,15 +56,7 @@ See the Earth Engine reference for `ee.Classifier.smileRandomForest`,
 `smileGradientTreeBoost`, `libsvm`, `amnhMaxent`, `smileKNN` and
 `smileCart` for every available setting.}
 
-\item{async}{Logical; use asynchronous GEE export for large prediction sets.}
-
-\item{persist_classifier}{Logical (default `FALSE`); persist internally-persistable
-classifiers (RF/CART) to a temporary GEE asset before scoring.}
-
 \item{gee_project}{Optional Earth Engine project override (normally set via [setup_gee()]).}
-
-\item{options}{Named list of advanced options; `batch_size` sets how many
-coordinates are scored per Earth Engine request (default 4000).}
 }
 \value{
 A list containing `methods`, `model_metadata`,

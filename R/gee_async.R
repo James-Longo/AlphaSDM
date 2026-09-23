@@ -1,12 +1,11 @@
-#' Detect a Google Earth Engine synchronous-compute limit error
+#' Detect a Google Earth Engine compute-limit error
 #'
-#' Earth Engine's interactive `getInfo()` has a compute-time budget and a
-#' 5000-feature page cap. Large point sets, many classes and expensive classifiers
-#' exceed that budget and surface as one of the messages matched here. These are
-#' the cases the batch-export path exists for.
+#' Earth Engine's interactive requests have a compute-time and memory budget.
+#' Large point sets and expensive classifiers exceed it and fail with one of the
+#' messages matched here. These are the cases the batch-export path exists for.
 #'
 #' @param e A condition or a string.
-#' @return TRUE when the message looks like a synchronous-compute limit.
+#' @return TRUE when the message looks like a compute limit.
 #' @noRd
 is_gee_timeout <- function(e) {
   msg <- if (inherits(e, "condition")) conditionMessage(e) else as.character(e)
@@ -20,33 +19,27 @@ GEE_LIMIT_PATTERN <- paste(c(
   "Too many concurrent aggregations", "computation took too long", "out of memory"),
   collapse = "|")
 
-#' Resolve a writable Earth Engine folder for temporary exports
-#' @param project Earth Engine project id, or NULL to use the saved one.
-#' @return An asset folder path. Errors when no writable folder can be found.
+#' A fresh name for a temporary asset in the user's project
+#'
+#' Every temporary asset AlphaSDM writes is named `alphasdm_<kind>_<timestamp>_<code>`,
+#' which is what gee_clean_assets() matches on.
+#' @param kind Short label, such as "table" or "clf".
+#' @return list(id = full asset id, description = task description).
 #' @noRd
-async_asset_root <- function(project = NULL) {
-  ee <- reticulate::import("ee")
+temp_asset_id <- function(kind, project = NULL) {
   project <- .resolve_project(project)
-  if (!is.null(project) && nzchar(project)) return(sprintf("projects/%s/assets", project))
-
-  # Last resort. On a Cloud project ee.data.getAssetRoots() returns the project's
-  # assets rather than its roots, so the first entry is typically an image or table,
-  # not a folder. Writing under it fails with "is neither a folder nor an image
-  # collection", so only accept an entry that really is a folder.
-  roots <- try(ee$data$getAssetRoots(), silent = TRUE)
-  if (!inherits(roots, "try-error")) {
-    for (r in roots) {
-      if (identical(r[["type"]], "FOLDER") && !is.null(r[["id"]])) return(r[["id"]])
-    }
-  }
-  stop("Async export needs a writable GEE asset folder. Pass gee_project = '<your-project>' ",
-       "or run setup_gee() so the project id is saved.", call. = FALSE)
+  if (is.null(project))
+    stop("Batch exports need an Earth Engine project. Run setup_gee() or pass ",
+         "gee_project.", call. = FALSE)
+  code <- paste(sample(c(letters, 0:9), 6, replace = TRUE), collapse = "")
+  name <- sprintf("alphasdm_%s_%s_%s", kind, format(Sys.time(), "%Y%m%d%H%M%S"), code)
+  list(id = sprintf("projects/%s/assets/%s", project, name), description = name)
 }
 
 #' Read a FeatureCollection in pages, avoiding the 5000-feature cap
 #'
-#' Intended for a materialised asset. The values are already computed, so each page
-#' is cheap and stays inside the synchronous compute limit. Paging a lazy collection
+#' Intended for a stored asset. The values are already computed, so each page is
+#' cheap and stays inside the interactive compute limit. Paging a lazy collection
 #' instead re-evaluates its graph once per page.
 #'
 #' @param fc An `ee$FeatureCollection`.
@@ -67,38 +60,10 @@ read_fc_paged <- function(fc, page_size = 5000L) {
   list(features = feats)
 }
 
-#' Start an Export.table.toAsset batch task without waiting for it
-#'
-#' Start several exports before awaiting any of them and the chunks run
-#' concurrently server-side.
-#'
-#' @param fc An `ee$FeatureCollection` to export.
-#' @param project Earth Engine project id, or NULL to use the saved one.
-#' @param select Optional property names to keep.
-#' @return A list with the running `task` and its `asset_id`.
-#' @noRd
-ee_start_fc_export <- function(fc, project = NULL, select = NULL) {
-  ee <- reticulate::import("ee")
-  if (!is.null(select)) fc <- fc$select(as.list(select))
-
-  root   <- async_asset_root(project)
-  stamp  <- format(Sys.time(), "%Y%m%d%H%M%S")
-  suffix <- paste(sample(c(letters, 0:9), 6, replace = TRUE), collapse = "")
-  asset_id <- sprintf("%s/alphasdm_async_%s_%s", root, stamp, suffix)
-
-  task <- ee$batch$Export$table$toAsset(
-    collection = fc, description = paste0("alphasdm_async_", suffix), assetId = asset_id
-  )
-  task$start()
-  sdm_info(sprintf("Async batch export started (server-side) -> %s", asset_id), indent = 1L)
-  list(task = task, asset_id = asset_id)
-}
-
 #' Describe how far along an Earth Engine batch task is
 #'
-#' The Operations API carries a progress fraction, named stages with work-unit
-#' counts, and compute consumed, none of which `task$status()` exposes. Any field
-#' may be absent on a young task; the caller gets whatever is available.
+#' The Operations API carries a progress fraction and compute consumed, which
+#' `task$status()` does not. Either may be absent on a young task.
 #'
 #' @param op_name Operation name from `task$status()[["name"]]`.
 #' @return A string to append to a progress line, empty when nothing is reported yet.
@@ -113,10 +78,7 @@ ee_task_progress <- function(op_name) {
     if (length(v) != 1L || is.na(v)) NULL else v
   }
   bits <- character(0)
-  # One decimal, because a long export can spend an hour inside a single percent
-  # and a rounded whole number makes steady work look like a stall. Internal
-  # detail such as stage names and attempt counters stays out of the line;
-  # percent and compute consumed are what a reader can act on.
+  # One decimal: a long export can spend an hour inside a single percent.
   pct <- one(m$progress)
   if (!is.null(pct)) bits <- c(bits, sprintf("%.1f%%", 100 * pct))
   eecu <- one(m$batchEecuUsageSeconds)
@@ -126,8 +88,8 @@ ee_task_progress <- function(op_name) {
 
 #' Print the live task-monitor links, once per session
 #'
-#' Batch tasks can sit in Google's queue for hours when the monthly EECU
-#' quota is exhausted; the wait is visible (and tasks cancellable) in the
+#' Batch tasks can sit in Google's queue for hours when the monthly compute
+#' quota is exhausted; the wait is visible, and tasks can be cancelled, in the
 #' Code Editor Tasks tab and the Cloud Console Earth Engine page.
 #' @noRd
 sdm_task_monitor_hint <- function(project = NULL) {
@@ -136,91 +98,160 @@ sdm_task_monitor_hint <- function(project = NULL) {
   project <- .resolve_project(project)
   sdm_info("Watch batch tasks live: https://code.earthengine.google.com/tasks",
            indent = 1L)
-  if (!is.null(project) && nzchar(project))
+  if (!is.null(project))
     sdm_info(sprintf(
       "  or in Cloud Console: https://console.cloud.google.com/earth-engine/tasks?project=%s",
       project), indent = 1L)
   invisible()
 }
 
-#' Poll an export task until it finishes
+#' Wait for Earth Engine batch tasks to finish
 #'
-#' Prints roughly one line a minute so a long export shows progress rather than
-#' sitting silent.
+#' Waits for as long as the tasks run: Earth Engine ends its own tasks, and
+#' queueing is normal scheduling rather than a fault. Prints a line when the
+#' state changes and about once a minute otherwise.
 #'
-#' @param handle A handle from `ee_start_fc_export()`.
+#' @param tasks Named list of started `ee.batch.Task` objects.
 #' @param poll_seconds Seconds between status checks.
-#' @param max_minutes Overall limit. NULL, the default, waits for as long as the
-#'   task runs; Earth Engine ends its own tasks, so this does not wait forever.
-#'   Set ALPHASDM_MAX_WAIT_MINUTES for an unattended run that must not block.
-#' @param max_queue_minutes Give up if the task has not started within this long.
-#'   NULL, the default, waits: queueing is normal scheduling, not a fault.
-#' @return The asset id. Errors when the task fails, is cancelled, or gives up.
+#' @return Named character vector of error messages for the tasks that failed
+#'   or were cancelled; empty when all completed. The caller decides what a
+#'   failure means.
 #' @noRd
-ee_await_export <- function(handle, poll_seconds = 15, max_minutes = NULL,
-                            max_queue_minutes = NULL) {
+ee_await_tasks <- function(tasks, poll_seconds = 15) {
   sdm_task_monitor_hint()
-  env_cap <- suppressWarnings(as.numeric(Sys.getenv("ALPHASDM_MAX_WAIT_MINUTES", "")))
-  if (!is.na(env_cap) && env_cap > 0) max_minutes <- env_cap
-  deadline <- if (is.null(max_minutes)) NULL else Sys.time() + max_minutes * 60
-  queue_deadline <- if (is.null(max_queue_minutes)) NULL else Sys.time() + max_queue_minutes * 60
-  ever_ran <- FALSE
-  start <- Sys.time(); last_beat <- 0; last_state <- ""
+  state <- setNames(rep("READY", length(tasks)), names(tasks))
+  error <- setNames(character(0), character(0))
+  start <- Sys.time(); last_beat <- -Inf; last_line <- ""
   repeat {
-    st    <- handle$task$status()
-    state <- st[["state"]]
-    if (identical(state, "COMPLETED")) break
-    if (state %in% c("FAILED", "CANCELLED", "CANCEL_REQUESTED")) {
-      msg <- if (!is.null(st[["error_message"]])) st[["error_message"]] else state
-      stop(sprintf("Async GEE export %s: %s", state, msg))
+    for (nm in names(tasks)[!state %in% c("COMPLETED", "FAILED", "CANCELLED")]) {
+      st <- tasks[[nm]]$status()
+      state[[nm]] <- if (st[["state"]] == "CANCEL_REQUESTED") "CANCELLED" else st[["state"]]
+      if (state[[nm]] %in% c("FAILED", "CANCELLED"))
+        error[[nm]] <- if (!is.null(st[["error_message"]])) st[["error_message"]] else state[[nm]]
     }
-    if (identical(state, "RUNNING")) ever_ran <- TRUE
-    # Abandon a task that never got off the queue, but keep waiting on one that is
-    # running: the wait that is worth cutting short is the backlog, not the work.
-    if (!ever_ran && !is.null(queue_deadline) && Sys.time() > queue_deadline) {
-      try(handle$task$cancel(), silent = TRUE)
-      stop(sprintf("Async GEE export still queued after %g min (asset %s)",
-                   max_queue_minutes, handle$asset_id))
-    }
-    if (!is.null(deadline) && Sys.time() > deadline) {
-      try(handle$task$cancel(), silent = TRUE)
-      stop(sprintf("Async GEE export exceeded max_minutes = %g (asset %s)",
-                   max_minutes, handle$asset_id))
-    }
-    # Report the task's own state on every change, plus a heartbeat about once a
-    # minute. READY means queued and RUNNING means working, and on a throttled tier
-    # the difference between them is most of the wait.
+    if (all(state %in% c("COMPLETED", "FAILED", "CANCELLED"))) break
     elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
-    if (!identical(state, last_state) || elapsed - last_beat >= 60) {
-      lbl <- switch(state, READY = "queued", RUNNING = "running", tolower(state))
-      sdm_info(sprintf("export %s server-side ...%s (%s elapsed)", lbl,
-                       ee_task_progress(st[["name"]]),
+    running <- names(tasks)[state == "RUNNING"]
+    line <- if (length(tasks) == 1L) {
+      switch(state[[1]], READY = "queued", RUNNING = "running", tolower(state[[1]]))
+    } else {
+      sprintf("%d of %d done, %d running, %d queued", sum(state == "COMPLETED"),
+              length(tasks), length(running), sum(state == "READY"))
+    }
+    if (!identical(line, last_line) || elapsed - last_beat >= 60) {
+      detail <- if (length(running))
+        ee_task_progress(tasks[[running[1]]]$status()[["name"]]) else ""
+      sdm_info(sprintf("export %s%s (%s elapsed)", line, detail,
                        if (elapsed < 600) sprintf("%.0fs", elapsed)
                        else sprintf("%.0f min", elapsed / 60)), indent = 2L)
-      last_beat <- elapsed; last_state <- state
+      last_beat <- elapsed; last_line <- line
     }
     Sys.sleep(poll_seconds)
   }
-  handle$asset_id
+  error
 }
 
-#' Show the status of recent AlphaSDM Earth Engine batch tasks
+#' Compute FeatureCollections into temporary assets and read them as one
 #'
-#' Lists the export and classifier tasks AlphaSDM has started, with each task's state
-#' and age. Call it from a second session to see what Earth Engine is doing while a
-#' long run is in progress.
+#' A collection is lazy, so a `sampleRegions` over the 64 embedding bands is
+#' re-run by every request that touches it. Exporting it once means training,
+#' classifying and scoring all read stored values instead. Each collection is
+#' exported as its own task, so the tasks run concurrently and each export's
+#' graph stays small.
 #'
-#' @param active_only TRUE shows only pending and running tasks. FALSE also lists
-#'   recently finished ones.
+#' WARNING: the assets are not removed here; the caller deletes them.
+#'
+#' @param fcs List of `ee$FeatureCollection`s. Exported features need geometry.
+#' @return list(fc = the stored collections merged, asset_ids).
+#' @noRd
+ee_store_tables <- function(fcs, project = NULL) {
+  ee <- reticulate::import("ee")
+  ids <- lapply(seq_along(fcs), function(i) temp_asset_id("table", project))
+  tasks <- lapply(seq_along(fcs), function(i) {
+    task <- ee$batch$Export$table$toAsset(collection = fcs[[i]],
+                                          description = ids[[i]]$description,
+                                          assetId = ids[[i]]$id)
+    task$start()
+    task
+  })
+  names(tasks) <- vapply(ids, `[[`, "", "description")
+  failed <- ee_await_tasks(tasks)
+  asset_ids <- vapply(ids, `[[`, "", "id")
+  if (length(failed)) {
+    for (a in asset_ids) ee_delete_asset_quietly(a)
+    stop(sprintf("Storing the table on Earth Engine failed: %s",
+                 paste(unique(failed), collapse = "; ")), call. = FALSE)
+  }
+  stored <- lapply(asset_ids, ee$FeatureCollection)
+  list(fc = Reduce(function(a, b) a$merge(b), stored), asset_ids = asset_ids)
+}
+
+#' Read a FeatureCollection through a batch export instead of getInfo()
+#'
+#' Slower than an interactive read but under no interactive compute limit, so it
+#' carries work that `getInfo()` refuses. The temporary asset is deleted.
+#'
+#' @return A list with a `features` element, matching the shape `getInfo()` returns.
+#' @noRd
+ee_read_via_batch <- function(fc, project = NULL) {
+  ee <- reticulate::import("ee")
+  stored <- ee_store_tables(list(fc), project)
+  on.exit(ee_delete_asset_quietly(stored$asset_ids), add = TRUE)
+  read_fc_paged(stored$fc)
+}
+
+#' Store a trained classifier in an asset and load it back
+#'
+#' Inline, a large tree model is one value in the same graph as `classify`, and
+#' big forests fail there with "Computed value is too large".
+#' `Export.classifier.toAsset` writes the model to an asset, and
+#' `ee.Classifier.load()` then refers to it as stored data. Earth Engine can
+#' store only random forests and CART.
+#'
+#' WARNING: the asset is not removed here; the caller deletes it.
+#'
+#' @param clf A trained `ee$Classifier`.
+#' @return A list with the reloaded `classifier` and its `asset_id`.
+#' @noRd
+ee_persist_classifier <- function(clf, project = NULL) {
+  ee <- reticulate::import("ee")
+  id <- temp_asset_id("clf", project)
+  task <- ee$batch$Export$classifier$toAsset(classifier = clf, description = id$description,
+                                             assetId = id$id)
+  task$start()
+  sdm_info(sprintf("Storing the classifier -> %s", id$id), indent = 1L)
+  failed <- ee_await_tasks(setNames(list(task), id$description))
+  if (length(failed)) stop(sprintf("Storing the classifier failed: %s", failed), call. = FALSE)
+  list(classifier = ee$Classifier$load(id$id), asset_id = id$id)
+}
+
+#' Delete an Earth Engine asset, ignoring failure
+#' @param asset_id Asset id(s) to delete.
+#' @noRd
+ee_delete_asset_quietly <- function(asset_id) {
+  ee <- reticulate::import("ee")
+  for (a in asset_id) try(ee$data$deleteAsset(a), silent = TRUE)
+  invisible(NULL)
+}
+
+#' Show recent AlphaSDM Earth Engine tasks
+#'
+#' Lists the export tasks AlphaSDM has started, with each task's state and age.
+#' Call it from a second R session to see what Earth Engine is doing while a
+#' long run is in progress. To check the connection itself, use
+#' [gee_status()].
+#'
+#' @param active_only TRUE shows only pending and running tasks; FALSE also
+#'   lists recently finished ones.
 #' @param since_minutes Only include tasks created within this many minutes.
 #' @return A data frame of tasks with `description`, `state` and `age_min`,
 #'   invisibly. Also prints them.
 #' @examples
 #' \dontrun{
-#' sdm_gee_status(active_only = FALSE)
+#' gee_tasks(active_only = FALSE)
 #' }
 #' @export
-sdm_gee_status <- function(active_only = TRUE, since_minutes = 180) {
+gee_tasks <- function(active_only = TRUE, since_minutes = 180) {
   ensure_gee_authenticated()
   ee  <- reticulate::import("ee")
   ops <- tryCatch(ee$data$listOperations(), error = function(e) NULL)
@@ -245,139 +276,36 @@ sdm_gee_status <- function(active_only = TRUE, since_minutes = 180) {
   invisible(df)
 }
 
-#' Export a FeatureCollection to a temporary Earth Engine asset and wait for it
-#'
-#' A batch task has no synchronous compute limit, so this path carries work that
-#' `getInfo()` cannot.
-#'
-#' WARNING: this writes an asset and does not remove it. The caller has to delete
-#' it with `ee_delete_asset_quietly()`.
-#'
-#' @param fc An `ee$FeatureCollection` to export.
-#' @param project Earth Engine project id, or NULL to use the saved one.
-#' @param select Optional property names to keep.
-#' @param poll_seconds Seconds between status checks.
-#' @param max_minutes Give up after this long.
-#' @return The new asset id.
-#' @noRd
-ee_export_fc_to_asset <- function(fc, project = NULL, select = NULL,
-                                  poll_seconds = 15, max_minutes = NULL) {
-  handle <- ee_start_fc_export(fc, project, select)
-  ee_await_export(handle, poll_seconds, max_minutes)
-}
-
-#' Delete an Earth Engine asset, ignoring failure
-#' @param asset_id Asset to delete.
-#' @return Nothing. Deletes the asset if it exists.
-#' @noRd
-ee_delete_asset_quietly <- function(asset_id) {
-  ee <- reticulate::import("ee")
-  try(ee$data$deleteAsset(asset_id), silent = TRUE)
-  invisible(NULL)
-}
-
-#' Compute a FeatureCollection once into an asset and return it
-#'
-#' An Earth Engine collection is lazy, so a `sampleRegions` over the 64 embedding
-#' bands is re-run on every request that touches it. Exporting it once to an asset
-#' means training, classifying and scoring all read stored values instead. This is
-#' what keeps large jobs inside the compute and memory limits.
-#'
-#' The data stays on Earth Engine throughout.
-#'
-#' WARNING: this writes an asset and does not remove it. The caller has to delete
-#' it with `ee_delete_asset_quietly()`.
-#'
-#' @param fc An `ee$FeatureCollection` to materialise.
-#' @param project Earth Engine project id, or NULL to use the saved one.
-#' @param select Optional property names to keep.
-#' @param poll_seconds Seconds between status checks.
-#' @param max_minutes Give up after this long.
-#' @return A list with the materialised `fc` and its `asset_id`.
-#' @noRd
-ee_materialize_fc_async <- function(fc, project = NULL, select = NULL,
-                                    poll_seconds = 15, max_minutes = NULL) {
-  ee <- reticulate::import("ee")
-  asset_id <- ee_export_fc_to_asset(fc, project, select, poll_seconds, max_minutes)
-  list(fc = ee$FeatureCollection(asset_id), asset_id = asset_id)
-}
-
-#' Store a trained classifier in an asset and load it back
-#'
-#' Used inline, a large tree model lives as one value in the same graph as
-#' `classify`, and deep or many-class forests fail there with "Computed value is too
-#' large". `Export.classifier.toAsset` trains as its own batch task and writes the
-#' model to an asset, and `ee.Classifier.load()` then refers to it as stored data, so
-#' the classify graph no longer carries the model itself.
-#'
-#' WARNING: this writes an asset and does not remove it. The caller has to delete
-#' it with `ee_delete_asset_quietly()`.
-#'
-#' @param clf A trained `ee$Classifier`.
-#' @param project Earth Engine project id, or NULL to use the saved one.
-#' @param poll_seconds Seconds between status checks.
-#' @param max_minutes Give up after this long.
-#' @param max_queue_minutes Give up if the task has not started within this long.
-#' @return A list with the reloaded `classifier` and its `asset_id`.
-#' @noRd
-ee_persist_classifier <- function(clf, project = NULL, poll_seconds = 15, max_minutes = NULL,
-                                  max_queue_minutes = NULL) {
-  ee     <- reticulate::import("ee")
-  root   <- async_asset_root(project)
-  stamp  <- format(Sys.time(), "%Y%m%d%H%M%S")
-  suffix <- paste(sample(c(letters, 0:9), 6, replace = TRUE), collapse = "")
-  asset_id <- sprintf("%s/alphasdm_clf_%s_%s", root, stamp, suffix)
-
-  task <- ee$batch$Export$classifier$toAsset(
-    classifier = clf, description = paste0("alphasdm_clf_", suffix), assetId = asset_id
-  )
-  task$start()
-  sdm_info(sprintf("Persisting classifier via batch export -> %s", asset_id), indent = 1L)
-  ee_await_export(list(task = task, asset_id = asset_id), poll_seconds, max_minutes,
-                  max_queue_minutes = max_queue_minutes)
-  list(classifier = ee$Classifier$load(asset_id), asset_id = asset_id)
-}
-
 #' Remove leftover AlphaSDM temporary assets
 #'
-#' The package writes temporary Earth Engine assets while it works and deletes them
-#' when it finishes. A run that is killed, crashes, or loses its connection never
-#' reaches that cleanup, so the asset stays and counts against the project's storage
+#' AlphaSDM writes temporary Earth Engine assets while it works and deletes them
+#' when it finishes. A run that is killed or loses its connection never reaches
+#' that cleanup, so the asset stays and counts against the project's storage
 #' quota. This removes those leftovers.
 #'
-#' Only assets this package created are considered, matched on the `alphasdm_` name
-#' it gives them. An asset is kept if a batch task for it is still pending or
-#' running, or if it is newer than `older_than_hours`, so a job in progress in
-#' another session is not disturbed. A large export can run for many hours, which is
-#' why the default is deliberately generous.
+#' Only assets named by AlphaSDM (`alphasdm_...`) are considered. An asset is
+#' kept if a task for it is still pending or running, or if it is newer than
+#' `older_than_hours`, so a job in progress in another session is not disturbed.
 #'
 #' @param older_than_hours Keep assets younger than this. Default 48.
 #' @param dry_run If TRUE, report what would be deleted and delete nothing.
 #' @param project Earth Engine project id, or NULL to use the saved one.
-#' @param quiet If TRUE, do not print anything.
 #' @return The asset ids removed, or the ones that would be, invisibly.
 #' @examples
 #' \dontrun{
-#' sdm_clean_assets(dry_run = TRUE)   # list what would be removed
+#' gee_clean_assets(dry_run = TRUE)   # list what would be removed
 #' }
 #' @export
-sdm_clean_assets <- function(older_than_hours = 48, dry_run = FALSE,
-                             project = NULL, quiet = FALSE) {
+gee_clean_assets <- function(older_than_hours = 48, dry_run = FALSE, project = NULL) {
   ensure_gee_authenticated(project)
   ee <- reticulate::import("ee")
-  ensure_gee_authenticated(project = project)
-  root <- async_asset_root(project)
-
-  assets <- tryCatch(ee$data$listAssets(list(parent = root))[["assets"]],
+  project <- .resolve_project(project)
+  assets <- tryCatch(ee$data$listAssets(list(parent = sprintf("projects/%s/assets", project)))[["assets"]],
                      error = function(e) NULL)
-  if (is.null(assets) || length(assets) == 0) {
-    if (!quiet) sdm_info("No Earth Engine assets found.")
-    return(invisible(character(0)))
-  }
   ids  <- vapply(assets, function(a) a[["id"]], character(1))
-  mine <- grep("alphasdm_(async|clf|img)_[0-9]{14}_", ids, value = TRUE)
+  mine <- grep("alphasdm_[a-z]+_[0-9]{14}_", ids, value = TRUE)
   if (length(mine) == 0) {
-    if (!quiet) sdm_info("No leftover AlphaSDM assets.")
+    sdm_info("No leftover AlphaSDM assets.")
     return(invisible(character(0)))
   }
 
@@ -391,79 +319,17 @@ sdm_clean_assets <- function(older_than_hours = 48, dry_run = FALSE,
 
   stamp <- as.POSIXct(sub(".*_([0-9]{14})_.*", "\\1", mine), format = "%Y%m%d%H%M%S", tz = "")
   age_h <- as.numeric(difftime(Sys.time(), stamp, units = "hours"))
-  suffix <- sub(".*_[0-9]{14}_", "", mine)
-
-  drop <- !is.na(age_h) & age_h > older_than_hours &
-    !vapply(suffix, function(sfx) any(grepl(sfx, active, fixed = TRUE)), logical(1))
+  drop  <- !is.na(age_h) & age_h > older_than_hours & !basename(mine) %in% active
   targets <- mine[drop]
 
   if (length(targets) == 0) {
-    if (!quiet) sdm_info(sprintf("%d AlphaSDM asset(s) present, none old enough to remove.",
-                                 length(mine)))
+    sdm_info(sprintf("%d AlphaSDM asset%s present, none old enough to remove.",
+                     length(mine), if (length(mine) == 1) "" else "s"))
     return(invisible(character(0)))
   }
-  if (!dry_run) for (a in targets) ee_delete_asset_quietly(a)
-  if (!quiet) {
-    sdm_info(sprintf("%s %d leftover AlphaSDM asset%s (older than %g h).",
-                     if (dry_run) "Would remove" else "Removed", length(targets),
-                     if (length(targets) == 1) "" else "s", older_than_hours))
-  }
+  if (!dry_run) ee_delete_asset_quietly(targets)
+  sdm_info(sprintf("%s %d leftover AlphaSDM asset%s (older than %g h).",
+                   if (dry_run) "Would remove" else "Removed", length(targets),
+                   if (length(targets) == 1) "" else "s", older_than_hours))
   invisible(targets)
-}
-
-
-#' Read a FeatureCollection through a batch export instead of getInfo()
-#'
-#' Export to a temporary asset, read it back in pages, then delete it. Slower than
-#' `getInfo()` but under no synchronous compute limit, so it carries work that
-#' `getInfo()` refuses.
-#'
-#' Unlike the other export helpers here, this one deletes the asset it creates.
-#'
-#' @param fc An `ee$FeatureCollection` to read.
-#' @param project Earth Engine project id, or NULL to use the saved one.
-#' @param select Optional property names to keep.
-#' @param poll_seconds Seconds between status checks.
-#' @param max_minutes Give up after this long.
-#' @return A list with a `features` element, matching the shape `getInfo()` returns.
-#' @noRd
-ee_table_to_info_async <- function(fc, project = NULL, select = NULL,
-                                   poll_seconds = 15, max_minutes = NULL) {
-  ee <- reticulate::import("ee")
-  asset_id <- ee_export_fc_to_asset(fc, project, select, poll_seconds, max_minutes)
-  info <- read_fc_paged(ee$FeatureCollection(asset_id))
-  ee_delete_asset_quietly(asset_id)
-  info
-}
-
-#' Store a large sampled table as several concurrent chunk exports
-#'
-#' One table export evaluates one sampling graph over every point; chunking
-#' keeps each export's graph small and the chunks run concurrently server-side.
-#'
-#' @param dfs List of data frames, one per chunk, each with longitude, latitude
-#'   and the property columns.
-#' @param scale Sampling scale in metres.
-#' @param years Years list passed through to sampling.
-#' @param project Earth Engine project id or NULL.
-#' @return list(fc = merged FeatureCollection over all chunk assets,
-#'   asset_ids = character vector for cleanup).
-#' @noRd
-ee_materialize_fc_chunked <- function(dfs, scale, years, project = NULL,
-                                      poll_seconds = 15) {
-  ee <- reticulate::import("ee")
-  handles <- vector("list", length(dfs))
-  for (i in seq_along(dfs)) {
-    fc_i <- get_embeddings_at_fc(upload_points_to_gee(dfs[[i]]), scale,
-                                 properties = c("year", "present", "row_id"),
-                                 geometries = TRUE, years = years)
-    handles[[i]] <- ee_start_fc_export(fc_i, project)
-  }
-  sdm_info(sprintf("%d chunk exports started; awaiting all", length(handles)),
-           indent = 2L)
-  for (h in handles) ee_await_export(h, poll_seconds)
-  ids <- vapply(handles, function(h) h$asset_id, character(1))
-  fcs <- lapply(ids, ee$FeatureCollection)
-  fc  <- Reduce(function(a, b) a$merge(b), fcs)
-  list(fc = fc, asset_ids = ids)
 }

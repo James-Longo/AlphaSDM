@@ -16,22 +16,6 @@ method_settings <- function(methods, params) {
   setNames(lapply(methods, function(m) params[[m]]), methods)
 }
 
-#' The default model ensemble
-#'
-#' Three methods that make different modelling assumptions, so their errors are
-#' only partly correlated and averaging them is worth more than averaging
-#' variations on one idea. MaxEnt is deliberately NOT a default: its
-#' literature recipe is ~10,000 RANDOM background points (Barbet-Massin et
-#' al. 2012; Phillips & Dudik 2008), which conflicts with whatever strategy
-#' the user chose for the rest of the ensemble and costs a second large
-#' pseudo-absence set. To use it, generate a random set and run it alone:
-#'   pa_mx <- generate_pseudo_absences(pres, aoi, "random", n = 10000)
-#'   evaluate_models(pa_mx, ..., methods = "maxent")
-#' The lighter methods (similarity, knn, cart, mindist) also stay available
-#' via `methods=`.
-#' @noRd
-DEFAULT_METHODS <- c("svm", "rf", "gbt")
-
 #' Reject presence-only training data with directions
 #' @noRd
 stop_if_presence_only <- function(data) {
@@ -46,12 +30,7 @@ stop_if_presence_only <- function(data) {
 #' Internal Unified GEE Training Pipeline
 #' @noRd
 fit_gee_models <- function(train_df, methods, scale, training_params,
-                           bg_ratio = NULL, bg_replicates = FALSE,
-                           persist_classifier = FALSE, project = NULL) {
-  # Persistence is opt-in. Map exports run in the batch system, which evaluates the
-  # model inline, so storing it first adds a wait without changing the result. Which
-  # methods can store a model is the registry's `persistable` field; svm, gbt and
-  # maxent ignore the argument.
+                           bg_ratio = NULL, bg_replicates = FALSE, project = NULL) {
   ee <- reticulate::import("ee")
 
   # Optional class balancing: thin the background collection to a target
@@ -77,23 +56,30 @@ fit_gee_models <- function(train_df, methods, scale, training_params,
   # trees, forests) otherwise differ slightly each time they are retrained,
   # which happens for every map tile. See train_gee_model().
   train_df$row_id <- seq_len(nrow(train_df))
-  upload_df    <- train_df[, c("longitude", "latitude", "year", "present", "row_id")]
-  sdm_info(sprintf("Transferring %d coordinates ...", nrow(upload_df)), indent = 1L)
+  sdm_info(sprintf("Transferring %d coordinates ...", nrow(train_df)), indent = 1L)
 
-  upload_fc    <- upload_points_to_gee(upload_df)
-  sampled_fc   <- get_embeddings_at_fc(upload_fc, scale,
-                                       properties = c("year", "present", "row_id"),
-                                       geometries = TRUE,
-                                       years      = as.list(unique(as.integer(upload_df$year))))
-  pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
-  bg_all       <- sampled_fc$filter(ee$Filter$eq("present", 0L))
-  n_pres       <- sum(train_df$present == 1)
-  n_background <- sum(train_df$present == 0)
+  # Store the sampled training table once, in chunks of 5000 rows exported as
+  # concurrent tasks. Everything downstream is lazy and re-evaluates its input
+  # graph on every use, so training and every map tile then read stored values
+  # instead of re-running the 64-band sampling.
+  sdm_info("Computing the sampled training data (server-side) ...", indent = 1L)
+  years  <- as.list(unique(as.integer(train_df$year)))
+  chunks <- split(seq_len(nrow(train_df)), ceiling(seq_len(nrow(train_df)) / 5000))
+  stored <- ee_store_tables(lapply(chunks, function(i) get_embeddings_at_fc(
+    upload_points_to_gee(train_df[i, c("longitude", "latitude", "year", "present", "row_id")]),
+    scale, properties = c("year", "present", "row_id"), geometries = TRUE, years = years)),
+    project = project)
+  sampled_fc     <- stored$fc
+  training_asset <- stored$asset_ids
+  pres_sampled   <- sampled_fc$filter(ee$Filter$eq("present", 1L))
+  bg_all         <- sampled_fc$filter(ee$Filter$eq("present", 0L))
+  n_pres         <- sum(train_df$present == 1)
+  n_background   <- sum(train_df$present == 0)
 
   # Balanced-pool methods train on k replicate thinned subsets of the
   # absences and average (Barbet-Massin et al. 2012 Table 1: several runs
   # with few pseudo-absences; k from their measured asymptote). Replication
-  # requires thinning to be active — identical pools would be pointless.
+  # requires thinning to be active, since identical pools would be pointless.
   n_bal <- as.integer(ceiling(
     (if (is.null(bg_ratio)) 1 else as.numeric(bg_ratio)) * n_pres))
   k_rep <- if (isTRUE(bg_replicates) && !is.null(bg_ratio) &&
@@ -106,74 +92,6 @@ fit_gee_models <- function(train_df, methods, scale, training_params,
   bal_pools <- lapply(seq_len(k_rep) - 1L, function(i)
     balance_bg(bg_all, n_pres, n_background, seed = 42L + i))
   bg_balanced <- bal_pools[[1]]
-
-  # Store the training rows the requested methods will actually fit on. Everything
-  # downstream is lazy and re-evaluates its input graph on every use, and every
-  # worker loads the whole stored table, so both the graph and the table must be no
-  # bigger than the training set itself. When every method trains on the presence or
-  # balanced pool, that is the balanced rows, not the full sample.
-  sdm_info("Computing the sampled training data (server-side) ...", indent = 1L)
-  training_asset <- NULL
-  pools <- vapply(methods, method_pool, character(1))
-  # Replicated pools are k different subsets of the absences, so the full
-  # sample must be the stored object in that case.
-  many_subsets <- length(bal_pools) > 1L
-  to_store <- if (all(pools %in% c("presence", "balanced")) && !many_subsets)
-    pres_sampled$merge(bg_balanced) else sampled_fc
-  # ALPHASDM_TABLE_ROUTE: "single" (default), "chunked", or "graph" to skip storing.
-  # A single export refused by Earth Engine escalates to chunked exports along the
-  # upload's existing payload chunks, so every row is kept and each export's
-  # sampling graph stays small.
-  route <- Sys.getenv("ALPHASDM_TABLE_ROUTE", "single")
-  # Data spanning several upload chunks routes straight to chunked exports: a
-  # single export of that much sampling reliably exceeds batch memory at fine
-  # scales, and waiting for the refusal costs the five-attempt retry cycle.
-  # Provisional routing until the failure boundary is measured properly.
-  if (identical(route, "single") && nrow(train_df) > 5000L) route <- "chunked"
-  materialize_chunked <- function() {
-    idx <- split(seq_len(nrow(train_df)), ceiling(seq_len(nrow(train_df)) / 5000))
-    dfs <- lapply(idx, function(i) train_df[i, c("longitude","latitude","year","present","row_id")])
-    ck  <- ee_materialize_fc_chunked(dfs, scale,
-            years = as.list(unique(as.integer(train_df$year))), project = project)
-    list(fc = ck$fc, asset_id = ck$asset_ids)
-  }
-  mat <- if (identical(route, "graph")) NULL else tryCatch({
-    if (identical(route, "chunked")) materialize_chunked()
-    else ee_materialize_fc_async(to_store, project = project)
-  }, error = function(e) {
-    if (is_gee_timeout(e) && !identical(route, "chunked")) {
-      sdm_warn("The training table was refused in one export; storing it as chunks.",
-               indent = 1L)
-      route <<- "chunked"
-      tryCatch(materialize_chunked(), error = function(e2) {
-        sdm_warn(sprintf("Could not store the training table (%s); continuing with the in-graph table.",
-                         conditionMessage(e2)), indent = 1L)
-        NULL
-      })
-    } else {
-      sdm_warn(sprintf("Could not store the training table (%s); continuing with the in-graph table.",
-                       conditionMessage(e)), indent = 1L)
-      NULL
-    }
-  })
-  if (!is.null(mat)) {
-    training_asset <- mat$asset_id
-    if (identical(route, "chunked") || !all(pools %in% c("presence", "balanced")) ||
-        many_subsets) {
-      sampled_fc   <- mat$fc
-      pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
-      # Pools re-derive from the stored table so replicate models never
-      # re-evaluate the raw sampling graph.
-      stored_bg <- sampled_fc$filter(ee$Filter$eq("present", 0L))
-      bal_pools <- lapply(seq_along(bal_pools) - 1L, function(i)
-        balance_bg(stored_bg, n_pres, n_background, seed = 42L + i))
-      bg_balanced <- bal_pools[[1]]
-    } else {
-      pres_sampled <- mat$fc$filter(ee$Filter$eq("present", 1L))
-      bg_balanced  <- mat$fc$filter(ee$Filter$eq("present", 0L))
-      bal_pools    <- list(bg_balanced)
-    }
-  }
 
   sdm_progress_done(pb_up)
 
@@ -194,10 +112,10 @@ fit_gee_models <- function(train_df, methods, scale, training_params,
       sampled_fc)
     rep_pools <- if (method_pool(m) == "balanced" && length(bal_pools) > 1L)
       bal_pools[-1] else list()
-    # Data that needed chunked storing also exceeds inline evaluation, so tree
-    # models are stored too; loading a stored model keeps every later graph small.
-    persist_m <- persist_classifier ||
-      (identical(route, "chunked") && isTRUE(GEE_CLASSIFIER_METHODS[[m]]$persistable))
+    # A large forest inline in the classify graph fails with "Computed value is
+    # too large", so for large training sets the tree models Earth Engine can
+    # store (rf, cart) are stored and loaded back.
+    persist_m <- nrow(train_df) > 5000L && isTRUE(GEE_CLASSIFIER_METHODS[[m]]$persistable)
     models[[m]]   <- train_gee_model(fc_for_method, m, params = training_params[[m]],
                                      persist = persist_m, project = project)
     # No post-fit probe here, on purpose. Map export and scoring both classify on
@@ -221,8 +139,8 @@ fit_gee_models <- function(train_df, methods, scale, training_params,
       n_background     = n_background,
       methods          = methods,
       scale            = scale,
-      # Temporary assets: classifiers written by persist_classifier plus the stored
-      # training table. Removed by cleanup_classifier_assets() when the caller exits.
+      # Temporary assets: stored classifiers plus the stored training table.
+      # Removed by cleanup_classifier_assets() when the caller exits.
       classifier_assets = c(
         Filter(Negate(is.null), lapply(models, function(x) x$asset_id)),
         if (!is.null(training_asset)) as.list(training_asset)
@@ -231,7 +149,7 @@ fit_gee_models <- function(train_df, methods, scale, training_params,
   ))
 }
 
-#' Delete temporary classifier assets created by persist_classifier
+#' Delete the temporary assets a fit created
 #' @noRd
 cleanup_classifier_assets <- function(train_res) {
   assets <- train_res$metadata$classifier_assets
@@ -263,19 +181,18 @@ cleanup_classifier_assets <- function(train_res) {
 #'   a large RANDOM pseudo-absence set suits them best (see
 #'   `?generate_pseudo_absences`).
 #' @param ensemble Logical; also export the ensemble mean map (default `TRUE`).
-#' @param aoi_year Year of the Alpha Earth mosaic to sample (default 2023).
-#' @param bg_ratio Optional absence:presence ratio for the balanced background pool
-#'   (the methods whose registry entry declares `pool = "balanced"`). Overrides
-#'   `balance_trees` when set.
+#' @param aoi_year Year of the embeddings to map. By default, the most common
+#'   year in `data`.
+#' @param bg_ratio Absence-to-presence ratio for the models that train on a
+#'   balanced pool (rf, gbt and knn): their absences are thinned at random to
+#'   `bg_ratio` times the number of presences. Default 1. `NULL` gives them
+#'   every absence. svm and maxent always use every absence.
 #' @param bg_replicates Logical (default TRUE). Train the balanced-pool
 #'   methods (rf, gbt, knn) on k = min(10, ceil(10000/pool size))
 #'   replicate thinned subsets of the absences and average their
 #'   predictions (Barbet-Massin et al. 2012, Table 1: several runs when
 #'   few pseudo-absences are used). Requires `bg_ratio` thinning to be
 #'   active; methods on the full pool are never replicated.
-#' @param balance_trees Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
-#'   balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
-#'   the trees all background points.
 #' @param params Named list of settings for individual models, using the
 #'   argument names of the Earth Engine classifier, for example
 #'   `list(gbt = list(shrinkage = 0.01), svm = list(kernelType = "RBF"))`.
@@ -286,11 +203,6 @@ cleanup_classifier_assets <- function(train_res) {
 #'   See the Earth Engine reference for `ee.Classifier.smileRandomForest`,
 #'   `smileGradientTreeBoost`, `libsvm`, `amnhMaxent`, `smileKNN` and
 #'   `smileCart` for every available setting.
-#' @param persist_classifier Logical; whether to store internally-persistable
-#'   classifiers (currently RF/CART) as a temporary GEE asset before mapping.
-#'   Defaults to `FALSE`: map exports run through Earth Engine's batch system,
-#'   which evaluates the model inline, so storing it first adds a wait without
-#'   changing the result. Ignored for methods that cannot persist (SVM/GBT/MaxEnt).
 #' @param gee_project Optional Earth Engine project override (normally set via [setup_gee()]).
 #' @return A named list of output file paths, with one `<method>_map` entry per
 #'   model, plus `ensemble_map` when more than one method is requested.
@@ -301,32 +213,23 @@ cleanup_classifier_assets <- function(train_res) {
 #' }
 #' @export
 generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
-                         methods = NULL, ensemble = TRUE, aoi_year = NULL, bg_ratio = NULL,
-                         bg_replicates = TRUE,
-                         balance_trees = TRUE,
-                         params = list(),
-                         persist_classifier = FALSE,
-                         gee_project = NULL) {
+                         methods = c("svm", "rf", "gbt"), ensemble = TRUE,
+                         aoi_year = NULL, bg_ratio = 1, bg_replicates = TRUE,
+                         params = list(), gee_project = NULL) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   stop_if_presence_only(data)
   ensure_gee_authenticated(project = gee_project)
-  on.exit(reset_sdm_run_state(), add = TRUE)
   t_total_start <- proc.time()[["elapsed"]]
 
   ee <- reticulate::import("ee")
 
-  if (is.null(aoi_year)) aoi_year <- 2023
-  if (is.null(methods)) methods <- DEFAULT_METHODS
-
-  # Balanced 1:1 background by default. Set balance_trees = FALSE for the full
-  # background, or pass a numeric bg_ratio to override both. See evaluate_models().
-  if (is.null(bg_ratio) && isTRUE(balance_trees)) bg_ratio <- 1
+  if (is.null(aoi_year)) aoi_year <- as.integer(names(which.max(table(data$year))))
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
   aoi_geom <- resolve_aoi(aoi, ee, data = data)
 
   method_params <- method_settings(methods, params)
-  train_res <- fit_gee_models(data, methods, scale, method_params, bg_ratio = bg_ratio, bg_replicates = bg_replicates, persist_classifier = persist_classifier, project = gee_project)
+  train_res <- fit_gee_models(data, methods, scale, method_params, bg_ratio = bg_ratio, bg_replicates = bg_replicates, project = gee_project)
   on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp classifier assets on exit
 
   img_mosaic <- get_embedding_image(aoi_year)
@@ -370,10 +273,9 @@ generate_map <- function(data, aoi, scale = 10, output_dir = getwd(),
 #' scales to high-abundance species, unlike classifying the whole embedding image and
 #' sampleRegions-ing it, whose per-pixel graph runs GEE out of memory for large models.
 #' @noRd
-predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year,
-                                    async = FALSE, project = NULL, chunk_size = 4000L) {
+predict_scores_internal <- function(predict_df, models, methods, scale,
+                                    project = NULL, chunk_size = 4000L) {
   ee <- reticulate::import("ee")
-  if (!"year" %in% names(predict_df)) predict_df$year <- aoi_year
 
   pred_cols <- paste0("pred_", methods)
   for (col in pred_cols) predict_df[[col]] <- NA_real_
@@ -401,14 +303,14 @@ predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year
   # for a large model. Map export still takes the image path, in predict_gee_map();
   # this function only scores a finite set of points. A chunk that hits a genuine
   # compute timeout is retried through a batch export, which has a larger budget.
-  score_features <- function(sub_df, use_async) {
+  score_features <- function(sub_df, batch) {
     chunk <- sub_df[, c("longitude", "latitude", "year", ".row_idx"), drop = FALSE]
     names(chunk)[names(chunk) == ".row_idx"] <- "row_idx"
     emb_fc <- get_embeddings_at_fc(upload_points_to_gee(chunk), scale,
                                    properties = c("year", "row_idx"),
-                                   geometries = use_async, years = yrs)  # geometry needed for export
+                                   geometries = batch, years = yrs)  # exports need geometry
     scored <- predict_all_models_gee(emb_fc, models[methods])$select(as.list(c("row_idx", pred_cols)))
-    if (use_async) ee_table_to_info_async(scored, project)$features else read_fc_paged(scored)$features
+    if (batch) ee_read_via_batch(scored, project)$features else read_fc_paged(scored)$features
   }
 
   # One classify graph per chunk, read in pages so the 5000-feature cap does not
@@ -417,11 +319,11 @@ predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year
   n_rows     <- nrow(predict_df)
   for (i in seq(1L, n_rows, by = chunk_size)) {
     sub   <- predict_df[i:min(i + chunk_size - 1L, n_rows), , drop = FALSE]
-    feats <- tryCatch(score_features(sub, use_async = isTRUE(async)), error = function(e) e)
+    feats <- tryCatch(score_features(sub, batch = FALSE), error = function(e) e)
     if (inherits(feats, "error")) {
       if (is_gee_timeout(feats)) {
         sdm_warn("Scoring hit a GEE compute timeout; retrying that batch via export.", indent = 1L)
-        feats <- tryCatch(score_features(sub, use_async = TRUE), error = function(e) e)
+        feats <- tryCatch(score_features(sub, batch = TRUE), error = function(e) e)
         if (inherits(feats, "error")) { sdm_warn(sprintf("Batch scoring failed: %s", conditionMessage(feats)), indent = 1L); next }
       } else {
         # Never drop a chunk silently: an unlogged failure reads as NA
@@ -447,14 +349,10 @@ predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year
 #' Presence-only input is rejected with directions.
 #'
 #' @inheritParams generate_map
-#' @param predict_coords Data frame of coordinates to score (required). Include a
-#'   `present` column to compute evaluation metrics on it.
+#' @param predict_coords Data frame of records to score, with `longitude`,
+#'   `latitude` and `year` (as from [format_data()]). Include a `present` column
+#'   to compute evaluation metrics.
 #' @param scale Embedding resolution in metres (default 10, the native resolution).
-#' @param async Logical; use asynchronous GEE export for large prediction sets.
-#' @param persist_classifier Logical (default `FALSE`); persist internally-persistable
-#'   classifiers (RF/CART) to a temporary GEE asset before scoring.
-#' @param options Named list of advanced options; `batch_size` sets how many
-#'   coordinates are scored per Earth Engine request (default 4000).
 #' @return A list containing `methods`, `model_metadata`,
 #'   `point_predictions` and, when `predict_coords` has a `present`
 #'   column, per-model and ensemble `metrics`. For cross-validation,
@@ -468,53 +366,27 @@ predict_scores_internal <- function(predict_df, models, methods, scale, aoi_year
 #' fit$metrics$ensemble
 #' }
 #' @export
-evaluate_models <- function(data, predict_coords = NULL, scale = 10,
-                            methods = NULL, aoi_year = NULL, bg_ratio = NULL,
-                            bg_replicates = TRUE,
-                            balance_trees = TRUE,
-                            params = list(),
-                            async = FALSE,
-                            persist_classifier = FALSE,
-                            gee_project = NULL,
-                            options = list()) {
+evaluate_models <- function(data, predict_coords, scale = 10,
+                            methods = c("svm", "rf", "gbt"), bg_ratio = 1,
+                            bg_replicates = TRUE, params = list(), gee_project = NULL) {
   if (!is.null(gee_project)) gee_project <- as.character(gee_project)
   stop_if_presence_only(data)
+  need <- c("longitude", "latitude", "year")
+  if (!all(need %in% names(predict_coords)))
+    stop("`predict_coords` needs longitude, latitude and year columns; ",
+         "format it with format_data().", call. = FALSE)
   ensure_gee_authenticated(project = gee_project)
-  on.exit(reset_sdm_run_state(), add = TRUE)
   t_total_start <- proc.time()[["elapsed"]]
 
-  ee <- reticulate::import("ee")
-
-  if (is.null(aoi_year)) aoi_year <- 2023
-  if (is.null(methods)) methods <- DEFAULT_METHODS
-
-  # Tree models train on a balanced 1:1 background by default, which matters most on
-  # imbalanced presence and background data. svm and maxent always see the full
-  # background. Set balance_trees = FALSE to give the trees all of it, or pass a
-  # numeric bg_ratio, an absence-to-presence ratio, to override both.
-  if (is.null(bg_ratio) && isTRUE(balance_trees)) bg_ratio <- 1
-
-  # Points scored per Earth Engine request. Lower it when a large job trips the
-  # synchronous compute budget partway through a chunk.
-  score_chunk <- if (!is.null(options$batch_size)) as.integer(options$batch_size) else 4000L
-
-  if (is.null(predict_coords))
-    stop("`predict_coords` is required: supply held-out coordinates to score, ",
-         "with a `present` column to get metrics. For cross-validation, split ",
-         "the data yourself and call evaluate_models() once per fold.",
-         call. = FALSE)
-
   method_params <- method_settings(methods, params)
-  # Area of interest: the bounding box of the prediction targets.
-  aoi_geom <- resolve_aoi("bbox", ee, data = predict_coords)
 
   # Final model, trained on all the data.
-  train_res <- fit_gee_models(data, methods, scale, method_params, bg_ratio = bg_ratio, bg_replicates = bg_replicates, persist_classifier = persist_classifier, project = gee_project)
+  train_res <- fit_gee_models(data, methods, scale, method_params, bg_ratio = bg_ratio, bg_replicates = bg_replicates, project = gee_project)
   on.exit(cleanup_classifier_assets(train_res), add = TRUE)   # remove temp assets on any exit
 
   sdm_section(sprintf("Predicting at %d coordinates (server-side)", nrow(predict_coords)))
   pb_pred    <- sdm_progress_start("Prediction")
-  final_pred <- predict_scores_internal(predict_coords, train_res$models, methods, scale, aoi_year, async = async, project = gee_project, chunk_size = score_chunk)
+  final_pred <- predict_scores_internal(predict_coords, train_res$models, methods, scale, project = gee_project)
   sdm_progress_done(pb_pred)
 
   pred_cols <- paste0("pred_", methods)
@@ -538,14 +410,6 @@ evaluate_models <- function(data, predict_coords = NULL, scale = 10,
         "%d eval point%s dropped: no satellite coverage at prediction time (%d presence, %d background).",
         sum(na_mask), if (sum(na_mask) == 1) "" else "s", na_pres, na_bg
       ), indent = 1L)
-      dropped_coords <- final_pred[na_mask, c("longitude", "latitude", "present"), drop = FALSE]
-      dropped_coords$class <- ifelse(dropped_coords$present == 1, "presence", "background")
-      for (j in seq_len(nrow(dropped_coords))) {
-        sdm_info(sprintf("  Dropped %s: lon=%.4f, lat=%.4f",
-                         dropped_coords$class[j],
-                         dropped_coords$longitude[j],
-                         dropped_coords$latitude[j]), indent = 2L)
-      }
     }
 
     for (m in c(methods, "ensemble")) {

@@ -17,7 +17,7 @@ Invisibly, a named list of the status fields.
 Prints whether the Earth Engine client is available, whether sign-in
 credentials exist and of which kind, which project is configured, and
 whether a live connection succeeds. To monitor running Earth Engine tasks,
-use \code{\link{sdm_gee_status}} instead.
+use \code{\link{gee_tasks}} instead.
 }
 \examples{
 \dontrun{

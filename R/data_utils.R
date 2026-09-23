@@ -42,10 +42,7 @@
 #' }
 #' @export
 format_data <- function(data, coords, year, presence = NULL, species = NULL, label = NULL) {
-    if (!isTRUE(.alphasdm_env$standardization_active)) {
-        sdm_section("Data Standardization")
-        .alphasdm_env$standardization_active <- TRUE
-    }
+    sdm_section("Data Standardization")
     
     if (!is.data.frame(data)) {
         stop("Input 'data' must be a data frame.")
@@ -60,10 +57,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
         stop(paste("Coordinate columns not found in data:", paste(missing_cols, collapse = ", ")))
     }
     
-    show_info <- !isTRUE(.alphasdm_env$standardization_info_printed)
-    if (show_info) {
-        sdm_info(sprintf("Validating coordinates: %s, %s", coords[1], coords[2]), indent = 1L)
-    }
+    sdm_info(sprintf("Validating coordinates: %s, %s", coords[1], coords[2]), indent = 1L)
 
     if (!year %in% names(data)) {
         stop(paste("Year column not found:", year))
@@ -145,9 +139,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
             result$year <- val
         }
     }
-    if (show_info) {
-        sdm_info(sprintf("Standardizing time/dates using column: %s", year), indent = 1L)
-    }
+    sdm_info(sprintf("Standardizing time/dates using column: %s", year), indent = 1L)
 
     if (!is.null(presence)) {
         result$present <- as.numeric(data[[presence]])
@@ -162,10 +154,7 @@ format_data <- function(data, coords, year, presence = NULL, species = NULL, lab
 
     # Filter to the years Alpha Earth covers, read from the collection itself.
     yrs <- alphaearth_year_range()
-    if (show_info) {
-        sdm_info(sprintf("Filtering for Alpha Earth coverage (%d-%d)", yrs[1], yrs[2]), indent = 1L)
-        .alphasdm_env$standardization_info_printed <- TRUE
-    }
+    sdm_info(sprintf("Filtering for Alpha Earth coverage (%d-%d)", yrs[1], yrs[2]), indent = 1L)
     rows_before <- nrow(result)
     result <- result[result$year >= yrs[1] & result$year <= yrs[2], ]
     rows_after <- nrow(result)

@@ -1,33 +1,9 @@
-# Console output and per-run state. Base R only, so the package pulls in no
-# printing dependency.
-
-# ---- Package-level state ----
+# Console output. Base R only, so the package pulls in no printing dependency.
+# All output is message(), so suppressMessages() silences the package.
 
 .alphasdm_env <- new.env(parent = emptyenv())
-.alphasdm_env$verbose <- TRUE
-.alphasdm_env$standardization_active <- FALSE
-.alphasdm_env$standardization_info_printed <- FALSE
 
-#' Turn AlphaSDM console output on or off
-#'
-#' Every progress line the package prints is a message, not a warning or a print,
-#' so this suppresses all of them at once. Errors are unaffected.
-#'
-#' @param verbose Logical. FALSE suppresses all non-error output.
-#' @return `verbose`, invisibly. Called for its effect on package state.
-#' @examples
-#' sdm_verbose(FALSE)   # silence progress messages
-#' sdm_verbose(TRUE)
-#' @export
-sdm_verbose <- function(verbose = TRUE) {
-  .alphasdm_env$verbose <- isTRUE(verbose)
-  invisible(verbose)
-}
-
-.sdm_msg <- function(text) {
-  if (!isTRUE(.alphasdm_env$verbose)) return(invisible(NULL))
-  message(text)
-}
+.sdm_msg <- function(text) message(text)
 
 #' Print a section header
 #' @param title Section title.
@@ -85,22 +61,9 @@ sdm_progress_start <- function(name) {
 #' @return Nothing. Prints a message.
 #' @noRd
 sdm_progress_done <- function(handle) {
-  if (is.null(handle) || !isTRUE(.alphasdm_env$verbose)) return(invisible(NULL))
+  if (is.null(handle)) return(invisible(NULL))
   elapsed <- proc.time()[["elapsed"]] - handle$start
   .sdm_msg(sprintf("  \u2714 %s complete [%.1fs]", handle$name, elapsed))
-  invisible(NULL)
-}
-
-#' Reset the per-run console state
-#'
-#' `format_data()` prints its section header once per run, so the run tracks
-#' whether it has printed yet. Register this with `on.exit()`. A run that aborts
-#' would otherwise leave the flag set, and the next `format_data()` in that
-#' session would print no header.
-#' @noRd
-reset_sdm_run_state <- function() {
-  .alphasdm_env$standardization_active <- FALSE
-  .alphasdm_env$standardization_info_printed <- FALSE
   invisible(NULL)
 }
 

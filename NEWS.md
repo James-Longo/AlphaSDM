@@ -21,6 +21,14 @@
   Engine does for every map tile) gives the same model. Random forests are now
   exactly reproducible; boosted trees vary by at most about 0.005 inside Earth
   Engine.
+* Simpler arguments: `balance_trees` is gone (use `bg_ratio`, default 1, or
+  `NULL` for every absence), as are `persist_classifier`, `async` and `options`
+  from `evaluate_models()`, which now requires `predict_coords` with a `year`
+  column. `generate_map()` maps the records' most common year by default.
+* `sdm_gee_status()` is now `gee_tasks()` and `sdm_clean_assets()` is
+  `gee_clean_assets()`. `sdm_verbose()` and the exported `calculate_cbi()` are
+  gone: use `suppressMessages()`, and the `cbi` from
+  `calculate_classifier_metrics()`.
 * Removed naive Bayes, which discards negative values and so cannot use the
   signed embeddings.
 * The vignette now tests models on the following year's records.

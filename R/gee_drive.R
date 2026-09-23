@@ -209,7 +209,17 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
   sdm_info(sprintf(
     "Computing the map on Earth Engine as %d task%s, writing tiles to Drive/%s",
     length(tasks), if (length(tasks) == 1L) "" else "s", folder), indent = 1L)
-  ee_await_export_all(tasks, poll_seconds)
+  failed <- ee_await_tasks(tasks, poll_seconds)
+  # A cell that is entirely masked (open ocean) is reported FAILED by Earth
+  # Engine but is an empty result, not a failure.
+  empty <- grepl("No valid \\(un-masked\\) pixels", failed)
+  if (any(empty))
+    sdm_info(sprintf("%d cell%s contained no unmasked pixels (open water); skipped.",
+                     sum(empty), if (sum(empty) == 1L) "" else "s"), indent = 2L)
+  failed <- failed[!empty]
+  if (length(failed))
+    stop(sprintf("%d of %d export tasks did not complete: %s", length(failed), length(tasks),
+                 paste(sprintf("%s: %s", names(failed), failed), collapse = "; ")), call. = FALSE)
 
   files <- drive_list_files(prefix)
   files <- files[is_export_tile_name(prefix, files$name), , drop = FALSE]
@@ -240,84 +250,4 @@ ee_export_image_drive <- function(image, region, scale, out_dir,
   }
   sdm_info(sprintf("Tiles written to %s", out_dir), indent = 1L)
   out_dir
-}
-
-#' Wait for a set of export tasks, reporting joint progress
-#'
-#' One poll loop over every task; all scheduling is Earth Engine's. Waits for all
-#' tasks to reach a terminal state before raising any failure, so completed bands
-#' keep their output.
-#'
-#' @param tasks Named list of started tasks, name = description.
-#' @param poll_seconds Seconds between polls.
-#' @return Invisibly TRUE. Errors if any task failed or was cancelled.
-#' @noRd
-ee_await_export_all <- function(tasks, poll_seconds = 15) {
-  ee <- reticulate::import("ee")
-  start <- Sys.time(); last_beat <- -Inf
-  # One listOperations call per poll covers every task; per-task status calls
-  # would multiply requests by the task count.
-  states_by_desc <- function() {
-    out <- list()
-    ops <- tryCatch(ee$data$listOperations(), error = function(e) list())
-    for (o in ops) {
-      m <- o$metadata
-      d <- tryCatch(as.character(m$description), error = function(e) NULL)
-      st <- tryCatch(as.character(m$state), error = function(e) NULL)
-      if (length(d) == 1L && length(st) == 1L) out[[d]] <- st
-    }
-    out
-  }
-  ee_to_task_state <- c(PENDING = "READY", RUNNING = "RUNNING",
-                        SUCCEEDED = "COMPLETED", COMPLETED = "COMPLETED",
-                        FAILED = "FAILED", CANCELLED = "CANCELLED",
-                        CANCELLING = "CANCELLED")
-  repeat {
-    sm <- states_by_desc()
-    sts <- vapply(names(tasks), function(nm) {
-      st <- sm[[nm]]
-      if (is.null(st)) tasks[[nm]]$status()[["state"]]
-      else { mapped <- ee_to_task_state[[st]]; if (is.null(mapped)) st else mapped }
-    }, character(1))
-    done <- sum(sts == "COMPLETED")
-    bad  <- sum(sts %in% c("FAILED", "CANCELLED"))
-    if (done + bad == length(sts)) break
-    elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
-    if (elapsed - last_beat >= 60) {
-      run <- which(sts == "RUNNING")
-      detail <- if (length(run))
-        ee_task_progress(tasks[[run[1]]]$status()[["name"]]) else ""
-      # The bracket describes one running task; label it so its percent is not
-      # read as the whole job's.
-      if (nzchar(detail)) detail <- sub(" \\[", " [current task: ", detail)
-      sdm_task_monitor_hint()
-      sdm_info(sprintf("%d of %d tasks done, %d running, %d queued%s%s (%s elapsed)",
-                       done, length(sts), length(run),
-                       sum(sts == "READY"),
-                       if (bad > 0L) sprintf(", %d FAILED", bad) else "", detail,
-                       if (elapsed < 600) sprintf("%.0fs", elapsed)
-                       else sprintf("%.0f min", elapsed / 60)), indent = 2L)
-      last_beat <- elapsed
-    }
-    Sys.sleep(poll_seconds)
-  }
-  if (bad > 0L) {
-    who <- names(tasks)[sts %in% c("FAILED", "CANCELLED")]
-    msgs <- vapply(who, function(nm) {
-      s <- tasks[[nm]]$status()
-      if (!is.null(s[["error_message"]])) s[["error_message"]] else s[["state"]]
-    }, character(1))
-    # A cell that is entirely masked (open ocean) is reported FAILED by Earth
-    # Engine but is an empty result, not a failure.
-    empty <- grepl("No valid \\(un-masked\\) pixels", msgs)
-    if (any(empty))
-      sdm_info(sprintf("%d cell%s contained no unmasked pixels (open water); skipped.",
-                       sum(empty), if (sum(empty) == 1L) "" else "s"), indent = 2L)
-    who <- who[!empty]; msgs <- msgs[!empty]
-    if (length(who) > 0L)
-      stop(sprintf("%d of %d export tasks did not complete. %s. Completed cells remain in Drive.",
-                   length(who), length(sts),
-                   paste(sprintf("%s: %s", who, msgs), collapse = "; ")), call. = FALSE)
-  }
-  invisible(TRUE)
 }
