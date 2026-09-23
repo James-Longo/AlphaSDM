@@ -455,7 +455,7 @@ ee_materialize_fc_chunked <- function(dfs, scale, years, project = NULL,
   handles <- vector("list", length(dfs))
   for (i in seq_along(dfs)) {
     fc_i <- get_embeddings_at_fc(upload_points_to_gee(dfs[[i]]), scale,
-                                 properties = c("year", "present"),
+                                 properties = c("year", "present", "row_id"),
                                  geometries = TRUE, years = years)
     handles[[i]] <- ee_start_fc_export(fc_i, project)
   }

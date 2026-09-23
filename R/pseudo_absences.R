@@ -57,8 +57,10 @@
 #'   embedding-autocorrelation range and reports it.
 #' @param env_threshold Mahalanobis envelope threshold; NULL uses the
 #'   bias-corrected presence maximum and reports it.
-#' @param aoi_year Embedding year for placement checks (default: latest
-#'   Alpha Earth year).
+#' @param aoi_year Embedding year to read the pseudo-absences from. By default
+#'   (`NULL`) they are spread over the presences' years in the same
+#'   proportions, so presences and absences come from the same years'
+#'   embeddings. Give one year to place them all in that year.
 #' @param scale Sampling scale in metres (default 10).
 #' @param seed Integer seed for the draws.
 #' @param gee_project Optional Earth Engine cloud project.
@@ -106,8 +108,23 @@ generate_pseudo_absences <- function(data, aoi, strategy,
   ee <- reticulate::import("ee")
 
   pres <- data
-  yrs <- alphaearth_year_range()
-  if (is.null(aoi_year)) aoi_year <- yrs[2]
+  # Read each pseudo-absence from the same year's embeddings as the presences:
+  # by default the years are split in the presences' proportions (largest
+  # remainder), so a mixed-year data set gets a matching mix of absences.
+  if (is.null(aoi_year)) {
+    share  <- n * table(pres$year) / nrow(pres)
+    counts <- floor(share)
+    short  <- n - sum(counts)
+    if (short > 0) {
+      top <- order(share - counts, decreasing = TRUE)[seq_len(short)]
+      counts[top] <- counts[top] + 1
+    }
+    years  <- as.integer(names(share))
+    counts <- as.integer(counts)
+  } else {
+    years  <- as.integer(aoi_year)
+    counts <- as.integer(n)
+  }
 
   aoi_geom <- resolve_aoi(aoi, ee, data = pres)
 
@@ -123,8 +140,7 @@ generate_pseudo_absences <- function(data, aoi, strategy,
                 present = 1L))
     ps <- get_embeddings_at_fc(pfc, scale,
                                properties = c("year", "present"),
-                               years = as.list(unique(as.integer(
-                                 c(pres$year, aoi_year)))))
+                               years = as.list(unique(as.integer(pres$year))))
     pe <- read_fc_paged(ps$limit(2000L))$features
     emb_cols <- EMB_BANDS
     pres_emb <- do.call(rbind, lapply(pe, function(f)
@@ -136,11 +152,27 @@ generate_pseudo_absences <- function(data, aoi, strategy,
   }
 
   sdm_section(sprintf("Generating %d pseudo-absences (%s)", n, strategy))
-  bg <- generate_background_fc_gee(
-    aoi_year, n, aoi_geom, scale = scale,
-    presence_df = pres, presence_emb = pres_emb,
-    use_geo = use_geo, use_env = use_env,
-    radius_m = radius_m, env_threshold = env_threshold, seed = seed)
+  # One draw per year. The radius and envelope threshold are estimated on the
+  # first draw and reused, so every year is placed by the same rule.
+  draws <- list()
+  for (i in seq_along(years)) {
+    if (counts[i] == 0L) next
+    if (length(years) > 1L)
+      sdm_info(sprintf("%d from %d", counts[i], years[i]), indent = 1L)
+    d <- generate_background_fc_gee(
+      years[i], counts[i], aoi_geom, scale = scale,
+      presence_df = pres, presence_emb = pres_emb,
+      use_geo = use_geo, use_env = use_env,
+      radius_m = radius_m, env_threshold = env_threshold, seed = seed + i - 1L)
+    if (use_geo && is.null(radius_m)) radius_m <- d$radius_m
+    if (use_env && is.null(env_threshold)) env_threshold <- d$env_threshold
+    draws[[length(draws) + 1L]] <- d
+  }
+  bg <- list(df = do.call(rbind, lapply(draws, `[[`, "df")),
+             n_returned = sum(vapply(draws, `[[`, integer(1), "n_returned")),
+             radius_m = draws[[1]]$radius_m, env_threshold = draws[[1]]$env_threshold,
+             n_candidates = sum(vapply(draws, function(d) as.numeric(d$n_candidates), 1)),
+             n_env_excluded = sum(vapply(draws, function(d) as.numeric(d$n_env_excluded), 1)))
 
   sdm_done(sprintf(
     "%d pseudo-absences (%s%s%s)", bg$n_returned, strategy,
@@ -163,7 +195,9 @@ generate_pseudo_absences <- function(data, aoi, strategy,
   rownames(out) <- NULL
   attr(out, "pa_settings") <- list(
     strategy = strategy, n = bg$n_returned, radius_m = bg$radius_m,
-    env_threshold = bg$env_threshold, aoi_year = aoi_year, seed = seed,
+    env_threshold = bg$env_threshold,
+    years = stats::setNames(as.integer(table(factor(abs_df$year, levels = years))), years),
+    seed = seed,
     n_candidates = bg$n_candidates, n_env_excluded = bg$n_env_excluded)
   out
 }

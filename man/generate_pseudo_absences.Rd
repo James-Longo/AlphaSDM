@@ -46,8 +46,10 @@ embedding-autocorrelation range and reports it.}
 \item{env_threshold}{Mahalanobis envelope threshold; NULL uses the
 bias-corrected presence maximum and reports it.}
 
-\item{aoi_year}{Embedding year for placement checks (default: latest
-Alpha Earth year).}
+\item{aoi_year}{Embedding year to read the pseudo-absences from. By default
+(`NULL`) they are spread over the presences' years in the same
+proportions, so presences and absences come from the same years'
+embeddings. Give one year to place them all in that year.}
 
 \item{scale}{Sampling scale in metres (default 10).}
 

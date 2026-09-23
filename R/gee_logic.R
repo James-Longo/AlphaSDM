@@ -299,13 +299,22 @@ train_gee_model <- function(sampled_fc, method, params = list(), class_property 
   sampled_fc <- sampled_fc$map(function(f) {
     f$set(LABEL_COL, ee$Number(f$get(class_property))$toInt())
   })
-  # A classification SVM's probability refers to one class chosen by the order
-  # libsvm meets the labels in, and Earth Engine does not preserve row order
-  # through sampling, merging and stored tables. Sorting absences first fixes
-  # the order; measured, the score is then the probability of presence (AUC
-  # 0.81 on the saguaro test, 0.19 with presences first).
-  if (identical(method, "svm") && !svm_is_regression(build_gee_clf_params("svm", params)))
-    sampled_fc <- sampled_fc$sort(LABEL_COL)
+  # Train on the rows in a fixed order. Earth Engine does not preserve row order
+  # through sampling, merging and stored tables, and a model is retrained for
+  # every map tile, so without this a randomised model (boosted trees, forests)
+  # can differ slightly from tile to tile. row_id is set in fit_gee_models().
+  #
+  # A classification SVM also needs absences first: libsvm's probability
+  # refers to a class chosen by the order it meets the labels in, and with
+  # absences first it is the probability of presence (measured: AUC 0.81 on
+  # the saguaro test, 0.19 with presences first).
+  if (identical(method, "svm") && !svm_is_regression(build_gee_clf_params("svm", params))) {
+    sampled_fc <- sampled_fc$map(function(f)
+      f$set("train_order", ee$Number(f$get(LABEL_COL))$multiply(1e9)$add(f$get("row_id"))))
+    sampled_fc <- sampled_fc$sort("train_order")
+  } else {
+    sampled_fc <- sampled_fc$sort("row_id")
+  }
 
   if (is_classifier) {
     clf_factory <- ee$Classifier[[GEE_CLASSIFIER_METHODS[[method]]$fn]]

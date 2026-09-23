@@ -14,6 +14,13 @@
 * Fixed classification SVMs (C_SVC, NU_SVC) returning inverted scores. Their
   probability depended on the order of the training rows, which Earth Engine
   does not preserve; the training table is now sorted before fitting.
+* `generate_pseudo_absences()` now reads pseudo-absences from the same years as
+  the presences, in the same proportions, instead of the latest embedding year.
+  Pass `aoi_year` to place them all in one year.
+* Models are trained on their rows in a fixed order, so retraining (which Earth
+  Engine does for every map tile) gives the same model. Random forests are now
+  exactly reproducible; boosted trees vary by at most about 0.005 inside Earth
+  Engine.
 * Removed naive Bayes, which discards negative values and so cannot use the
   signed embeddings.
 * The vignette now tests models on the following year's records.

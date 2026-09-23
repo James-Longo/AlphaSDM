@@ -72,12 +72,17 @@ fit_gee_models <- function(train_df, methods, scale, training_params,
   sdm_section("Uploading training data to Google Earth Engine")
   pb_up <- sdm_progress_start("Uploading and sampling")
 
-  upload_df    <- train_df[, c("longitude", "latitude", "year", "present")]
+  # row_id travels with every training row so that training can sort by it:
+  # Earth Engine does not preserve row order, and randomised models (boosted
+  # trees, forests) otherwise differ slightly each time they are retrained,
+  # which happens for every map tile. See train_gee_model().
+  train_df$row_id <- seq_len(nrow(train_df))
+  upload_df    <- train_df[, c("longitude", "latitude", "year", "present", "row_id")]
   sdm_info(sprintf("Transferring %d coordinates ...", nrow(upload_df)), indent = 1L)
 
   upload_fc    <- upload_points_to_gee(upload_df)
   sampled_fc   <- get_embeddings_at_fc(upload_fc, scale,
-                                       properties = c("year", "present"),
+                                       properties = c("year", "present", "row_id"),
                                        geometries = TRUE,
                                        years      = as.list(unique(as.integer(upload_df$year))))
   pres_sampled <- sampled_fc$filter(ee$Filter$eq("present", 1L))
@@ -127,7 +132,7 @@ fit_gee_models <- function(train_df, methods, scale, training_params,
   if (identical(route, "single") && nrow(train_df) > 5000L) route <- "chunked"
   materialize_chunked <- function() {
     idx <- split(seq_len(nrow(train_df)), ceiling(seq_len(nrow(train_df)) / 5000))
-    dfs <- lapply(idx, function(i) train_df[i, c("longitude","latitude","year","present")])
+    dfs <- lapply(idx, function(i) train_df[i, c("longitude","latitude","year","present","row_id")])
     ck  <- ee_materialize_fc_chunked(dfs, scale,
             years = as.list(unique(as.integer(train_df$year))), project = project)
     list(fc = ck$fc, asset_id = ck$asset_ids)
