@@ -1,4 +1,6 @@
-# AlphaSDM (development version)
+# AlphaSDM 0.2.0
+
+First CRAN release.
 
 * Model settings are now given per model with `params`, using Earth Engine's
   argument names, for example `params = list(gbt = list(shrinkage = 0.01))`.
@@ -32,11 +34,6 @@
 * Removed naive Bayes, which discards negative values and so cannot use the
   signed embeddings.
 * The vignette now tests models on the following year's records.
-
-# AlphaSDM 0.2.0
-
-First CRAN release.
-
 * Maps download straight from Earth Engine in tiles sized to its 32 MB
   download limit, fetched two at a time and stitched into one GeoTIFF per
   model. Google Drive is used only for maps Earth Engine will not compute tile
@@ -50,7 +47,7 @@ First CRAN release.
   `clear_gee_credentials()` removes it and asks before signing out of Earth
   Engine.
 * Connecting to Earth Engine no longer deletes old temporary assets; use
-  `sdm_clean_assets()`.
+  `gee_clean_assets()`.
 * A getting-started vignette, `vignette("AlphaSDM")`, maps saguaro around
   Tucson from GBIF records.
 * Removed unused code, including the remains of built-in cross-validation.
