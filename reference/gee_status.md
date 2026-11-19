@@ -4,7 +4,7 @@ Prints whether the Earth Engine client is available, whether sign-in
 credentials exist and of which kind, which project is configured, and
 whether a live connection succeeds. To monitor running Earth Engine
 tasks, use
-[`sdm_gee_status`](https://james-longo.github.io/AlphaSDM/reference/sdm_gee_status.md)
+[`gee_tasks`](https://james-longo.github.io/AlphaSDM/reference/gee_tasks.md)
 instead.
 
 ## Usage

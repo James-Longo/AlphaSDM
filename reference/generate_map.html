@@ -57,28 +57,12 @@ Google Drive, which is slower.</p>
 <span>  <span class="va">aoi</span>,</span>
 <span>  scale <span class="op">=</span> <span class="fl">10</span>,</span>
 <span>  output_dir <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/getwd.html" class="external-link">getwd</a></span><span class="op">(</span><span class="op">)</span>,</span>
-<span>  methods <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  methods <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"svm"</span>, <span class="st">"rf"</span>, <span class="st">"gbt"</span><span class="op">)</span>,</span>
 <span>  ensemble <span class="op">=</span> <span class="cn">TRUE</span>,</span>
 <span>  aoi_year <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  bg_ratio <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  bg_ratio <span class="op">=</span> <span class="fl">1</span>,</span>
 <span>  bg_replicates <span class="op">=</span> <span class="cn">TRUE</span>,</span>
-<span>  balance_trees <span class="op">=</span> <span class="cn">TRUE</span>,</span>
-<span>  n_trees <span class="op">=</span> <span class="fl">100L</span>,</span>
-<span>  min_leaf_population <span class="op">=</span> <span class="fl">5L</span>,</span>
-<span>  bag_fraction <span class="op">=</span> <span class="fl">0.5</span>,</span>
-<span>  shrinkage <span class="op">=</span> <span class="fl">0.005</span>,</span>
-<span>  max_nodes <span class="op">=</span> <span class="fl">6L</span>,</span>
-<span>  variables_per_split <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  svm_type <span class="op">=</span> <span class="st">"EPSILON_SVR"</span>,</span>
-<span>  svm_kernel <span class="op">=</span> <span class="st">"RBF"</span>,</span>
-<span>  svm_cost <span class="op">=</span> <span class="fl">10</span>,</span>
-<span>  svm_gamma <span class="op">=</span> <span class="fl">0.05</span>,</span>
-<span>  maxent_beta <span class="op">=</span> <span class="fl">1</span>,</span>
-<span>  maxent_features <span class="op">=</span> <span class="st">"auto"</span>,</span>
-<span>  knn_k <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  knn_search_method <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  knn_metric <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  persist_classifier <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  params <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="op">)</span>,</span>
 <span>  gee_project <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
@@ -121,13 +105,15 @@ a large RANDOM pseudo-absence set suits them best (see
 
 
 <dt id="arg-aoi-year">aoi_year<a class="anchor" aria-label="anchor" href="#arg-aoi-year"></a></dt>
-<dd><p>Year of the Alpha Earth mosaic to sample (default 2023).</p></dd>
+<dd><p>Year of the embeddings to map. By default, the most common
+year in `data`.</p></dd>
 
 
 <dt id="arg-bg-ratio">bg_ratio<a class="anchor" aria-label="anchor" href="#arg-bg-ratio"></a></dt>
-<dd><p>Optional absence:presence ratio for the balanced background pool
-(the methods whose registry entry declares `pool = "balanced"`). Overrides
-`balance_trees` when set.</p></dd>
+<dd><p>Absence-to-presence ratio for the models that train on a
+balanced pool (rf, gbt and knn): their absences are thinned at random to
+`bg_ratio` times the number of presences. Default 1. `NULL` gives them
+every absence. svm and maxent always use every absence.</p></dd>
 
 
 <dt id="arg-bg-replicates">bg_replicates<a class="anchor" aria-label="anchor" href="#arg-bg-replicates"></a></dt>
@@ -139,47 +125,17 @@ few pseudo-absences are used). Requires `bg_ratio` thinning to be
 active; methods on the full pool are never replicated.</p></dd>
 
 
-<dt id="arg-balance-trees">balance_trees<a class="anchor" aria-label="anchor" href="#arg-balance-trees"></a></dt>
-<dd><p>Logical (default `TRUE`). When `TRUE`, rf/gbt and knn train on a
-balanced 1:1 background while svm/maxent use the full background; `FALSE` gives
-the trees all background points.</p></dd>
-
-
-<dt id="arg-n-trees-min-leaf-population-bag-fraction-shrinkage-max-nodes-variables-per-split">n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes, variables_per_split<a class="anchor" aria-label="anchor" href="#arg-n-trees-min-leaf-population-bag-fraction-shrinkage-max-nodes-variables-per-split"></a></dt>
-<dd><p>Tree-model (rf/gbt) hyperparameters.</p></dd>
-
-
-<dt id="arg-svm-type-svm-kernel-svm-cost-svm-gamma">svm_type, svm_kernel, svm_cost, svm_gamma<a class="anchor" aria-label="anchor" href="#arg-svm-type-svm-kernel-svm-cost-svm-gamma"></a></dt>
-<dd><p>libsvm hyperparameters (default
-EPSILON_SVR / RBF / cost 10 / gamma 0.05).</p></dd>
-
-
-<dt id="arg-maxent-beta-maxent-features">maxent_beta, maxent_features<a class="anchor" aria-label="anchor" href="#arg-maxent-beta-maxent-features"></a></dt>
-<dd><p>MaxEnt regularisation multiplier and feature
-classes (`"auto"` or a combination of L/Q/H/P/T).</p></dd>
-
-
-<dt id="arg-knn-k">knn_k<a class="anchor" aria-label="anchor" href="#arg-knn-k"></a></dt>
-<dd><p>Neighbours for kNN (default 15). Also fixes the output resolution:
-the surface can take only `k + 1` distinct values. Raise alongside `bg_ratio`.</p></dd>
-
-
-<dt id="arg-knn-search-method">knn_search_method<a class="anchor" aria-label="anchor" href="#arg-knn-search-method"></a></dt>
-<dd><p>kNN neighbour search: `"AUTO"`, `"LINEAR_SEARCH"`,
-`"KD_TREE"` or `"COVER_TREE"`. Note `KD_TREE` ignores `knn_metric`.</p></dd>
-
-
-<dt id="arg-knn-metric">knn_metric<a class="anchor" aria-label="anchor" href="#arg-knn-metric"></a></dt>
-<dd><p>kNN distance metric: `"EUCLIDEAN"`, `"MAHALANOBIS"`,
-`"MANHATTAN"` or `"BRAYCURTIS"`. Only honoured for search methods that use it.</p></dd>
-
-
-<dt id="arg-persist-classifier">persist_classifier<a class="anchor" aria-label="anchor" href="#arg-persist-classifier"></a></dt>
-<dd><p>Logical; whether to store internally-persistable
-classifiers (currently RF/CART) as a temporary GEE asset before mapping.
-Defaults to `FALSE`: map exports run through Earth Engine's batch system,
-which evaluates the model inline, so storing it first adds a wait without
-changing the result. Ignored for methods that cannot persist (SVM/GBT/MaxEnt).</p></dd>
+<dt id="arg-params">params<a class="anchor" aria-label="anchor" href="#arg-params"></a></dt>
+<dd><p>Named list of settings for individual models, using the
+argument names of the Earth Engine classifier, for example
+`list(gbt = list(shrinkage = 0.01), svm = list(kernelType = "RBF"))`.
+Every model uses Earth Engine's defaults except where Earth Engine needs a
+value or its default cannot work on these data: `rf` uses 500 trees and
+`gbt` 150, since Earth Engine requires a number, and `knn` uses 15
+neighbours, since Earth Engine's single neighbour gives a two-value map.
+See the Earth Engine reference for `ee.Classifier.smileRandomForest`,
+`smileGradientTreeBoost`, `libsvm`, `amnhMaxent`, `smileKNN` and
+`smileCart` for every available setting.</p></dd>
 
 
 <dt id="arg-gee-project">gee_project<a class="anchor" aria-label="anchor" href="#arg-gee-project"></a></dt>

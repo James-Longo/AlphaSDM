@@ -118,8 +118,10 @@ bias-corrected presence maximum and reports it.</p></dd>
 
 
 <dt id="arg-aoi-year">aoi_year<a class="anchor" aria-label="anchor" href="#arg-aoi-year"></a></dt>
-<dd><p>Embedding year for placement checks (default: latest
-Alpha Earth year).</p></dd>
+<dd><p>Embedding year to read the pseudo-absences from. By default
+(`NULL`) they are spread over the presences' years in the same
+proportions, so presences and absences come from the same years'
+embeddings. Give one year to place them all in that year.</p></dd>
 
 
 <dt id="arg-scale">scale<a class="anchor" aria-label="anchor" href="#arg-scale"></a></dt>

@@ -33,14 +33,10 @@
 
 - [`calculate_classifier_metrics()`](https://james-longo.github.io/AlphaSDM/reference/calculate_classifier_metrics.md)
   : Calculate discrimination and calibration metrics
-- [`calculate_cbi()`](https://james-longo.github.io/AlphaSDM/reference/calculate_cbi.md)
-  : Calculate the Continuous Boyce Index
 
 ## Earth Engine tasks and assets
 
-- [`sdm_gee_status()`](https://james-longo.github.io/AlphaSDM/reference/sdm_gee_status.md)
-  : Show the status of recent AlphaSDM Earth Engine batch tasks
-- [`sdm_clean_assets()`](https://james-longo.github.io/AlphaSDM/reference/sdm_clean_assets.md)
+- [`gee_tasks()`](https://james-longo.github.io/AlphaSDM/reference/gee_tasks.md)
+  : Show recent AlphaSDM Earth Engine tasks
+- [`gee_clean_assets()`](https://james-longo.github.io/AlphaSDM/reference/gee_clean_assets.md)
   : Remove leftover AlphaSDM temporary assets
-- [`sdm_verbose()`](https://james-longo.github.io/AlphaSDM/reference/sdm_verbose.md)
-  : Turn AlphaSDM console output on or off

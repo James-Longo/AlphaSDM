@@ -68,8 +68,10 @@ generate_pseudo_absences(
 
 - aoi_year:
 
-  Embedding year for placement checks (default: latest Alpha Earth
-  year).
+  Embedding year to read the pseudo-absences from. By default (\`NULL\`)
+  they are spread over the presences' years in the same proportions, so
+  presences and absences come from the same years' embeddings. Give one
+  year to place them all in that year.
 
 - scale:
 

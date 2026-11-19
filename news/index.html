@@ -34,14 +34,25 @@
     </div>
 
     <div class="section level2">
-<h2 class="pkg-version" data-toc-text="0.2.0" id="alphasdm-020">AlphaSDM 0.2.0<a class="anchor" aria-label="anchor" href="#alphasdm-020"></a></h2>
+<h2 class="pkg-version" data-toc-text="0.2.0" id="alphasdm-020">AlphaSDM 0.2.0<a class="anchor" aria-label="anchor" href="#alphasdm-020"></a></h2><p class="text-muted">CRAN release: 2026-10-04</p>
 <p>First CRAN release.</p>
-<ul><li>Maps download straight from Earth Engine in tiles sized to its 32 MB download limit, fetched two at a time and stitched into one GeoTIFF per model. Google Drive is used only for maps Earth Engine will not compute tile by tile.</li>
+<ul><li>Model settings are now given per model with <code>params</code>, using Earth Engine’s argument names, for example <code>params = list(gbt = list(shrinkage = 0.01))</code>. This replaces the separate arguments <code>n_trees</code>, <code>shrinkage</code>, <code>svm_cost</code>, <code>knn_k</code> and the rest, which applied to several models at once and could silently override values equal to their defaults. Misspelt settings are now an error.</li>
+<li>Every model uses Earth Engine’s defaults, except the tree counts Earth Engine requires (<code>rf</code> 500, <code>gbt</code> 150) and <code>knn</code>, which uses 15 neighbours because Earth Engine’s single neighbour gives a two-value map. The SVM is now Earth Engine’s default linear classifier, and boosted trees use Earth Engine’s learning rate, which gives better-calibrated probabilities.</li>
+<li>Fixed classification SVMs (C_SVC, NU_SVC) returning inverted scores. Their probability depended on the order of the training rows, which Earth Engine does not preserve; the training table is now sorted before fitting.</li>
+<li>
+<code><a href="../reference/generate_pseudo_absences.html">generate_pseudo_absences()</a></code> now reads pseudo-absences from the same years as the presences, in the same proportions, instead of the latest embedding year. Pass <code>aoi_year</code> to place them all in one year.</li>
+<li>Models are trained on their rows in a fixed order, so retraining (which Earth Engine does for every map tile) gives the same model. Random forests are now exactly reproducible; boosted trees vary by at most about 0.005 inside Earth Engine.</li>
+<li>Simpler arguments: <code>balance_trees</code> is gone (use <code>bg_ratio</code>, default 1, or <code>NULL</code> for every absence), as are <code>persist_classifier</code>, <code>async</code> and <code>options</code> from <code><a href="../reference/evaluate_models.html">evaluate_models()</a></code>, which now requires <code>predict_coords</code> with a <code>year</code> column. <code><a href="../reference/generate_map.html">generate_map()</a></code> maps the records’ most common year by default.</li>
+<li>
+<code>sdm_gee_status()</code> is now <code><a href="../reference/gee_tasks.html">gee_tasks()</a></code> and <code>sdm_clean_assets()</code> is <code><a href="../reference/gee_clean_assets.html">gee_clean_assets()</a></code>. <code>sdm_verbose()</code> and the exported <code>calculate_cbi()</code> are gone: use <code><a href="https://rdrr.io/r/base/message.html" class="external-link">suppressMessages()</a></code>, and the <code>cbi</code> from <code><a href="../reference/calculate_classifier_metrics.html">calculate_classifier_metrics()</a></code>.</li>
+<li>Removed naive Bayes, which discards negative values and so cannot use the signed embeddings.</li>
+<li>The vignette now tests models on the following year’s records.</li>
+<li>Maps download straight from Earth Engine in tiles sized to its 32 MB download limit, fetched two at a time and stitched into one GeoTIFF per model. Google Drive is used only for maps Earth Engine will not compute tile by tile.</li>
 <li>
 <code><a href="../reference/generate_map.html">generate_map()</a></code> computes the ensemble on Earth Engine and accepts <code>aoi = "bbox"</code>.</li>
 <li>The Earth Engine Python client is declared with <code><a href="https://rstudio.github.io/reticulate/reference/py_require.html" class="external-link">reticulate::py_require()</a></code>, so reticulate installs it when needed; AlphaSDM no longer installs Python itself and no longer depends on ‘rgee’.</li>
 <li>The saved project ID lives in <code>tools::R_user_dir("AlphaSDM", "config")</code>. <code><a href="../reference/clear_gee_credentials.html">clear_gee_credentials()</a></code> removes it and asks before signing out of Earth Engine.</li>
-<li>Connecting to Earth Engine no longer deletes old temporary assets; use <code><a href="../reference/sdm_clean_assets.html">sdm_clean_assets()</a></code>.</li>
+<li>Connecting to Earth Engine no longer deletes old temporary assets; use <code><a href="../reference/gee_clean_assets.html">gee_clean_assets()</a></code>.</li>
 <li>A getting-started vignette, <code><a href="../articles/AlphaSDM.html">vignette("AlphaSDM")</a></code>, maps saguaro around Tucson from GBIF records.</li>
 <li>Removed unused code, including the remains of built-in cross-validation.</li>
 </ul></div>

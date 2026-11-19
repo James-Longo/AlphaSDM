@@ -2,8 +2,53 @@
 
 ## AlphaSDM 0.2.0
 
+CRAN release: 2026-10-04
+
 First CRAN release.
 
+- Model settings are now given per model with `params`, using Earth
+  Engine’s argument names, for example
+  `params = list(gbt = list(shrinkage = 0.01))`. This replaces the
+  separate arguments `n_trees`, `shrinkage`, `svm_cost`, `knn_k` and the
+  rest, which applied to several models at once and could silently
+  override values equal to their defaults. Misspelt settings are now an
+  error.
+- Every model uses Earth Engine’s defaults, except the tree counts Earth
+  Engine requires (`rf` 500, `gbt` 150) and `knn`, which uses 15
+  neighbours because Earth Engine’s single neighbour gives a two-value
+  map. The SVM is now Earth Engine’s default linear classifier, and
+  boosted trees use Earth Engine’s learning rate, which gives
+  better-calibrated probabilities.
+- Fixed classification SVMs (C_SVC, NU_SVC) returning inverted scores.
+  Their probability depended on the order of the training rows, which
+  Earth Engine does not preserve; the training table is now sorted
+  before fitting.
+- [`generate_pseudo_absences()`](https://james-longo.github.io/AlphaSDM/reference/generate_pseudo_absences.md)
+  now reads pseudo-absences from the same years as the presences, in the
+  same proportions, instead of the latest embedding year. Pass
+  `aoi_year` to place them all in one year.
+- Models are trained on their rows in a fixed order, so retraining
+  (which Earth Engine does for every map tile) gives the same model.
+  Random forests are now exactly reproducible; boosted trees vary by at
+  most about 0.005 inside Earth Engine.
+- Simpler arguments: `balance_trees` is gone (use `bg_ratio`, default 1,
+  or `NULL` for every absence), as are `persist_classifier`, `async` and
+  `options` from
+  [`evaluate_models()`](https://james-longo.github.io/AlphaSDM/reference/evaluate_models.md),
+  which now requires `predict_coords` with a `year` column.
+  [`generate_map()`](https://james-longo.github.io/AlphaSDM/reference/generate_map.md)
+  maps the records’ most common year by default.
+- `sdm_gee_status()` is now
+  [`gee_tasks()`](https://james-longo.github.io/AlphaSDM/reference/gee_tasks.md)
+  and `sdm_clean_assets()` is
+  [`gee_clean_assets()`](https://james-longo.github.io/AlphaSDM/reference/gee_clean_assets.md).
+  `sdm_verbose()` and the exported `calculate_cbi()` are gone: use
+  [`suppressMessages()`](https://rdrr.io/r/base/message.html), and the
+  `cbi` from
+  [`calculate_classifier_metrics()`](https://james-longo.github.io/AlphaSDM/reference/calculate_classifier_metrics.md).
+- Removed naive Bayes, which discards negative values and so cannot use
+  the signed embeddings.
+- The vignette now tests models on the following year’s records.
 - Maps download straight from Earth Engine in tiles sized to its 32 MB
   download limit, fetched two at a time and stitched into one GeoTIFF
   per model. Google Drive is used only for maps Earth Engine will not
@@ -19,7 +64,7 @@ First CRAN release.
   [`clear_gee_credentials()`](https://james-longo.github.io/AlphaSDM/reference/clear_gee_credentials.md)
   removes it and asks before signing out of Earth Engine.
 - Connecting to Earth Engine no longer deletes old temporary assets; use
-  [`sdm_clean_assets()`](https://james-longo.github.io/AlphaSDM/reference/sdm_clean_assets.md).
+  [`gee_clean_assets()`](https://james-longo.github.io/AlphaSDM/reference/gee_clean_assets.md).
 - A getting-started vignette,
   [`vignette("AlphaSDM")`](https://james-longo.github.io/AlphaSDM/articles/AlphaSDM.md),
   maps saguaro around Tucson from GBIF records.

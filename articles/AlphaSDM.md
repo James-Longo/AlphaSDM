@@ -16,21 +16,26 @@ free registration. After that, AlphaSDM connects on its own.
 
 ## Get occurrence records
 
-The GBIF occurrence API is public and needs no account. This query asks
-for 2022 records inside a box around Tucson, keeping only those with
-coordinates accurate to 30 m, which suits 10 m embeddings. The API
-returns at most 300 records per request, so it takes two pages.
+The GBIF occurrence API is public and needs no account. This helper asks
+for one year of records inside a box around Tucson, keeping only those
+with coordinates accurate to 30 m, which suits 10 m embeddings. The API
+returns at most 300 records per request, so it reads two pages. The
+models are fitted on the 2022 records; the 2023 records are kept aside
+to test them.
 
 \
-`url`` ``<-`` `[`paste0`](https://rdrr.io/r/base/paste.html)`(`\
-`  ``"https://api.gbif.org/v1/occurrence/search?"``,`\
-`  ``"scientificName=Carnegiea%20gigantea&year=2022"``,`\
-`  ``"&hasCoordinate=true&hasGeospatialIssue=false"``,`\
-`  ``"&coordinateUncertaintyInMeters=0,30"``,`\
-`  ``"&decimalLongitude=-111.4,-110.6&decimalLatitude=31.9,32.6&limit=300"``)`\
-`obs`` ``<-`` `[`do.call`](https://rdrr.io/r/base/do.call.html)`(``rbind``, `[`lapply`](https://rdrr.io/r/base/lapply.html)`(`[`c`](https://rdrr.io/r/base/c.html)`(``0``, ``300``)``, ``function``(``offset``)`\
-`  ``jsonlite``::`[`fromJSON`](https://jeroen.r-universe.dev/jsonlite/reference/fromJSON.html)`(`[`paste0`](https://rdrr.io/r/base/paste.html)`(``url``, ``"&offset="``, ``offset``)``)``$``results``[`\
-`    , `[`c`](https://rdrr.io/r/base/c.html)`(``"decimalLongitude"``, ``"decimalLatitude"``, ``"year"``)``]``)``)`\
+`gbif_records`` ``<-`` ``function``(``year``)`` ``{`\
+`  ``url`` ``<-`` `[`paste0`](https://rdrr.io/r/base/paste.html)`(`\
+`    ``"https://api.gbif.org/v1/occurrence/search?"``,`\
+`    ``"scientificName=Carnegiea%20gigantea&year="``, ``year``,`\
+`    ``"&hasCoordinate=true&hasGeospatialIssue=false"``,`\
+`    ``"&coordinateUncertaintyInMeters=0,30"``,`\
+`    ``"&decimalLongitude=-111.4,-110.6&decimalLatitude=31.9,32.6&limit=300"``)`\
+`  `[`do.call`](https://rdrr.io/r/base/do.call.html)`(``rbind``, `[`lapply`](https://rdrr.io/r/base/lapply.html)`(`[`c`](https://rdrr.io/r/base/c.html)`(``0``, ``300``)``, ``function``(``offset``)`\
+`    ``jsonlite``::`[`fromJSON`](https://rdrr.io/pkg/jsonlite/man/fromJSON.html)`(`[`paste0`](https://rdrr.io/r/base/paste.html)`(``url``, ``"&offset="``, ``offset``)``)``$``results``[`\
+`      , `[`c`](https://rdrr.io/r/base/c.html)`(``"decimalLongitude"``, ``"decimalLatitude"``, ``"year"``)``]``)``)`\
+`}`\
+`obs`` ``<-`` ``gbif_records``(``2022``)`\
 [`nrow`](https://rdrr.io/r/base/nrow.html)`(``obs``)`\
 `#> [1] 438`
 
@@ -52,12 +57,12 @@ modelling decision (Barbet-Massin et al. 2012), so AlphaSDM asks you to
 choose a strategy. `"combined"` keeps them away from the presences both
 geographically and in embedding space, the recipe recommended for the
 tree models in the default ensemble. `aoi = "bbox"` draws them inside
-the bounding box of the presences, and `aoi_year` reads them from the
-same year’s embeddings as the records.
+the bounding box of the presences, and each is read from the same year’s
+embeddings as the records.
 
 \
 `occ`` ``<-`` `[`generate_pseudo_absences`](https://james-longo.github.io/AlphaSDM/reference/generate_pseudo_absences.md)`(``pres``, aoi ``=`` ``"bbox"``, strategy ``=`` ``"combined"``,`\
-`                                n ``=`` `[`nrow`](https://rdrr.io/r/base/nrow.html)`(``pres``)``, aoi_year ``=`` ``2022``)`\
+`                                n ``=`` `[`nrow`](https://rdrr.io/r/base/nrow.html)`(``pres``)``)`\
 [`table`](https://rdrr.io/r/base/table.html)`(``occ``$``present``)`\
 `#> `\
 `#>   0   1 `\
@@ -109,47 +114,86 @@ differs: mostly the forested upper Santa Catalina Mountains to the
 northeast and the irrigated farmland of the Avra Valley to the west,
 with a few in town and around the open-pit mine to the south.
 
-## Evaluate on a spatial holdout
+## Evaluate on the next year’s records
 
-Hold out one spatial cluster of points, presences and absences alike,
-fit the default ensemble (svm, rf and gbt) on the rest, and score the
-holdout. A spatial holdout is harder than a random one, because the
-models must transfer to ground they have not seen.
+The fairest test uses records the models have never seen. Here that is
+the 2023 records, scored against background points drawn at random
+across the study area from the 2023 embeddings. The pseudo-absences are
+used only for training: scoring against them would reward the rule that
+placed them, not the models.
 
 \
-[`set.seed`](https://rdrr.io/r/base/Random.html)`(``1``)`\
-`occ``$``block`` ``<-`` ``stats``::`[`kmeans`](https://rdrr.io/r/stats/kmeans.html)`(``occ``[``, `[`c`](https://rdrr.io/r/base/c.html)`(``"longitude"``, ``"latitude"``)``]``, centers ``=`` ``5``)``$``cluster`\
-`test`` ``<-`` ``occ``$``block`` ``==`` ``1`\
+`pres_2023`` ``<-`` `[`format_data`](https://james-longo.github.io/AlphaSDM/reference/format_data.md)`(``gbif_records``(``2023``)``,`\
+`                         coords ``=`` `[`c`](https://rdrr.io/r/base/c.html)`(``"decimalLongitude"``, ``"decimalLatitude"``)``,`\
+`                         year ``=`` ``"year"``)`\
+`test`` ``<-`` `[`generate_pseudo_absences`](https://james-longo.github.io/AlphaSDM/reference/generate_pseudo_absences.md)`(``pres_2023``, aoi ``=`` ``"bbox"``, strategy ``=`` ``"random"``,`\
+`                                 n ``=`` ``2000``)`\
 \
-`fit`` ``<-`` `[`evaluate_models`](https://james-longo.github.io/AlphaSDM/reference/evaluate_models.md)`(``data ``=`` ``occ``[``!``test``, ``]``, predict_coords ``=`` ``occ``[``test``, ``]``)`\
+`fit`` ``<-`` `[`evaluate_models`](https://james-longo.github.io/AlphaSDM/reference/evaluate_models.md)`(``data ``=`` ``occ``, predict_coords ``=`` ``test``)`\
 \
 `metrics`` ``<-`` `[`do.call`](https://rdrr.io/r/base/do.call.html)`(``rbind``, `[`lapply`](https://rdrr.io/r/base/lapply.html)`(``fit``$``metrics``, ``as.data.frame``)``)`\
 `knitr``::`[`kable`](https://rdrr.io/pkg/knitr/man/kable.html)`(``metrics``[``, `[`c`](https://rdrr.io/r/base/c.html)`(``"auc_roc"``, ``"auc_prg"``, ``"tss"``, ``"cbi"``)``]``, digits ``=`` ``3``)`
 
 |          | auc_roc | auc_prg |   tss |   cbi |
 |:---------|--------:|--------:|------:|------:|
-| svm      |   1.000 |   0.976 | 1.000 | 0.802 |
-| rf       |   1.000 |   0.976 | 1.000 | 0.861 |
-| gbt      |   0.986 |   0.923 | 0.891 | 0.443 |
-| ensemble |   0.998 |   0.968 | 0.968 | 0.864 |
+| svm      |   0.807 |   0.786 | 0.486 | 0.355 |
+| rf       |   0.766 |   0.705 | 0.400 | 0.911 |
+| gbt      |   0.721 |   0.632 | 0.336 | 0.713 |
+| ensemble |   0.762 |   0.703 | 0.382 | 0.730 |
 
-Read these scores with care. The held-out absences are pseudo-absences,
-placed where the landscape looks least like saguaro habitat, so they are
-easier to tell from presences than real absences would be. For an honest
-measure of discrimination, score real survey absences. The Boyce index
-(`cbi`) measures calibration and needs only presences, so it is the more
-informative number here.
+The background includes plenty of real saguaro habitat, so AUC cannot
+reach 1 here even for a perfect model; it measures how well the models
+separate the 2023 records from the landscape as a whole. The continuous
+Boyce index (`cbi`; Hirzel et al. 2006) is the metric designed for
+presence-only data: it asks whether places the model rates more suitable
+hold proportionally more of the new records than chance would give, and
+ranges from -1 to 1. The ensemble scores 0.73.
+
+## Adjust a model’s settings
+
+Every model uses Earth Engine’s defaults for its classifier unless you
+change them (the few exceptions are listed in
+[`?evaluate_models`](https://james-longo.github.io/AlphaSDM/reference/evaluate_models.md)).
+To change a setting, pass `params`: a list with one entry per model,
+using Earth Engine’s argument names.
+
+Earth Engine’s default SVM is a linear classifier. Above, it ranks the
+2023 records well but scores poorly on the Boyce index, because its
+probabilities crowd towards 1. A regression SVM with a radial kernel
+gives a continuous suitability score instead:
+
+\
+`svm_rbf`` ``<-`` `[`list`](https://rdrr.io/r/base/list.html)`(``svmType ``=`` ``"EPSILON_SVR"``, kernelType ``=`` ``"RBF"``, cost ``=`` ``10``,`\
+`                gamma ``=`` ``0.05``)`\
+`fit_svm`` ``<-`` `[`evaluate_models`](https://james-longo.github.io/AlphaSDM/reference/evaluate_models.md)`(``data ``=`` ``occ``, predict_coords ``=`` ``test``, methods ``=`` ``"svm"``,`\
+`                           params ``=`` `[`list`](https://rdrr.io/r/base/list.html)`(``svm ``=`` ``svm_rbf``)``)`\
+\
+`svm`` ``<-`` `[`rbind`](https://rdrr.io/r/base/cbind.html)`(``` `default (linear classifier)`  ```=`` ``metrics``[``"svm"``, ``]``,`\
+``              `regression, RBF kernel`  ```=`` `[`as.data.frame`](https://rdrr.io/r/base/as.data.frame.html)`(``fit_svm``$``metrics``$``svm``)``)`\
+`knitr``::`[`kable`](https://rdrr.io/pkg/knitr/man/kable.html)`(``svm``[``, `[`c`](https://rdrr.io/r/base/c.html)`(``"auc_roc"``, ``"auc_prg"``, ``"tss"``, ``"cbi"``)``]``, digits ``=`` ``3``)`
+
+|                             | auc_roc | auc_prg |   tss |   cbi |
+|:----------------------------|--------:|--------:|------:|------:|
+| default (linear classifier) |   0.807 |   0.786 | 0.486 | 0.355 |
+| regression, RBF kernel      |   0.792 |   0.722 | 0.463 | 0.959 |
+
+The Boyce index rises from 0.36 to 0.96. The same `params` work in
+[`generate_map()`](https://james-longo.github.io/AlphaSDM/reference/generate_map.md).
+In a real study, choose settings using the training records, for example
+by cross-validation, rather than the test records.
 
 ## Map suitability
 
 [`generate_map()`](https://james-longo.github.io/AlphaSDM/reference/generate_map.md)
 refits the models on all the data and writes one GeoTIFF per model plus
-the ensemble mean. `aoi = "bbox"` maps the whole area the points cover,
-about 75 by 78 km. At 30 m that is six map tiles and takes a few
-minutes; the native 10 m resolution (`scale = 10`) takes longer.
+the ensemble mean. It takes the same `params` as
+[`evaluate_models()`](https://james-longo.github.io/AlphaSDM/reference/evaluate_models.md).
+`aoi = "bbox"` maps the whole area the points cover, about 75 by 78 km.
+At 30 m that is six map tiles and takes a few minutes; the native 10 m
+resolution (`scale = 10`) takes longer.
 
 \
-`maps`` ``<-`` `[`generate_map`](https://james-longo.github.io/AlphaSDM/reference/generate_map.md)`(``occ``, aoi ``=`` ``"bbox"``, scale ``=`` ``30``, aoi_year ``=`` ``2022``,`\
+`maps`` ``<-`` `[`generate_map`](https://james-longo.github.io/AlphaSDM/reference/generate_map.md)`(``occ``, aoi ``=`` ``"bbox"``, scale ``=`` ``30``,`\
 `                     output_dir ``=`` `[`file.path`](https://rdrr.io/r/base/file.path.html)`(`[`tempdir`](https://rdrr.io/r/base/tempfile.html)`(``)``, ``"saguaro"``)``)`\
 [`plot`](https://rdrr.io/r/graphics/plot.default.html)`(``stars``::`[`read_stars`](https://r-spatial.github.io/stars/reference/read_stars.html)`(``maps``$``ensemble_map``)``, main ``=`` ``"Saguaro suitability, 30 m"``,`\
 `     col ``=`` ``grDevices``::`[`hcl.colors`](https://rdrr.io/r/grDevices/palettes.html)`(``20``, ``"YlGn"``, rev ``=`` ``TRUE``)``)`
@@ -162,8 +206,12 @@ Suitability follows the slopes and drainages of the Tucson Mountains and
 the foothills ringing the city, and fades on the valley floors, the
 farmland and the high Catalinas.
 
-## Reference
+## References
 
 Barbet-Massin, M., Jiguet, F., Albert, C. H. & Thuiller, W. (2012).
 Selecting pseudo-absences for species distribution models: how, where
 and how many? *Methods in Ecology and Evolution* 3, 327-338.
+
+Hirzel, A. H., Le Lay, G., Helfer, V., Randin, C. & Guisan, A. (2006).
+Evaluating the ability of habitat suitability models to predict species
+presences. *Ecological Modelling* 199, 142-152.

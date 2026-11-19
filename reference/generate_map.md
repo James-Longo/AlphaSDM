@@ -14,28 +14,12 @@ generate_map(
   aoi,
   scale = 10,
   output_dir = getwd(),
-  methods = NULL,
+  methods = c("svm", "rf", "gbt"),
   ensemble = TRUE,
   aoi_year = NULL,
-  bg_ratio = NULL,
+  bg_ratio = 1,
   bg_replicates = TRUE,
-  balance_trees = TRUE,
-  n_trees = 100L,
-  min_leaf_population = 5L,
-  bag_fraction = 0.5,
-  shrinkage = 0.005,
-  max_nodes = 6L,
-  variables_per_split = NULL,
-  svm_type = "EPSILON_SVR",
-  svm_kernel = "RBF",
-  svm_cost = 10,
-  svm_gamma = 0.05,
-  maxent_beta = 1,
-  maxent_features = "auto",
-  knn_k = NULL,
-  knn_search_method = NULL,
-  knn_metric = NULL,
-  persist_classifier = FALSE,
+  params = list(),
   gee_project = NULL
 )
 ```
@@ -79,13 +63,15 @@ generate_map(
 
 - aoi_year:
 
-  Year of the Alpha Earth mosaic to sample (default 2023).
+  Year of the embeddings to map. By default, the most common year in
+  \`data\`.
 
 - bg_ratio:
 
-  Optional absence:presence ratio for the balanced background pool (the
-  methods whose registry entry declares \`pool = "balanced"\`).
-  Overrides \`balance_trees\` when set.
+  Absence-to-presence ratio for the models that train on a balanced pool
+  (rf, gbt and knn): their absences are thinned at random to
+  \`bg_ratio\` times the number of presences. Default 1. \`NULL\` gives
+  them every absence. svm and maxent always use every absence.
 
 - bg_replicates:
 
@@ -96,52 +82,19 @@ generate_map(
   \`bg_ratio\` thinning to be active; methods on the full pool are never
   replicated.
 
-- balance_trees:
+- params:
 
-  Logical (default \`TRUE\`). When \`TRUE\`, rf/gbt and knn train on a
-  balanced 1:1 background while svm/maxent use the full background;
-  \`FALSE\` gives the trees all background points.
-
-- n_trees, min_leaf_population, bag_fraction, shrinkage, max_nodes,
-  variables_per_split:
-
-  Tree-model (rf/gbt) hyperparameters.
-
-- svm_type, svm_kernel, svm_cost, svm_gamma:
-
-  libsvm hyperparameters (default EPSILON_SVR / RBF / cost 10 / gamma
-  0.05).
-
-- maxent_beta, maxent_features:
-
-  MaxEnt regularisation multiplier and feature classes (\`"auto"\` or a
-  combination of L/Q/H/P/T).
-
-- knn_k:
-
-  Neighbours for kNN (default 15). Also fixes the output resolution: the
-  surface can take only \`k + 1\` distinct values. Raise alongside
-  \`bg_ratio\`.
-
-- knn_search_method:
-
-  kNN neighbour search: \`"AUTO"\`, \`"LINEAR_SEARCH"\`, \`"KD_TREE"\`
-  or \`"COVER_TREE"\`. Note \`KD_TREE\` ignores \`knn_metric\`.
-
-- knn_metric:
-
-  kNN distance metric: \`"EUCLIDEAN"\`, \`"MAHALANOBIS"\`,
-  \`"MANHATTAN"\` or \`"BRAYCURTIS"\`. Only honoured for search methods
-  that use it.
-
-- persist_classifier:
-
-  Logical; whether to store internally-persistable classifiers
-  (currently RF/CART) as a temporary GEE asset before mapping. Defaults
-  to \`FALSE\`: map exports run through Earth Engine's batch system,
-  which evaluates the model inline, so storing it first adds a wait
-  without changing the result. Ignored for methods that cannot persist
-  (SVM/GBT/MaxEnt).
+  Named list of settings for individual models, using the argument names
+  of the Earth Engine classifier, for example \`list(gbt =
+  list(shrinkage = 0.01), svm = list(kernelType = "RBF"))\`. Every model
+  uses Earth Engine's defaults except where Earth Engine needs a value
+  or its default cannot work on these data: \`rf\` uses 500 trees and
+  \`gbt\` 150, since Earth Engine requires a number, and \`knn\` uses 15
+  neighbours, since Earth Engine's single neighbour gives a two-value
+  map. See the Earth Engine reference for
+  \`ee.Classifier.smileRandomForest\`, \`smileGradientTreeBoost\`,
+  \`libsvm\`, \`amnhMaxent\`, \`smileKNN\` and \`smileCart\` for every
+  available setting.
 
 - gee_project:
 

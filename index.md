@@ -1,9 +1,11 @@
 # AlphaSDM
 
+[![CRAN
+status](https://www.r-pkg.org/badges/version/AlphaSDM)](https://CRAN.R-project.org/package=AlphaSDM)
 [![Lifecycle:
 experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
 [![License:
-MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://james-longo.github.io/AlphaSDM/LICENSE.md)
+MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/James-Longo/AlphaSDM/blob/main/LICENSE.md)
 
 AlphaSDM fits species distribution models and maps habitat suitability
 at up to 10 m resolution, anywhere on Earth, from occurrence records
@@ -48,6 +50,13 @@ for the year they were made.
 
 ## Installation
 
+Install the released version from CRAN:
+
+\
+[`install.packages`](https://rdrr.io/r/utils/install.packages.html)`(``"AlphaSDM"``)`
+
+Or the development version from GitHub:
+
 \
 `# install.packages("pak")`\
 `pak``::``pak``(``"James-Longo/AlphaSDM"``)`
@@ -63,7 +72,7 @@ noncommercial use.
     and the connection is remembered after that.
 
 \
-[`library`](https://rdrr.io/r/base/library.html)`(`[`AlphaSDM`](https://github.com/James-Longo/AlphaSDM)`)`\
+[`library`](https://rdrr.io/r/base/library.html)`(`[`AlphaSDM`](https://james-longo.github.io/AlphaSDM/)`)`\
 [`setup_gee`](https://james-longo.github.io/AlphaSDM/reference/setup_gee.md)`(``project ``=`` ``"your-project-id"``)`\
 [`gee_status`](https://james-longo.github.io/AlphaSDM/reference/gee_status.md)`(``)``   ``# checks credentials, project and a live connection`
 
@@ -74,31 +83,37 @@ resets everything.
 
 ## Example
 
-Download one year of saguaro records from GBIF, add pseudo-absences,
-evaluate the default ensemble on a spatial holdout, and map suitability:
+Download saguaro records from GBIF, fit the default ensemble on 2022
+records, test it on 2023 records, and map suitability:
 
 \
-[`library`](https://rdrr.io/r/base/library.html)`(`[`AlphaSDM`](https://github.com/James-Longo/AlphaSDM)`)`\
+[`library`](https://rdrr.io/r/base/library.html)`(`[`AlphaSDM`](https://james-longo.github.io/AlphaSDM/)`)`\
 \
-`url`` ``<-`` `[`paste0`](https://rdrr.io/r/base/paste.html)`(``"https://api.gbif.org/v1/occurrence/search?"``,`\
-`              ``"scientificName=Carnegiea%20gigantea&year=2022"``,`\
-`              ``"&hasCoordinate=true&hasGeospatialIssue=false"``,`\
-`              ``"&coordinateUncertaintyInMeters=0,30"``,`\
-`              ``"&decimalLongitude=-111.4,-110.6&decimalLatitude=31.9,32.6&limit=300"``)`\
-`obs`` ``<-`` `[`do.call`](https://rdrr.io/r/base/do.call.html)`(``rbind``, `[`lapply`](https://rdrr.io/r/base/lapply.html)`(`[`c`](https://rdrr.io/r/base/c.html)`(``0``, ``300``)``, ``function``(``offset``)`\
-`  ``jsonlite``::`[`fromJSON`](https://jeroen.r-universe.dev/jsonlite/reference/fromJSON.html)`(`[`paste0`](https://rdrr.io/r/base/paste.html)`(``url``, ``"&offset="``, ``offset``)``)``$``results``[`\
-`    , `[`c`](https://rdrr.io/r/base/c.html)`(``"decimalLongitude"``, ``"decimalLatitude"``, ``"year"``)``]``)``)`\
+`gbif_records`` ``<-`` ``function``(``year``)`` ``{`\
+`  ``url`` ``<-`` `[`paste0`](https://rdrr.io/r/base/paste.html)`(``"https://api.gbif.org/v1/occurrence/search?"``,`\
+`                ``"scientificName=Carnegiea%20gigantea&year="``, ``year``,`\
+`                ``"&hasCoordinate=true&hasGeospatialIssue=false"``,`\
+`                ``"&coordinateUncertaintyInMeters=0,30"``,`\
+`                ``"&decimalLongitude=-111.4,-110.6&decimalLatitude=31.9,32.6&limit=300"``)`\
+`  `[`do.call`](https://rdrr.io/r/base/do.call.html)`(``rbind``, `[`lapply`](https://rdrr.io/r/base/lapply.html)`(`[`c`](https://rdrr.io/r/base/c.html)`(``0``, ``300``)``, ``function``(``offset``)`\
+`    ``jsonlite``::`[`fromJSON`](https://rdrr.io/pkg/jsonlite/man/fromJSON.html)`(`[`paste0`](https://rdrr.io/r/base/paste.html)`(``url``, ``"&offset="``, ``offset``)``)``$``results``[`\
+`      , `[`c`](https://rdrr.io/r/base/c.html)`(``"decimalLongitude"``, ``"decimalLatitude"``, ``"year"``)``]``)``)`\
+`}`\
+`coords`` ``<-`` `[`c`](https://rdrr.io/r/base/c.html)`(``"decimalLongitude"``, ``"decimalLatitude"``)`\
 \
-`pres`` ``<-`` `[`format_data`](https://james-longo.github.io/AlphaSDM/reference/format_data.md)`(``obs``, coords ``=`` `[`c`](https://rdrr.io/r/base/c.html)`(``"decimalLongitude"``, ``"decimalLatitude"``)``, year ``=`` ``"year"``)`\
+`# Fit on 2022 records with pseudo-absences`\
+`pres`` ``<-`` `[`format_data`](https://james-longo.github.io/AlphaSDM/reference/format_data.md)`(``gbif_records``(``2022``)``, coords ``=`` ``coords``, year ``=`` ``"year"``)`\
 `occ``  ``<-`` `[`generate_pseudo_absences`](https://james-longo.github.io/AlphaSDM/reference/generate_pseudo_absences.md)`(``pres``, aoi ``=`` ``"bbox"``, strategy ``=`` ``"combined"``,`\
-`                                 n ``=`` `[`nrow`](https://rdrr.io/r/base/nrow.html)`(``pres``)``, aoi_year ``=`` ``2022``)`\
+`                                 n ``=`` `[`nrow`](https://rdrr.io/r/base/nrow.html)`(``pres``)``)`\
 \
-[`set.seed`](https://rdrr.io/r/base/Random.html)`(``1``)`\
-`test`` ``<-`` ``stats``::`[`kmeans`](https://rdrr.io/r/stats/kmeans.html)`(``occ``[``, `[`c`](https://rdrr.io/r/base/c.html)`(``"longitude"``, ``"latitude"``)``]``, centers ``=`` ``5``)``$``cluster`` ``==`` ``1`\
-`fit``  ``<-`` `[`evaluate_models`](https://james-longo.github.io/AlphaSDM/reference/evaluate_models.md)`(``occ``[``!``test``, ``]``, predict_coords ``=`` ``occ``[``test``, ``]``)`\
+`# Test on 2023 records against random background`\
+`pres_2023`` ``<-`` `[`format_data`](https://james-longo.github.io/AlphaSDM/reference/format_data.md)`(``gbif_records``(``2023``)``, coords ``=`` ``coords``, year ``=`` ``"year"``)`\
+`test`` ``<-`` `[`generate_pseudo_absences`](https://james-longo.github.io/AlphaSDM/reference/generate_pseudo_absences.md)`(``pres_2023``, aoi ``=`` ``"bbox"``, strategy ``=`` ``"random"``,`\
+`                                 n ``=`` ``2000``)`\
+`fit``  ``<-`` `[`evaluate_models`](https://james-longo.github.io/AlphaSDM/reference/evaluate_models.md)`(``occ``, predict_coords ``=`` ``test``)`\
 `fit``$``metrics``$``ensemble`\
 \
-`maps`` ``<-`` `[`generate_map`](https://james-longo.github.io/AlphaSDM/reference/generate_map.md)`(``occ``, aoi ``=`` ``"bbox"``, scale ``=`` ``30``, aoi_year ``=`` ``2022``,`\
+`maps`` ``<-`` `[`generate_map`](https://james-longo.github.io/AlphaSDM/reference/generate_map.md)`(``occ``, aoi ``=`` ``"bbox"``, scale ``=`` ``30``,`\
 `                     output_dir ``=`` ``"saguaro"``)`
 
 [`generate_map()`](https://james-longo.github.io/AlphaSDM/reference/generate_map.md)
@@ -113,16 +128,6 @@ accepts `"maxent"`, `"glm"`, `"cart"`, `"knn"`, `"mindist"` and
 `"similarity"`, all fitted on Earth Engine; see
 [`?evaluate_models`](https://james-longo.github.io/AlphaSDM/reference/evaluate_models.md).
 
-## Related packages
-
-biomod2, flexsdm, ENMeval, sdm and Wallace fit species distribution
-models on environmental layers you supply; AlphaSDM replaces those
-layers with one embedding dataset and moves the computation to Earth
-Engine. blockCV builds spatial cross-validation folds, which pair well
-with
-[`evaluate_models()`](https://james-longo.github.io/AlphaSDM/reference/evaluate_models.md).
-rgee is the general-purpose R interface to Earth Engine.
-
 ## Getting help
 
 Report bugs and request features in [GitHub
@@ -134,12 +139,12 @@ arguments and defaults may still change.
 
 Run `citation("AlphaSDM")` in R, or use GitHub’s “Cite this repository”
 button, which reads
-[`CITATION.cff`](https://james-longo.github.io/AlphaSDM/CITATION.cff).
+[`CITATION.cff`](https://github.com/James-Longo/AlphaSDM/blob/main/CITATION.cff).
 
 ## License
 
 MIT; see
-[LICENSE.md](https://james-longo.github.io/AlphaSDM/LICENSE.md). The
-AlphaEarth embeddings are provided by Google under the terms of the
+[LICENSE.md](https://github.com/James-Longo/AlphaSDM/blob/main/LICENSE.md).
+The AlphaEarth embeddings are provided by Google under the terms of the
 [Earth Engine
 dataset](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL).
